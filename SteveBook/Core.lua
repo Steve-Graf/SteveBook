@@ -1,0 +1,57 @@
+-- Core.lua: init, SavedVariables, slash commands.
+local ADDON, ns = ...
+local Model = ns.Model
+
+local function say(msg) print("|cffffd100SteveBook:|r " .. msg) end
+
+local function describe(b, i)
+    return ("%s%s  %s  [%s]"):format(i and (i .. ". ") or "", b.name, b.code, b.ownerName or "?")
+end
+
+local function help()
+    say("/book new <name>   create a book (generates a join code)")
+    say("/book list         list your books")
+    say("/book use <# or code>  choose the active book")
+    say("/book              show the active book")
+end
+
+local function handle(msg)
+    local db = SteveBookDB
+    local cmd, rest = (msg or ""):match("^%s*(%S*)%s*(.-)%s*$")
+    cmd = cmd:lower()
+
+    if cmd == "new" then
+        local b, err = Model.CreateBook(db, rest, UnitName("player"), GetServerTime())
+        if not b then return say(err) end
+        say("Created " .. describe(b) .. ". Share the code with friends.")
+    elseif cmd == "list" then
+        local books = Model.ListBooks(db)
+        if #books == 0 then return say("No books yet. /book new <name>") end
+        local active = db.activeBook
+        for i, b in ipairs(books) do
+            say(describe(b, i) .. (b.id == active and "  (active)" or ""))
+        end
+    elseif cmd == "use" then
+        local b, err = Model.PickBook(db, rest)
+        if not b then return say(err) end
+        say("Active book: " .. describe(b))
+    elseif cmd == "" then
+        local b = Model.ActiveBook(db)
+        if b then say("Active book: " .. describe(b)) else help() end
+    else
+        help()
+    end
+end
+
+local f = CreateFrame("Frame")
+f:RegisterEvent("ADDON_LOADED")
+f:SetScript("OnEvent", function(_, _, name)
+    if name ~= ADDON then return end
+    SteveBookDB = SteveBookDB or Model.NewDB()
+    SteveBookDB.cache = SteveBookDB.cache or ns.Cache.NewStore()   -- bettor-side cache (Cache.lua)
+    math.randomseed(GetServerTime() + floor(GetTime() * 1000))
+    f:UnregisterEvent("ADDON_LOADED")
+end)
+
+SLASH_STEVEBOOK1 = "/book"
+SlashCmdList["STEVEBOOK"] = handle

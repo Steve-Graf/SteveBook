@@ -1,0 +1,12 @@
+## Interface: 16001
+## Title: SteveBook
+## Notes: In-game sportsbook: run a book, bet gold on credit.
+## Author: Steve-Graf
+## Version: 0.1.0
+## SavedVariables: SteveBookDB
+
+Odds.lua
+Protocol.lua
+Model.lua
+Cache.lua
+Core.lua
