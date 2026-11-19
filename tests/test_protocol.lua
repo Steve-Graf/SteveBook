@@ -27,4 +27,21 @@ check(select(2, P.Unwrap({ v = 99, t = "PING", c = "X", p = {} })) == "protocol 
 check(select(2, P.Unwrap("junk")) == "not a table", "non-table")
 check(select(2, P.Unwrap({ v = 1, t = "PING", p = {} })) == "missing book code", "missing code")
 
+check(P.ChannelName("NFL-K7Q2") == "SBNFLK7Q2", "channel name")
+check(P.ChannelName("nfl-k7q2") == "SBNFLK7Q2", "channel name uppercases")
+check(P.ShouldDeliver("BET_PLACE", true) and not P.ShouldDeliver("BET_PLACE", false), "bettor msgs go to the owner")
+check(P.ShouldDeliver("SYNC", false) and not P.ShouldDeliver("SYNC", true), "bookie msgs go to non-owners")
+check(P.ShouldDeliver("PING", true) and P.ShouldDeliver("PING", false), "any msgs go to everyone")
+check(not P.ShouldDeliver("NOPE", true), "unknown type not delivered")
+check(P.NormalizeName("Bob-Area52", "Area52") == "Bob", "same realm stripped")
+check(P.NormalizeName("Bob-Area 52", "Area52") == "Bob", "realm spaces ignored")
+check(P.NormalizeName("Bob-Tichondrius", "Area52") == "Bob-Tichondrius", "other realm kept")
+check(P.NormalizeName("Bob", "Area52") == "Bob", "plain name unchanged")
+
+check(P.CanonicalCode("NFLK7Q2") == "NFL-K7Q2", "code without hyphen")
+check(P.CanonicalCode(" nfl k7q2 ") == "NFL-K7Q2", "code with spaces and case")
+check(P.CanonicalCode("NFL-K7Q2") == "NFL-K7Q2", "canonical stays")
+check(P.CanonicalCode("") == "" and P.CanonicalCode(nil) == "", "empty code")
+check(P.CanonicalCode("AB-1") == "AB1", "short codes lose the hyphen")
+
 if fails == 0 then print("protocol: all tests passed") else os.exit(1) end

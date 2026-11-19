@@ -123,4 +123,20 @@ function Odds.ParseMoney(str)
     return total
 end
 
+-- Stake rules (v1 starting limits; SPEC §3). Change them here and nowhere else.
+Odds.MAX_STAKE = 10000      -- copper: 1g
+Odds.STAKE_STEP = 100       -- copper: stakes are whole silver
+
+-- Returns true, or false, "bad_stake", message. Used by the bookie (authority) and the bet slip.
+function Odds.StakeCheck(stake)
+    if not isInt(stake) or stake <= 0 then return false, "bad_stake", "Enter a stake." end
+    if stake % Odds.STAKE_STEP ~= 0 then
+        return false, "bad_stake", "Stakes are whole silver (for example 20s, 50s or 1g)."
+    end
+    if stake > Odds.MAX_STAKE then
+        return false, "bad_stake", "The maximum stake is " .. Odds.FormatMoney(Odds.MAX_STAKE) .. "."
+    end
+    return true
+end
+
 return Odds

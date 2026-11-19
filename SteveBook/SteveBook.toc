@@ -3,10 +3,17 @@
 ## Notes: In-game sportsbook: run a book, bet gold on credit.
 ## Author: Steve-Graf
 ## Version: 0.1.0
-## SavedVariables: SteveBookDB
+## SavedVariablesPerCharacter: SteveBookDB
 
+Libs\embeds.xml
 Odds.lua
 Protocol.lua
 Model.lua
+Bookie.lua
+Import.lua
 Cache.lua
+Comm.lua
+BookieNet.lua
+UI\Bookie.lua
+UI\Bettor.lua
 Core.lua

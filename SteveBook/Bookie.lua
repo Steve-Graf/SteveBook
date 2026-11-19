@@ -14,8 +14,8 @@ local Bookie = {}
 ns.Bookie = Bookie
 
 local MARKET_TYPES = { moneyline = true, spread = true, total = true }
-local SETTLED_KEEP = 7 * 24 * 3600   -- snapshots include markets settled within this window
 local PAYMENTS_KEEP = 20             -- snapshots include this many recent payments
+local BET_HISTORY_KEEP = 14 * 24 * 3600   -- snapshots include settled/void bets settled within this window
 
 local function touch(book) book.rev = (book.rev or 0) + 1 end
 
@@ -143,11 +143,31 @@ local function editable(book, marketId)
     return m
 end
 
+-- closesAt is the game's start. A game that has started takes no bets, so from then on only
+-- Settle and Void remain: no edits, no extending the close time, no reopening.
+-- "open" can lag behind the clock until Sweep runs, so the time is checked as well as the status.
+function Bookie.HasStarted(market, now) return now >= market.closesAt end
+
+-- True while the market takes bets: status "open" and the game has not started.
+function Bookie.IsBettable(market, now)
+    return market.status == "open" and now < market.closesAt
+end
+
+-- "open" | "locked" | "settled" | "void". A market still marked "open" past closesAt reads as "locked".
+function Bookie.EffectiveStatus(market, now)
+    if market.status == "open" and now >= market.closesAt then return "locked" end
+    return market.status
+end
+
 -- changes = { odds = { [selectionId] = americanOdds }, line = n, closesAt = epoch }
 -- Validated as a whole before anything changes. Only affects bets placed afterwards.
-function Bookie.EditMarket(book, marketId, changes)
+-- `now` is required. Refused with "market_closed" once the game has started (any change, including
+-- a later closesAt); a new closesAt must still be in the future ("bad_close_time").
+function Bookie.EditMarket(book, marketId, changes, now)
+    if type(now) ~= "number" then return nil, "bad_time" end
     local m, err = editable(book, marketId)
     if not m then return nil, err end
+    if Bookie.HasStarted(m, now) then return nil, "market_closed" end
     changes = changes or {}
     if changes.odds then
         for id, odds in pairs(changes.odds) do
@@ -158,7 +178,9 @@ function Bookie.EditMarket(book, marketId, changes)
     if changes.line ~= nil then
         if m.type == "moneyline" or not validLine(changes.line) then return nil, "bad_line" end
     end
-    if changes.closesAt ~= nil and type(changes.closesAt) ~= "number" then return nil, "bad_close_time" end
+    if changes.closesAt ~= nil and (type(changes.closesAt) ~= "number" or changes.closesAt <= now) then
+        return nil, "bad_close_time"
+    end
 
     if changes.odds then
         for id, odds in pairs(changes.odds) do m.selections[id].odds = odds end
@@ -178,12 +200,13 @@ function Bookie.Lock(book, marketId)
     return m
 end
 
--- locked -> open, only while the close time is still in the future.
+-- locked -> open, only while the close time is still in the future. Once the game has started
+-- this is always refused, even for a market whose stored status still says "open".
 function Bookie.Unlock(book, marketId, now)
     local m, err = editable(book, marketId)
     if not m then return nil, err end
+    if Bookie.HasStarted(m, now) then return nil, "market_closed" end
     if m.status == "open" then return m end
-    if now >= m.closesAt then return nil, "market_closed" end
     m.status = "open"
     touch(book)
     return m
@@ -225,10 +248,11 @@ end
 --   "no_market"       unknown market id
 --   "market_closed"   not open, or past closesAt
 --   "bad_selection"   unknown selection id
---   "bad_stake"       not a positive integer of copper
+--   "bad_stake"       fails Odds.StakeCheck (whole silver, at most Odds.MAX_STAKE)
 --   "odds_changed"    extra = current odds (UI should re-confirm)
 --   "credit_limit"    extra = copper still available under the member's limit
--- A repeated `ref` from the same bettor returns the original bet (idempotent re-ack), so a
+-- A repeated `ref` from the same bettor returns the original bet plus a third value `true`
+-- (idempotent re-ack: the caller re-sends BET_ACK but must not treat it as a new bet), so a
 -- retried BET_PLACE never double-books.
 function Bookie.PlaceBet(book, bettor, req, now)
     local member = book.members[bettor]
@@ -237,7 +261,7 @@ function Bookie.PlaceBet(book, bettor, req, now)
 
     if req.ref ~= nil then
         for _, b in pairs(book.bets) do
-            if b.bettor == bettor and b.ref == req.ref then return b end
+            if b.bettor == bettor and b.ref == req.ref then return b, nil, true end
         end
     end
 
@@ -246,7 +270,7 @@ function Bookie.PlaceBet(book, bettor, req, now)
     if m.status ~= "open" or now >= m.closesAt then return nil, "market_closed" end
     local sel = m.selections[req.selectionId]
     if not sel then return nil, "bad_selection" end
-    if not isCopper(req.stake) then return nil, "bad_stake" end
+    if not Odds.StakeCheck(req.stake) then return nil, "bad_stake" end   -- shared rule: whole silver, max 1g
     if req.odds ~= sel.odds then return nil, "odds_changed", sel.odds end
 
     if member.creditLimit then
@@ -299,7 +323,9 @@ end
 local function marketBets(book, marketId)
     local list = {}
     for _, b in pairs(book.bets) do
-        if b.marketId == marketId and b.status ~= "rejected" then list[#list + 1] = b end
+        -- A bet the bookie voided on its own (bet.voided) stays void when its market is settled
+        -- or voided later; only a market-level void is undone by re-settling.
+        if b.marketId == marketId and b.status ~= "rejected" and not b.voided then list[#list + 1] = b end
     end
     table.sort(list, function(a, c) return a.id < c.id end)
     return list
@@ -357,6 +383,7 @@ function Bookie.VoidBet(book, betId, now)
     if FINAL[b.status] then reverse(book, b) end
     if b.status ~= "accepted" then return nil, "bad_status" end
     resolve(book, b, "void", now)
+    b.voided = true      -- sticky: later Settle/VoidMarket on its market leave it alone
     touch(book)
     return b
 end
@@ -411,22 +438,27 @@ end
 
 -- State for one bettor (the SYNC payload, minus protocol envelope). Contains references into
 -- the book: serialize it, don't mutate it.
+-- Bets: this player's open bets, always, plus settled/void bets from the last BET_HISTORY_KEEP
+-- (a bet settled exactly that long ago is kept). The balance is absolute, so dropping old history
+-- never changes it. Markets: those that still take bets (open and before closesAt), plus every
+-- market one of the INCLUDED bets refers to, whatever its status (so My Bets can name the event).
+-- Games that have started or finished are never presented to bettors who did not bet on them.
+-- Why the cap: a SYNC grows ~260 bytes per bet and ChatThrottleLib moves ~800 bytes/s.
 function Bookie.Snapshot(book, player, now)
-    local markets, included = {}, {}
-    for id, m in pairs(book.markets) do
-        local live = m.status == "open" or m.status == "locked"
-        if live or (m.settledAt and m.settledAt >= now - SETTLED_KEEP) then
-            markets[#markets + 1] = m
-            included[id] = true
+    local bets, bettedOn = {}, {}
+    for _, b in pairs(book.bets) do
+        if b.bettor == player and (b.status == "accepted" or (b.settledAt or now) >= now - BET_HISTORY_KEEP) then
+            bets[#bets + 1] = b
+            bettedOn[b.marketId] = true
         end
     end
-    table.sort(markets, function(a, c) return a.id < c.id end)
-
-    local bets = {}
-    for _, b in pairs(book.bets) do
-        if b.bettor == player and included[b.marketId] then bets[#bets + 1] = b end
-    end
     table.sort(bets, function(a, c) return a.id < c.id end)
+
+    local markets = {}
+    for id, m in pairs(book.markets) do
+        if bettedOn[id] or Bookie.IsBettable(m, now) then markets[#markets + 1] = m end
+    end
+    table.sort(markets, function(a, c) return a.id < c.id end)
 
     local l = book.ledger[player]
     local payments = {}
@@ -444,6 +476,300 @@ function Bookie.Snapshot(book, player, now)
         payments = payments,
         creditLimit = member and member.creditLimit or nil,
     }
+end
+
+
+------------------------------------------------------------------------------------------
+-- Messages (SPEC §5, shapes in Protocol.lua). Still pure: nothing here sends anything.
+-- Handlers and builders return outbound messages for the Comm glue (UI/Bookie.lua) to send:
+--     { type = "BET_ACK", payload = { ... }, to = "Name" }
+-- `to = nil` means broadcast on the book channel. Glue does:
+--     Comm.Send(m.type, m.payload, book.code, m.to)
+-- Handle also returns a list of UI events: { kind = "join_request" | "bet" | "bet_rejected", ... }.
+------------------------------------------------------------------------------------------
+
+local function syncPayload(book, player, now)
+    local s = Bookie.Snapshot(book, player, now)
+    s.bookName = book.name
+    return s
+end
+
+-- Handle a message from a bettor. `sender` is the name Comm delivered it from (members are
+-- keyed by exactly that string); `payload` has already passed Protocol.Validate.
+-- Returns out, events.
+function Bookie.Handle(book, sender, msgType, payload, now)
+    local out, events = {}, {}
+    local function reply(t, p) out[#out + 1] = { type = t, payload = p, to = sender } end
+    local member = book.members[sender]
+    payload = payload or {}
+
+    if msgType == "JOIN_REQ" then
+        local known = member ~= nil
+        local status, err = Bookie.RequestJoin(book, sender, now)
+        if status == "active" then
+            reply("JOIN_OK", { bookName = book.name, ownerName = book.ownerName or "", rev = book.rev })
+        elseif status == "pending" then
+            -- no reply: the bettor waits until the bookie approves or denies
+            if not known then events[#events + 1] = { kind = "join_request", name = sender } end
+        else
+            reply("JOIN_DENY", { reason = err, ownerName = book.ownerName or "" })
+        end
+
+    elseif msgType == "SYNC_REQ" then
+        if member and member.status == "active" then
+            reply("SYNC", syncPayload(book, sender, now))
+        elseif member and member.status == "pending" then
+            -- ignored; the bettor stays "requested"
+        else
+            reply("JOIN_DENY", { reason = "not_member", ownerName = book.ownerName or "" })
+        end
+
+    elseif msgType == "BET_PLACE" then
+        local bet, reason, extra = Bookie.PlaceBet(book, sender, {
+            marketId = payload.marketId, selectionId = payload.selectionId,
+            stake = payload.stake, odds = payload.odds, ref = payload.ref,
+        }, now)
+        if bet then
+            reply("BET_ACK", { ref = payload.ref, bet = bet, balance = Bookie.Balance(book, sender) })
+            if not extra then events[#events + 1] = { kind = "bet", bet = bet } end   -- extra = repeat of an earlier ref
+        else
+            local r = { ref = payload.ref, reason = reason }
+            if reason == "odds_changed" then r.currentOdds = extra end
+            if reason == "credit_limit" then r.available = extra end
+            reply("BET_REJECT", r)
+            events[#events + 1] = { kind = "bet_rejected", name = sender, reason = reason }
+        end
+
+    elseif msgType == "PING" then
+        reply("PONG", { rev = book.rev })
+    end
+    return out, events
+end
+
+-- MARKET broadcast after AddMarket / EditMarket / Lock / Unlock / Settle / Void, and for each
+-- market SweepMarkets returns. The market is sent whole (status + result included).
+function Bookie.MarketMessage(book, market)
+    return { type = "MARKET", payload = { rev = book.rev, market = market } }
+end
+
+-- Names of the bettors touched by a Settle/VoidMarket result list (sorted, distinct).
+function Bookie.AffectedBettors(results)
+    local seen, names = {}, {}
+    for _, r in ipairs(results) do
+        if not seen[r.bet.bettor] then
+            seen[r.bet.bettor] = true
+            names[#names + 1] = r.bet.bettor
+        end
+    end
+    table.sort(names)
+    return names
+end
+
+-- A fresh full SYNC for each named bettor (active members only). Send these after a settle,
+-- void or bet correction: bet statuses and balances changed, and MARKET alone doesn't carry bets.
+function Bookie.SyncMessages(book, names, now)
+    local out = {}
+    for _, name in ipairs(names) do
+        local m = book.members[name]
+        if m and m.status == "active" then
+            out[#out + 1] = { type = "SYNC", payload = syncPayload(book, name, now), to = name }
+        end
+    end
+    return out
+end
+
+-- Small balance notice for one bettor, e.g. after RecordPayment. `note` is shown in chat.
+function Bookie.BalanceMessage(book, player, note)
+    return { type = "BALANCE", to = player,
+             payload = { rev = book.rev, balance = Bookie.Balance(book, player), note = note } }
+end
+
+
+------------------------------------------------------------------------------------------
+-- Form parsing for the window (pure, so it is testable). Errors are readable sentences.
+------------------------------------------------------------------------------------------
+
+local function trim(s) return (tostring(s or ""):match("^%s*(.-)%s*$")) end
+
+local function parseLine(s)
+    s = trim(s)
+    if not (s:match("^[+-]?%d+%.?%d*$") or s:match("^[+-]?%.%d+$")) then return nil end
+    return tonumber(s)
+end
+
+local ODDS_HELP = "Odds look like -110 or +150 (nothing between -99 and +99)."
+local LINE_HELP = "Line must be a number, e.g. -3.5 or 47.5."
+local CLOSE_HELP = "Closes in: use 30m, 2h, 1d or 1h30m."
+
+-- "30m", "2h", "1d", "1h30m" -> seconds. A bare number means minutes. nil if invalid or zero.
+function Bookie.ParseDuration(str)
+    if type(str) ~= "string" then return nil end
+    local s = str:lower():gsub("%s+", "")
+    if s == "" then return nil end
+    if s:match("^%d+$") then s = s .. "m" end
+    local mult = { d = 86400, h = 3600, m = 60 }
+    local total, pos, seen = 0, 1, {}
+    while pos <= #s do
+        local num, unit, nextPos = s:match("^(%d+)([dhm])()", pos)
+        if not num or seen[unit] then return nil end
+        seen[unit] = true
+        total = total + tonumber(num) * mult[unit]
+        pos = nextPos
+    end
+    if total <= 0 then return nil end
+    return total
+end
+
+-- f = { sport, event, type, line, label1, odds1, label2, odds2, closes } (all strings, from
+-- edit boxes; type is "moneyline"|"spread"|"total"; `closes` is a duration from now).
+-- Returns a spec for AddMarket, or nil, message.
+function Bookie.ParseMarketForm(f, now)
+    local event = trim(f.event)
+    if event == "" then return nil, "Event is required, e.g. PHI @ DAL." end
+    if not MARKET_TYPES[f.type] then return nil, "Pick a market type." end
+    local label1, label2 = trim(f.label1), trim(f.label2)
+    if label1 == "" or label2 == "" then return nil, "Both sides need a name." end
+    -- "|" starts an escape code in WoW text, and these names are shown in every bettor's window
+    if (trim(f.sport) .. event .. label1 .. label2):find("|", 1, true) then
+        return nil, "Names can't contain the | character."
+    end
+    if label1 == label2 then return nil, "The two sides need different names." end
+    local odds1, odds2 = Odds.Parse(f.odds1), Odds.Parse(f.odds2)
+    if not odds1 or not odds2 then return nil, ODDS_HELP end
+    local line
+    if f.type ~= "moneyline" then
+        line = parseLine(f.line)
+        if not line then return nil, LINE_HELP end
+    end
+    local secs = Bookie.ParseDuration(f.closes)
+    if not secs then return nil, CLOSE_HELP end
+    return {
+        sport = trim(f.sport), event = event, type = f.type, line = line, closesAt = now + secs,
+        selections = { { label = label1, odds = odds1 }, { label = label2, odds = odds2 } },
+    }
+end
+
+-- f = { odds1, odds2, line, closes }. Blank or unchanged fields are left alone.
+-- Returns a `changes` table for EditMarket, or nil, message.
+function Bookie.ParseEditForm(market, f, now)
+    local changes, odds = {}, {}
+    for i = 1, 2 do
+        local s = trim(f["odds" .. i])
+        if s ~= "" then
+            local v = Odds.Parse(s)
+            if not v then return nil, ODDS_HELP end
+            if v ~= market.selections[i].odds then odds[i] = v end
+        end
+    end
+    if next(odds) then changes.odds = odds end
+    if market.type ~= "moneyline" and trim(f.line) ~= "" then
+        local line = parseLine(f.line)
+        if not line then return nil, LINE_HELP end
+        if line ~= market.line then changes.line = line end
+    end
+    if trim(f.closes) ~= "" then
+        local secs = Bookie.ParseDuration(f.closes)
+        if not secs then return nil, CLOSE_HELP end
+        changes.closesAt = now + secs
+    end
+    if next(changes) == nil then return nil, "Nothing to change." end
+    return changes
+end
+
+-- Credit-limit input: blank = remove the limit. Returns copper, or nil (cleared), or false, message.
+function Bookie.ParseLimit(text, parseMoney)
+    if trim(text) == "" then return nil end
+    local c = parseMoney(text)
+    if not c or c <= 0 then return false, "Enter an amount like 50g, or leave blank for no limit." end
+    return c
+end
+
+
+------------------------------------------------------------------------------------------
+-- View helpers for the Ledger and Bets tabs (pure, so they are testable)
+------------------------------------------------------------------------------------------
+
+-- Payment input: copper, or false, message. (Unlike ParseLimit, blank is an error.)
+function Bookie.ParseAmount(text, parseMoney)
+    local c = parseMoney(text)
+    if not c or c <= 0 then return false, "Enter an amount like 250g or 12g 50s." end
+    return c
+end
+
+-- One row per player who matters to the ledger: active members, plus anyone with a balance,
+-- open bets or payment history. Biggest balances (either direction) first.
+-- Row: { name, status = member status or "unknown", balance, openRisk, payments = count }.
+-- balance < 0 means the player owes the book; > 0 means the book owes the player.
+function Bookie.LedgerRows(book)
+    local seen, rows = {}, {}
+    local function add(name)
+        if seen[name] then return end
+        seen[name] = true
+        local l, m = book.ledger[name], book.members[name]
+        local balance = l and l.balance or 0
+        local _, openRisk = Bookie.Credit(book, name)
+        local payments = l and #l.payments or 0
+        if (m and m.status == "active") or balance ~= 0 or openRisk > 0 or payments > 0 then
+            rows[#rows + 1] = { name = name, status = m and m.status or "unknown",
+                                balance = balance, openRisk = openRisk, payments = payments }
+        end
+    end
+    for name in pairs(book.members) do add(name) end
+    for name in pairs(book.ledger) do add(name) end
+    table.sort(rows, function(a, b)
+        local x, y = math.abs(a.balance), math.abs(b.balance)
+        if x ~= y then return x > y end
+        return a.name < b.name
+    end)
+    return rows
+end
+
+-- { owedToBook = what players owe you, owedByBook = what you owe players, net = owedToBook - owedByBook }
+function Bookie.LedgerTotals(book)
+    local toBook, byBook = 0, 0
+    for _, l in pairs(book.ledger) do
+        if l.balance < 0 then toBook = toBook - l.balance else byBook = byBook + l.balance end
+    end
+    return { owedToBook = toBook, owedByBook = byBook, net = toBook - byBook }
+end
+
+Bookie.BET_STATUSES = { "accepted", "won", "lost", "push", "void" }
+
+-- Bets matching filter = { status, bettor, marketId } (each optional), newest first.
+function Bookie.ListBets(book, filter)
+    filter = filter or {}
+    local list = {}
+    for _, b in pairs(book.bets) do
+        if (not filter.status or b.status == filter.status)
+           and (not filter.bettor or b.bettor == filter.bettor)
+           and (not filter.marketId or b.marketId == filter.marketId) then
+            list[#list + 1] = b
+        end
+    end
+    table.sort(list, function(a, b) return a.id > b.id end)
+    return list
+end
+
+-- Values the Bets tab can filter on: { bettors = sorted names, markets = ascending ids }.
+function Bookie.BetFilterChoices(book)
+    local bettors, markets, seenB, seenM = {}, {}, {}, {}
+    for _, b in pairs(book.bets) do
+        if not seenB[b.bettor] then seenB[b.bettor] = true; bettors[#bettors + 1] = b.bettor end
+        if not seenM[b.marketId] then seenM[b.marketId] = true; markets[#markets + 1] = b.marketId end
+    end
+    table.sort(bettors)
+    table.sort(markets)
+    return { bettors = bettors, markets = markets }
+end
+
+-- Next value in a cycle: nil -> list[1] -> list[2] ... -> nil. A value no longer in the list
+-- (e.g. the filtered bettor was removed) starts over at nil.
+function Bookie.CycleFilter(list, current)
+    if current == nil then return list[1] end
+    for i, v in ipairs(list) do
+        if v == current then return list[i + 1] end
+    end
+    return nil
 end
 
 return Bookie

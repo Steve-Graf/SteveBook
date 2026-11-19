@@ -36,8 +36,10 @@ function Model.GenerateCode(name, taken, rand)
     error("could not generate a unique join code")
 end
 
+-- "NFLK7Q2", " nfl k7q2 " and "NFL-K7Q2" are the same book: Protocol.CanonicalCode decides how a
+-- code is written. Protocol.lua loads before Model.lua (read at call time, not at load).
 function Model.NormalizeCode(code)
-    return ((code or ""):upper():gsub("%s", ""))
+    return ns.Protocol.CanonicalCode(code)
 end
 
 -- db = { books = { [id] = Book }, nextBookId = n, activeBook = id|nil }

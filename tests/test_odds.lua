@@ -76,4 +76,16 @@ eq(Odds.ParseMoney("1.5c"), nil, "fractional copper")
 eq(Odds.ParseMoney("-5g"), nil, "negative rejected")
 eq(Odds.ParseMoney(12), nil, "non-string")
 
+-- StakeCheck
+eq(Odds.StakeCheck(10000), true, "1g is allowed")
+eq(Odds.StakeCheck(2000), true, "20s is allowed")
+eq(Odds.StakeCheck(100), true, "1s is allowed")
+eq(select(2, Odds.StakeCheck(2010)), "bad_stake", "20s 10c is not whole silver")
+eq(select(2, Odds.StakeCheck(10)), "bad_stake", "10c is not whole silver")
+eq(select(2, Odds.StakeCheck(10100)), "bad_stake", "over 1g")
+eq(select(2, Odds.StakeCheck(0)), "bad_stake", "zero")
+eq(select(2, Odds.StakeCheck(-100)), "bad_stake", "negative")
+eq(select(2, Odds.StakeCheck(150.5)), "bad_stake", "fractional")
+eq(select(2, Odds.StakeCheck("20s")), "bad_stake", "non-number")
+
 if fails == 0 then print("odds: all tests passed") else os.exit(1) end

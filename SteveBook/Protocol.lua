@@ -15,7 +15,7 @@ Protocol.VERSION = 1
 Protocol.Spec = {
     JOIN_REQ   = { dir = "bettor", fields = {} },
     JOIN_OK    = { dir = "bookie", fields = { bookName = "string", ownerName = "string", rev = "number" } },
-    JOIN_DENY  = { dir = "bookie", fields = { reason = "string?" } },
+    JOIN_DENY  = { dir = "bookie", fields = { ownerName = "string", reason = "string?" } },   -- ownerName lets the bettor check who sent it
 
     SYNC_REQ   = { dir = "bettor", fields = { rev = "number" } },            -- last rev the bettor holds (0 if none)
     SYNC       = { dir = "bookie", fields = {
@@ -107,6 +107,40 @@ function Protocol.Unwrap(env, senderRole)
     local ok, err = Protocol.Validate(env.t, env.p)
     if not ok then return nil, err end
     return env.t, env.c, env.p
+end
+
+-- Hidden channel name for a book code, e.g. "NFL-K7Q2" -> "SBNFLK7Q2".
+function Protocol.ChannelName(code)
+    return "SB" .. (code or ""):upper():gsub("[^A-Z0-9]", "")
+end
+
+-- Should this client act on an incoming message? Bettor->bookie messages are for the book's
+-- owner only; bookie->bettor messages are for everyone else. `isOwner` = I run this book.
+function Protocol.ShouldDeliver(msgType, isOwner)
+    local spec = Protocol.Spec[msgType]
+    if not spec then return false end
+    if spec.dir == "bettor" then return isOwner and true or false end
+    if spec.dir == "bookie" then return not isOwner end
+    return true
+end
+
+-- Strip the realm from "Name-Realm" when it is the player's own realm, so the same player is
+-- always the same string. `myRealm` is the normalized realm name (no spaces).
+function Protocol.NormalizeName(name, myRealm)
+    if type(name) ~= "string" then return name end
+    local base, realm = name:match("^([^%-]+)%-(.+)$")
+    if base and myRealm and realm:gsub("%s", ""):lower() == myRealm:gsub("%s", ""):lower() then
+        return base
+    end
+    return name
+end
+
+-- Canonical join code: uppercase letters and digits, written NNN-NNNN when it has 7 characters,
+-- so "nflk7q2", "NFL K7Q2" and "NFL-K7Q2" are the same book everywhere.
+function Protocol.CanonicalCode(code)
+    local s = ((code or ""):upper():gsub("[^A-Z0-9]", ""))
+    if #s == 7 then return s:sub(1, 3) .. "-" .. s:sub(4) end
+    return s
 end
 
 return Protocol

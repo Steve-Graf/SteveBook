@@ -1,6 +1,7 @@
 -- Run from repo root: lua tests/test_bettor_cache.lua
 local ns = {}
 assert(loadfile("SteveBook/Odds.lua"))("SteveBook", ns)
+assert(loadfile("SteveBook/Protocol.lua"))("SteveBook", ns)
 local Cache = assert(loadfile("SteveBook/Cache.lua"))("SteveBook", ns)
 
 local fails = 0
@@ -66,7 +67,8 @@ Cache.MarkPong(s, "NFL-ABCD", NOW + 150)
 ok, why = Cache.CanBet(s, "NFL-ABCD", 2, NOW + 150)
 check(not ok and why == "market_closed", "closed by time")
 ok, why = Cache.CanBet(s, "NFL-ABCD", 4, NOW)
-check(not ok and why == "market_closed", "settled market")
+check(not ok and why == "no_market", "settled market with no bet of mine was dropped at SYNC")
+check(Cache.Book(s, "NFL-ABCD").markets[4] == nil, "closed market without my bets is not kept by SYNC")
 ok, why = Cache.CanBet(s, "NFL-ABCD", 77, NOW)
 check(not ok and why == "no_market", "unknown market")
 
@@ -119,26 +121,74 @@ b.balance = -5000
 check(Cache.CreditAvailable(s, "NFL-ABCD") == 0, "credit available never negative")
 check(Cache.SelectionLabel(b.markets[3], 2) == "B" and Cache.SelectionLabel(nil, 2) == "#2", "selection label fallback")
 
--- Grading from MARKET results.
+-- MARKET returns the previous market and never touches bets (outcomes arrive by SYNC).
 do
     local gs = Cache.NewStore()
     Cache.ApplySync(gs, "G-1", { rev = 1, balance = 0, markets = { mkt(1, "NFL", "e", "moneyline", NOW + 9) },
-        bets = { { id = 1, ref = "a", marketId = 1, selectionId = 1, stake = 100, odds = -110, status = "accepted", placedAt = 1 },
-                 { id = 2, ref = "b", marketId = 1, selectionId = 2, stake = 100, odds = 100, status = "accepted", placedAt = 2 },
-                 { id = 3, ref = "c", marketId = 1, selectionId = 2, stake = 100, odds = 100, status = "void", placedAt = 3 } } }, NOW)
+        bets = { { id = 1, ref = "a", marketId = 1, selectionId = 1, stake = 100, odds = -110, status = "accepted", placedAt = 1 } } }, NOW)
     local g = Cache.Book(gs, "G-1")
     local m = mkt(1, "NFL", "e", "moneyline", NOW + 9, "settled"); m.result = 1
-    Cache.ApplyMarket(gs, "G-1", m)
-    check(g.bets[1].status == "won" and g.bets[2].status == "lost" and g.bets[3].status == "void", "settle grades my bets, keeps voided bet")
-    m = mkt(1, "NFL", "e", "moneyline", NOW + 9, "settled"); m.result = "push"
-    Cache.ApplyMarket(gs, "G-1", m)
-    check(g.bets[1].status == "push" and g.bets[2].status == "push", "re-settle as push")
-    Cache.ApplyMarket(gs, "G-1", mkt(1, "NFL", "e", "moneyline", NOW + 9, "void"))
-    check(g.bets[1].status == "void" and g.bets[2].status == "void", "void market voids bets")
-    local _, old = Cache.ApplyMarket(gs, "G-1", mkt(1, "NFL", "e", "moneyline", NOW + 9, "locked"))
-    check(old and old.status == "void" and g.bets[1].status == "void", "ApplyMarket returns the previous market")
-    local m5 = mkt(5, "NFL", "e", "moneyline", NOW + 9)
-    check(select(2, Cache.ApplyMarket(gs, "G-1", m5)) == nil, "new market has no previous")
+    local _, old = Cache.ApplyMarket(gs, "G-1", m)
+    check(old and old.status == "open" and g.markets[1] == m, "ApplyMarket returns the previous market")
+    check(g.bets[1].status == "accepted", "MARKET does not grade bets")
+    check(select(2, Cache.ApplyMarket(gs, "G-1", mkt(5, "NFL", "e", "moneyline", NOW + 9))) == nil, "new market has no previous")
+end
+
+-- Closed games: not accepted by MARKET unless held, kept when I have bets, dropped by SYNC otherwise.
+do
+    local cs = Cache.NewStore()
+    Cache.ApplySync(cs, "C-1", { rev = 1, balance = 0, markets = {}, bets = {} }, NOW)
+    local cb = Cache.Book(cs, "C-1")
+    for _, st in ipairs({ "locked", "settled", "void" }) do
+        Cache.ApplyMarket(cs, "C-1", mkt(10, "NFL", "x", "moneyline", NOW + 100, st), NOW)
+    end
+    check(next(cb.markets) == nil, "unknown locked/settled/void markets are ignored")
+    Cache.ApplyMarket(cs, "C-1", mkt(11, "NFL", "x", "moneyline", NOW - 1), NOW)
+    check(cb.markets[11] == nil, "unknown open market past its start time is ignored")
+    Cache.ApplyMarket(cs, "C-1", mkt(11, "NFL", "x", "moneyline", NOW - 1))
+    check(cb.markets[11] ~= nil, "without `now`, only the status counts")
+    cb.markets[11] = nil
+
+    Cache.ApplyMarket(cs, "C-1", mkt(12, "NFL", "PHI @ DAL", "moneyline", NOW + 100), NOW)
+    check(cb.markets[12] ~= nil, "unknown open market is accepted")
+    Cache.ApplyMarket(cs, "C-1", mkt(12, "NFL", "PHI @ DAL", "moneyline", NOW + 100, "locked"), NOW)
+    check(cb.markets[12] and cb.markets[12].status == "locked", "a held market still updates when it locks")
+
+    -- A market I have a bet on is accepted even if closed, so My Bets can show the result.
+    cb.bets[1] = { id = 1, ref = "a", marketId = 13, selectionId = 1, stake = 100, odds = -110, status = "accepted", placedAt = NOW - 50 }
+    local settled = mkt(13, "NFL", "NYG @ WAS", "moneyline", NOW - 10, "settled"); settled.result = 1
+    Cache.ApplyMarket(cs, "C-1", settled, NOW)
+    check(cb.markets[13] == settled, "closed market with a bet of mine is accepted")
+    local row = Cache.MyBets(cs, "C-1").open[1]
+    check(row and row.market and row.market.event == "NYG @ WAS", "My Bets still shows the finished game")
+    check(#Cache.Lines(cs, "C-1", NOW) == 0, "finished and started games are not in Lines")
+
+    -- Pending bets count as holding the market too.
+    Cache.NewPending(cs, "C-1", { ref = "p", marketId = 14, selectionId = 1, stake = 100, odds = -110 }, NOW)
+    Cache.ApplyMarket(cs, "C-1", mkt(14, "NFL", "z", "moneyline", NOW - 5, "locked"), NOW)
+    check(cb.markets[14] ~= nil, "market with a pending bet is accepted")
+
+    -- SYNC keeps closed markets I bet on, drops the other closed ones.
+    Cache.ApplySync(cs, "C-1", { rev = 2, balance = 0,
+        markets = { mkt(20, "NFL", "a", "moneyline", NOW - 10, "settled"), settled, mkt(21, "NFL", "b", "moneyline", NOW + 100, "locked"),
+                    mkt(22, "NFL", "c", "moneyline", NOW - 1), mkt(23, "NFL", "d", "moneyline", NOW + 100), mkt(14, "NFL", "z", "moneyline", NOW - 5, "locked") },
+        bets = { cb.bets[1] } }, NOW)
+    check(cb.markets[13] and cb.markets[14] and cb.markets[23], "SYNC keeps markets I bet on and open ones")
+    check(not cb.markets[20] and not cb.markets[21] and not cb.markets[22], "SYNC drops closed markets without my bets")
+    local cok, cwhy = Cache.CanBet(cs, "C-1", 23, NOW + 101)
+    check(not cok, "cannot bet once the start time passes")
+    check(Cache.ReasonText("market_closed") == "This game has started.", "reason text")
+end
+
+-- A bet whose market was not sent (the bookie only sends markets of the bets it includes).
+check(Cache.EventName(nil) == "Game no longer listed" and Cache.EventName({ event = "A @ B" }) == "A @ B", "EventName fallback")
+do
+    local ms = Cache.NewStore()
+    Cache.ApplySync(ms, "M-1", { rev = 1, balance = 0, markets = {}, bets = {
+        { id = 1, marketId = 404, selectionId = 1, stake = 100, odds = -110, status = "lost", placedAt = 1, delta = -100 } } }, NOW)
+    local row = Cache.MyBets(ms, "M-1").settled[1]
+    check(row and row.market == nil and row.status == "lost" and Cache.BetDelta(row) == -100, "My Bets row works without its market")
+    check(Cache.SelectionText(row.market, row.selectionId) == "#1", "selection text without a market")
 end
 
 -- Display helpers.
@@ -158,6 +208,22 @@ check(Cache.BetDelta({ status = "won", stake = 1000, odds = -110, delta = 5 }) =
 local pb = Cache.SetMembership(s, "NFL-ABCD", true, nil, "Bookie")
 check(Cache.MarkPong(s, "NFL-ABCD", 5, "Mallory") == nil and pb.lastPong ~= 5, "PONG from non-owner ignored")
 check(Cache.MarkPong(s, "NFL-ABCD", 5, "Bookie") and pb.lastPong == 5, "PONG from owner counts")
+
+-- Selections are found by id, not position.
+local odd = { type = "moneyline", selections = { { id = 2, label = "B" }, { id = 1, label = "A" } } }
+check(Cache.SelectionLabel(odd, 1) == "A" and Cache.SelectionLabel(odd, 2) == "B" and Cache.Selection(odd, 3) == nil, "selection lookup by id")
+
+-- Join codes: typed without the hyphen or with spaces, they match the bookie's code.
+for _, typed in ipairs({ "NFLK7Q2", "nfl k7q2", " NFL-K7Q2 ", "nfl-k7q2" }) do
+    check(Cache.NormalizeCode(typed) == "NFL-K7Q2", "NormalizeCode(" .. typed .. ")")
+end
+check(Cache.IsValidCode("nflk7q2") and Cache.IsValidCode("NFL-K7Q2"), "valid codes")
+check(not Cache.IsValidCode("") and not Cache.IsValidCode("NFL") and not Cache.IsValidCode("NFLK7Q2X"), "invalid codes")
+do
+    local cs = Cache.NewStore()
+    local cb = Cache.RequestJoin(cs, "nflk7q2")
+    check(cb.code == "NFL-K7Q2" and Cache.Book(cs, "NFL K7Q2") == cb and Cache.Book(cs, "NFL-K7Q2") == cb, "books are keyed by the canonical code")
+end
 
 -- Books.
 Cache.RequestJoin(s, "AAA-1111")

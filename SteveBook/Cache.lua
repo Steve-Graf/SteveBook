@@ -27,8 +27,12 @@ local PENDING_EXPIRE = 120   -- seconds before an unanswered request is dropped 
 
 Cache.PONG_TTL = PONG_TTL
 
-local function normalize(code) return ((code or ""):upper():gsub("%s", "")) end
+-- "nflk7q2", "nfl k7q2" and "NFL-K7Q2" are all the same book (Protocol.CanonicalCode).
+local function normalize(code) return ns.Protocol.CanonicalCode(code) end
 Cache.NormalizeCode = normalize
+
+-- True if `code` (after normalizing) looks like a join code: 3 letters/digits, hyphen, 4.
+function Cache.IsValidCode(code) return normalize(code):match("^[A-Z0-9][A-Z0-9][A-Z0-9]%-[A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]$") ~= nil end
 
 function Cache.NewStore()
     return { books = {} }
@@ -88,6 +92,18 @@ end
 -- SYNC: replace markets, bets, balance, payments and limit wholesale. Local pending bets
 -- survive unless the snapshot already contains a bet with the same ref (it was accepted).
 -- snap = { rev, markets = {Market...}, bets = {Bet...}, balance, payments, creditLimit }
+-- A game that has started (past closesAt, the game's start) or is finished (locked, settled
+-- or void) takes no bets and is not shown in Lines. `now` may be nil to judge by status only.
+function Cache.IsClosed(market, now)
+    return market.status ~= "open" or (now ~= nil and now >= market.closesAt)
+end
+
+local function holdsBet(b, marketId)
+    for _, bet in pairs(b.bets) do if bet.marketId == marketId then return true end end
+    for _, bet in pairs(b.pending) do if bet.marketId == marketId then return true end end
+    return false
+end
+
 function Cache.ApplySync(store, code, snap, now)
     local b = Cache.Book(store, code, true)
     b.status = "active"
@@ -99,6 +115,10 @@ function Cache.ApplySync(store, code, snap, now)
         local id = bet.ref
         if id ~= nil then b.pending[id] = nil end
     end
+    -- Closed games nobody here bet on are not worth keeping (My Bets needs the ones I bet on).
+    for id, m in pairs(b.markets) do
+        if Cache.IsClosed(m, now) and not holdsBet(b, id) then b.markets[id] = nil end
+    end
     b.balance = snap.balance or 0
     b.payments = snap.payments or {}
     b.creditLimit = snap.creditLimit
@@ -106,33 +126,17 @@ function Cache.ApplySync(store, code, snap, now)
     return b
 end
 
--- Status my bet should have given its market. The result is public (market.result is the
--- winning selection id or "push"), so the bettor can grade without waiting for a SYNC.
--- Individually voided bets (status "void") are left alone unless the whole market is void.
-function Cache.GradeBet(market, bet)
-    local st = bet.status
-    if st ~= "accepted" and st ~= "won" and st ~= "lost" and st ~= "push" and st ~= "void" then return st end
-    if market.status == "void" then return "void" end
-    if st == "void" then return st end
-    if market.status == "settled" then
-        if market.result == "push" then return "push" end
-        return market.result == bet.selectionId and "won" or "lost"
-    end
-    return "accepted"
-end
-
--- MARKET: one full Market table (new, edited, locked, settled or void). Re-grades my bets on
--- it. Returns the BookCache and the previous market (or nil) so callers can spot transitions.
-function Cache.ApplyMarket(store, code, market)
+-- MARKET: one full Market table (new, edited, locked, settled or void). It carries no bets:
+-- the bookie follows a settle/void/correction with a full SYNC, which is how my bet outcomes
+-- arrive. Returns the BookCache and the previous market (or nil) to spot transitions.
+-- A closed game (see IsClosed) is ignored unless I already hold the market or have a bet on
+-- it, so closed games never enter the cache; held ones still update (a settled result must
+-- reach My Bets). `now` is optional.
+function Cache.ApplyMarket(store, code, market, now)
     local b = Cache.Book(store, code, true)
     local old = b.markets[market.id]
+    if not old and Cache.IsClosed(market, now) and not holdsBet(b, market.id) then return b, nil end
     b.markets[market.id] = market
-    for _, bet in pairs(b.bets) do
-        if bet.marketId == market.id then
-            local st = Cache.GradeBet(market, bet)
-            if st ~= bet.status then bet.status, bet.delta, bet.settledAt = st, nil, nil end
-        end
-    end
     return b, old
 end
 
@@ -220,7 +224,7 @@ function Cache.CanBet(store, code, marketId, now)
     if not Cache.IsOnline(store, code, now) then return false, "offline" end
     local m = b.markets[marketId]
     if not m then return false, "no_market" end
-    if m.status ~= "open" or now >= m.closesAt then return false, "market_closed" end
+    if Cache.IsClosed(m, now) then return false, "market_closed" end
     return true
 end
 
@@ -293,10 +297,23 @@ function Cache.MyBets(store, code)
     return out
 end
 
+-- The selection with this id (ids are not array positions), or nil.
+function Cache.Selection(market, selectionId)
+    for _, sel in ipairs(market and market.selections or {}) do
+        if sel.id == selectionId then return sel end
+    end
+end
+
 -- Selection label for a bet, falling back when the market isn't cached.
 function Cache.SelectionLabel(market, selectionId)
-    local s = market and market.selections and market.selections[selectionId]
+    local s = Cache.Selection(market, selectionId)
     return s and s.label or ("#" .. tostring(selectionId))
+end
+
+-- Event name for a bet row. The bookie sends a settled bet's market only while it sends the
+-- bet, so a market can be missing.
+function Cache.EventName(market)
+    return market and market.event or "Game no longer listed"
 end
 
 -- Total copper at risk in accepted + pending bets.
@@ -342,12 +359,12 @@ end
 
 local REASONS = {
     not_member = "You are not an approved member of this book.",
-    market_closed = "That market is closed.",
+    market_closed = "This game has started.",
     market_unknown = "That market no longer exists.",
     no_market = "That market no longer exists.",
     selection_unknown = "That selection no longer exists.",
     bad_selection = "That selection no longer exists.",
-    bad_stake = "Invalid stake.",
+    bad_stake = "Invalid stake. Stakes are whole silver, from 1s up to the book maximum.",
     bad_request = "The bookie could not read that request.",
     odds_changed = "The odds changed.",
     credit_limit = "That bet is over your credit limit.",

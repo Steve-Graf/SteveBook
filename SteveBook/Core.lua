@@ -12,6 +12,8 @@ local function help()
     say("/book new <name>   create a book (generates a join code)")
     say("/book list         list your books")
     say("/book use <# or code>  choose the active book")
+    say("/book bookie       open the bookie window")
+    say("/book bet          open the bettor window")
     say("/book              show the active book")
 end
 
@@ -23,6 +25,7 @@ local function handle(msg)
     if cmd == "new" then
         local b, err = Model.CreateBook(db, rest, UnitName("player"), GetServerTime())
         if not b then return say(err) end
+        if ns.Comm then ns.Comm.JoinBook(b.code) end
         say("Created " .. describe(b) .. ". Share the code with friends.")
     elseif cmd == "list" then
         local books = Model.ListBooks(db)
@@ -35,6 +38,9 @@ local function handle(msg)
         local b, err = Model.PickBook(db, rest)
         if not b then return say(err) end
         say("Active book: " .. describe(b))
+    elseif cmd == "bookie" or cmd == "bet" then
+        local ui = ns.UI and ns.UI[cmd == "bookie" and "Bookie" or "Bettor"]
+        if ui and ui.Toggle then ui.Toggle() else say("That window is not available yet.") end
     elseif cmd == "" then
         local b = Model.ActiveBook(db)
         if b then say("Active book: " .. describe(b)) else help() end

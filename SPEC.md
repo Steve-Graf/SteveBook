@@ -61,12 +61,19 @@ Rounding: always floor profit to whole copper. Keep the math in one pure functio
   the balance toward zero. v1 records payments manually from the Ledger tab.
 - Optional per-bettor **credit limit** (max negative balance + open risk). Default: none.
   When set, the book rejects bets that would exceed it.
+- **Stake limits** (v1 starting values): a stake is a whole number of silver and at most 1g,
+  for example 20s, 50s or 1g. The constants live in `Odds.lua` (`MAX_STAKE`, `STAKE_STEP`,
+  `StakeCheck`) so the bookie and the bet slip share one rule. Raise them there when the
+  group is comfortable.
 - Stretch: watch the trade window (trade with a member, money changes hands) and offer
   "Record this as a settle-up payment?" automatically.
 
 ---
 
 ## 4. Data model (bookie's SavedVariables are the source of truth)
+
+Saved data is per character (`SavedVariablesPerCharacter`): a book belongs to the character that
+created it, and each character keeps its own bettor cache.
 
 ```
 Book {
@@ -132,9 +139,22 @@ not cheating.)
 
 Rules:
 - Reject BET_PLACE if the market is not open, past `closesAt`, the bettor isn't active, the
-  stake is ≤ 0, it breaks the credit limit, or the odds the bettor saw differ from current odds
+  stake is ≤ 0 or breaks the stake limits (§3, reason `bad_stake`), it breaks the credit limit, or the odds the bettor saw differ from current odds
   (return current odds so the UI can re-confirm).
+- **Games that have started or finished are closed to betting and hidden from bettors.**
+  `closesAt` is the game's start. From that moment (and whenever a market is locked, settled or
+  voided) the bookie rejects BET_PLACE with `market_closed`, and the bettor's Lines view does not
+  list the market. A market past `closesAt` can never be reopened or have its close time extended;
+  only Settle and Void remain. Bettors keep only the closed markets their own bets belong to
+  (for My Bets). The bookie may still Lock a market early, and Unlock it again before `closesAt`.
 - Bets can only be placed while the bookie is online (Place Bet disabled when no recent PONG).
+- **SYNC size:** the bettor's balance is absolute, so old history is not needed for correctness.
+  A SYNC carries the bettor's open bets, their settled bets from the last 14 days, and the
+  markets those bets refer to (plus all open markets). Older settled bets drop out of My Bets.
+- **Trust model:** friends only. Clients can be modified. The bettor pins the first sender whose
+  JOIN_OK names themself as the owner; after that, only that sender's bookie messages count.
+  A third party who answers a pending join request before the real bookie could still be
+  pinned. There is no shared secret in v1; if that matters later, derive a key from the join code.
 - Messages over 255 bytes must be chunked; sends must be throttled. Use AceComm-3.0 +
   AceSerializer-3.0 (or LibSerialize + LibDeflate) rather than hand-rolling, vendored into
   `Libs/`.
@@ -181,8 +201,11 @@ TOTAL|NFL|PHI @ DAL|2026-11-26T16:30-05:00|47.5|Over:-110|Under:-110
 
 - Spread line applies to the first selection (the other side is the opposite).
 - Lines starting with `#` are comments. Invalid lines are reported, not imported.
+- Close times need a UTC offset or `Z`. Markets whose close time has passed, and duplicates of
+  an existing market or an earlier line (same type, event, close time and line), are skipped
+  and reported. Market and side names cannot contain `|` (it is a WoW text escape).
 - Optionally wrap the whole block with a `GB1:` prefix + base64 later, if pasting raw text proves
-  fragile.
+  fragile. Not supported yet: such a block is reported as unsupported.
 
 ---
 
