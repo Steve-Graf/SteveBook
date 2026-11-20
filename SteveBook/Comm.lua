@@ -60,13 +60,20 @@ function Comm.Me() return myName() end
 
 local function baseName(name) return type(name) == "string" and name:match("^([^%-]+)") or name end
 
+-- One spelling per player. In Forever the sender of an addon message arrives as "Tuesday lol" or
+-- "Steve Spinebreaker" (a space and a second word) while UnitName("player") is just "Tuesday" or
+-- "Steve", so compare on the first word. Names with a "-Realm" suffix keep it.
 local function normalize(name)
+    local n
     if Ambiguate then
-        local ok, n = pcall(Ambiguate, name, "none")
-        if ok and n then return n end
+        local ok, r = pcall(Ambiguate, name, "none")
+        if ok and r then n = r end
     end
-    return Protocol.NormalizeName(name, myRealm())
+    n = n or Protocol.NormalizeName(name, myRealm())
+    if type(n) == "string" and not n:find("-", 1, true) then n = n:match("^(%S+)") or n end
+    return n
 end
+Comm.NormalizeName = normalize
 
 local function isOwner(code)
     local db = SteveBookDB

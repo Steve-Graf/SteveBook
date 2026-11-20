@@ -160,6 +160,12 @@ other's balances and bets on the wire, which fits the friends-only trust model b
 bettor side appears to the bookie as the member `Loopback`, whom you approve). It is a test aid;
 leave it off for real play.
 
+**Player names:** in Forever the sender of an addon message arrives as "Tuesday lol" or "Steve
+Spinebreaker" (a space and a second word) while `UnitName("player")` returns only "Tuesday" or
+"Steve". `Comm` reduces every sender and every `to` to the first word (names with a `-Realm` suffix
+keep it), so members, owners and addresses are all the short form. Two friends who share a first
+name would collide; revisit if that ever happens.
+
 **Authority:** the bookie's client validates everything. Bettor clients only *request*.
 (These are friends; clients can be modified, so this is about preventing mistakes and races,
 not cheating.)

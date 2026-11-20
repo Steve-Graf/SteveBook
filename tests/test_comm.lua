@@ -467,4 +467,29 @@ do
     eq(send(nil), 1, "no address (everyone): delivered")
 end
 
+------------------------------------------------------------------------------------------
+-- 10. Forever sender names look like "Tuesday lol" while UnitName("player") is "Tuesday"
+------------------------------------------------------------------------------------------
+do
+    eq(Comm.NormalizeName("Tuesday lol"), "Tuesday", "a spaced sender name is reduced to the first word")
+    eq(Comm.NormalizeName("Steve Spinebreaker"), "Steve", "second example")
+    eq(Comm.NormalizeName("Real-Realm"), "Real", "same-realm suffix still stripped")
+    eq(Comm.NormalizeName("Bob-Other Realm"), "Bob-Other Realm", "other-realm names keep their suffix")
+    local code = "SPC-0001"
+    local function send(sender, to)
+        local env = assert(Protocol.Wrap("JOIN_DENY", code, { ownerName = "Steve", reason = "denied" }))
+        env.to = to
+        drainSeen()
+        stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "CHANNEL", sender)
+        return drainSeen()
+    end
+    local got = send("Steve Spinebreaker", "Tester lol")
+    eq(#got, 1, "a reply addressed to 'Tester lol' reaches the player Tester")
+    eq(got[1] and got[1].sender, "Steve", "the sender is delivered as 'Steve'")
+    eq(#send("Steve Spinebreaker", "Someone Else"), 0, "a reply for another player is dropped")
+    -- our own echo arrives under our spaced name and must be recognised as ours
+    stub.player = "Tester"
+    eq(#send("Tester lol", nil), 0, "our own spaced-name echo is ignored")
+end
+
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end
