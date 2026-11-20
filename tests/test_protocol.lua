@@ -72,4 +72,14 @@ do
     check(P.Wrap("BET_REJECT", "X", { ref = "l1", reason = "odds_changed", currentOdds = -110, currentLine = -4.5 }), "odds_changed can carry currentLine")
 end
 
+-- group bets
+do
+    check(P.Wrap("BETS_REQ", "X", {}), "BETS_REQ is an empty request")
+    check(P.ShouldDeliver("BETS_REQ", true) and not P.ShouldDeliver("BETS_REQ", false), "BETS_REQ goes to the owner")
+    check(P.Wrap("BETS", "X", { rev = 3, bets = { { id = 1, who = "Bob", text = "LAL +5.5 -110, LAL @ BOS", stake = 2000, status = "accepted", at = 5 } } }), "BETS with an entry")
+    check(P.Wrap("BETS", "X", { rev = 3, bets = {} }), "BETS may be empty")
+    check(not P.Wrap("BETS", "X", { rev = 3, bets = { { who = "Bob" } } }), "a malformed BETS entry is rejected")
+    check(P.ShouldDeliver("BETS", false) and not P.ShouldDeliver("BETS", true), "BETS goes to bettors")
+end
+
 if fails == 0 then print("protocol: all tests passed") else os.exit(1) end

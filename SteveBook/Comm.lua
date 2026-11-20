@@ -23,6 +23,7 @@ ns.Comm = Comm
 local PREFIX = "SteveBook"          -- addon message prefix (<= 16 chars)
 local AceComm = LibStub("AceComm-3.0")
 local AceSer = LibStub("AceSerializer-3.0")
+local LibDeflate = LibStub("LibDeflate", true)        -- optional: without it messages go uncompressed
 AceComm:Embed(Comm)
 
 local handlers = {}                 -- msgType -> { fn, ... }
@@ -31,13 +32,39 @@ local joined = {}                   -- code -> true while we want to be in the c
 local lastTry = {}                  -- code -> GetTime() of the last JoinTemporaryChannel call
 local attempts = {}                 -- code -> join attempts since the channel was last up
 local MAX_QUEUE = 20
+-- Big messages (a SYNC of a whole book is ~200 bytes per market) are deflated before they are
+-- chunked: ChatThrottleLib moves only ~800 bytes a second, and this text compresses ~10x.
+-- The wire form is "ZD1" .. encoded bytes; plain AceSerializer text starts with "^1".
+Comm.Compress = true
+local COMPRESS_MIN = 200
+local ZMARK = "ZD1"
+
+local function pack(text)
+    if not (Comm.Compress and LibDeflate) or #text < COMPRESS_MIN then return text end
+    local ok, z = pcall(LibDeflate.CompressDeflate, LibDeflate, text, { level = 6 })
+    if not (ok and z) then return text end
+    local ok2, enc = pcall(LibDeflate.EncodeForWoWAddonChannel, LibDeflate, z)
+    if not (ok2 and enc) then return text end
+    local wire = ZMARK .. enc
+    return #wire < #text and wire or text
+end
+
+local function unpack_(message)
+    if type(message) ~= "string" or message:sub(1, #ZMARK) ~= ZMARK then return message end
+    if not LibDeflate then return nil end
+    local ok, z = pcall(LibDeflate.DecodeForWoWAddonChannel, LibDeflate, message:sub(#ZMARK + 1))
+    if not (ok and z) then return nil end
+    local ok2, text = pcall(LibDeflate.DecompressDeflate, LibDeflate, z)
+    if not (ok2 and text) then return nil end
+    return text
+end
 local JOIN_RETRY_SECONDS = 5        -- minimum gap between join attempts for one channel
 local MAX_JOIN_ATTEMPTS = 6         -- then give up, drop the queue and tell the player
 
 -- Acks and presence jump ahead of bulk syncs (ChatThrottleLib services priorities separately).
 local PRIORITY = {
     JOIN_OK = "ALERT", JOIN_DENY = "ALERT", BET_ACK = "ALERT", BET_REJECT = "ALERT",
-    PING = "ALERT", PONG = "ALERT", SYNC = "BULK",
+    PING = "ALERT", PONG = "ALERT", SYNC = "BULK", BETS = "BULK",
 }
 
 local function say(msg) print("|cffffd100SteveBook:|r " .. msg) end
@@ -163,7 +190,7 @@ end
 -- member LOOPBACK_NAME, so approve that member.
 local LOOPBACK_NAME = "Loopback"
 Comm.LOOPBACK_NAME = LOOPBACK_NAME
-local BETTOR_ORIGIN = { JOIN_REQ = true, SYNC_REQ = true, BET_PLACE = true, PING = true }
+local BETTOR_ORIGIN = { JOIN_REQ = true, SYNC_REQ = true, BET_PLACE = true, BETS_REQ = true, PING = true }
 
 function Comm.LoopbackActive(code)
     local db = SteveBookDB
@@ -242,9 +269,11 @@ function Comm.Send(msgType, payload, bookCode, target)
     local sok, text = pcall(AceSer.Serialize, AceSer, env)
     if not sok then return false, tostring(text) end
     local prio = PRIORITY[msgType]
-    dbg(msgType, "send %s book %s to %s on channel #%s (%d bytes)", msgType, bookCode, env.to or "everyone",
-        channelId(bookCode), #text)
+    local wire = pack(text)
+    dbg(msgType, "send %s book %s to %s on channel #%s (%d bytes, %d on the wire)", msgType, bookCode,
+        env.to or "everyone", channelId(bookCode), #text, #wire)
     if Comm.LoopbackActive(bookCode) then loopback(text, msgType, bookCode, env.to) end
+    text = wire
     -- pcall returns (ok, rawSend's first result, rawSend's second result)
     local ok, sent, serr = pcall(rawSend, text, bookCode, prio)
     if not ok then return false, tostring(sent) end
@@ -266,6 +295,8 @@ end
 
 Comm:RegisterComm(PREFIX, function(_, message, distribution, sender)
     local sent = normalize(sender)
+    message = unpack_(message)
+    if not message then return dbg(nil, "dropped a compressed message from %s that did not decompress", sent) end
     local ok, env = AceSer:Deserialize(message)
     local label = ok and type(env) == "table" and env.t or "?"
     if sent == myName() then                                   -- our own channel echo

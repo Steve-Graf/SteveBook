@@ -44,7 +44,7 @@ ChatFrame_RemoveChannel = function(_, name) removed[#removed + 1] = name end
 -- ---- load the libs and the addon files in .toc order --------------------------------------------
 for _, p in ipairs({ "Libs/LibStub/LibStub.lua", "Libs/CallbackHandler-1.0/CallbackHandler-1.0.lua",
                      "Libs/AceComm-3.0/ChatThrottleLib.lua", "Libs/AceComm-3.0/AceComm-3.0.lua",
-                     "Libs/AceSerializer-3.0/AceSerializer-3.0.lua" }) do
+                     "Libs/AceSerializer-3.0/AceSerializer-3.0.lua", "Libs/LibDeflate/LibDeflate.lua" }) do
     assert(loadfile(DIR .. p))()
 end
 local ns = {}
@@ -162,6 +162,7 @@ end
 do
     stub.addonMessages = {}
     stub.channels[Protocol.ChannelName("ORD-0001")] = 9
+    Comm.Compress = false      -- this test is about chunk order, so keep the SYNC big
     local markets = {}
     for i = 1, 40 do
         markets[i] = { id = i, sport = "NFL", event = "Team" .. i .. " @ Other" .. i, type = "spread", line = -3.5,
@@ -183,6 +184,8 @@ do
     check(iAck ~= nil, "the BET_ACK was sent")
     check(iAck and iAck <= n - 10, "BET_ACK jumps ahead of the SYNC's remaining chunks (position " .. tostring(iAck) .. " of " .. n .. ")")
 end
+
+Comm.Compress = true
 
 ------------------------------------------------------------------------------------------
 -- 3. join is asynchronous: queue, rate-limit joins, flush once the channel is up
@@ -286,7 +289,11 @@ do
     Comm.Send("SYNC", { rev = 5, bookName = "Round", markets = markets, bets = {}, balance = -250, creditLimit = 50000 }, code, "Tester")
     tick(60)
     local parts = stub.addonMessages
-    check(#parts > 10, "the SYNC went out in many parts: " .. #parts)
+    local plain = #AceSer:Serialize(assert(Protocol.Wrap("SYNC", code, { rev = 5, bookName = "Round", markets = markets, bets = {}, balance = -250, creditLimit = 50000 })))
+    local wireBytes = 0
+    for _, m in ipairs(parts) do wireBytes = wireBytes + #(m.text or "") end
+    check(wireBytes * 4 < plain, ("compression shrinks the SYNC at least 4x (%d plain, ~%d on the wire)"):format(plain, wireBytes))
+    check(#parts >= 1 and #parts < 10, "the compressed SYNC goes out in few parts: " .. #parts)
     drainSeen()
     -- feed them back as another client's channel message addressed to us (we do not own the code)
     for i, m in ipairs(parts) do
@@ -490,6 +497,18 @@ do
     -- our own echo arrives under our spaced name and must be recognised as ours
     stub.player = "Tester"
     eq(#send("Tester lol", nil), 0, "our own spaced-name echo is ignored")
+end
+
+------------------------------------------------------------------------------------------
+-- 11. corrupt compressed data is dropped quietly
+------------------------------------------------------------------------------------------
+do
+    drainSeen()
+    local before = #stub.errors
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", "ZD1this is not deflate data", "CHANNEL", "Real-Realm")
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", "ZD1", "CHANNEL", "Real-Realm")
+    eq(#drainSeen(), 0, "corrupt compressed messages deliver nothing")
+    eq(#stub.errors, before, "and raise no errors")
 end
 
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end

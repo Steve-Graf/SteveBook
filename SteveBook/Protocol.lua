@@ -52,6 +52,12 @@ Protocol.Spec = {
         available = "number?",      -- copper still available, set when reason == "credit_limit"
     } },
 
+    -- "All bets" view (SPEC §3b): any active member may ask for the group's bets. The bookie answers
+    -- the asker only. `bets` is a list of entries { id, who, text, stake, status, at, win? } with `text`
+    -- already rendered by the bookie ("LAL +5.5 -110, LAL @ BOS" or "3-leg parlay +738: ...").
+    BETS_REQ   = { dir = "bettor", fields = {} },
+    BETS       = { dir = "bookie", fields = { rev = "number", bets = "table" } },
+
     BALANCE    = { dir = "bookie", fields = { rev = "number", balance = "number", note = "string?" } },
 
     PING       = { dir = "any", fields = {} },
@@ -86,6 +92,14 @@ function Protocol.Validate(msgType, payload)
     end
     if msgType == "BET_REJECT" and not isReason(payload.reason) then
         return false, "unknown reject reason"
+    end
+    if msgType == "BETS" then
+        for i, e in ipairs(payload.bets) do
+            if type(e) ~= "table" or type(e.who) ~= "string" or type(e.text) ~= "string"
+                or type(e.stake) ~= "number" or type(e.status) ~= "string" then
+                return false, "bets entry " .. i .. " needs who, text, stake and status"
+            end
+        end
     end
     if msgType == "BET_PLACE" then
         local single = payload.marketId ~= nil or payload.selectionId ~= nil or payload.odds ~= nil

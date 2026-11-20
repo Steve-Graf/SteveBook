@@ -97,6 +97,21 @@ in §3 apply unchanged, and the stake is the amount at risk (credit limits count
 - A game that has started is closed for parlays too: the bookie rejects any parlay with a leg whose
   market is not open (`market_closed`, `legIndex`).
 
+## 3b. Group bets ("All Bets")
+
+Any active member can see what everyone in the book has bet. This is a deliberate loosening of
+privacy (the group asked for it): other members' picks and stakes are visible to every member.
+
+- A bettor's **All Bets** tab sends `BETS_REQ` when it opens and again every 30 s while it is shown.
+  The bookie answers the asker only with `BETS` (priority BULK), and ignores a member who asks more
+  often than every 5 s.
+- `BETS.bets` holds open bets plus bets settled in the last 48 hours (`Bookie.GROUP_SETTLED_KEEP`),
+  voided bets left out, newest first, at most 60 (`Bookie.GROUP_BETS_MAX`). Entry:
+  `{ id, who, text, stake (copper), status, at (placed), win? (open bets: profit if it wins) }`.
+  `text` is rendered by the bookie so the client needs no market data: a single reads
+  "LAL +5.5 -110 · LAL @ BOS", a parlay "3-leg parlay +738: LAL +5.5 · Over 231.5 · MIA ML".
+- The bookie window already lists every bet in its Bets tab.
+
 ## 4. Data model (bookie's SavedVariables are the source of truth)
 
 Saved data is per character (`SavedVariablesPerCharacter`): a book belongs to the character that
@@ -159,6 +174,11 @@ other's balances and bets on the wire, which fits the friends-only trust model b
 `Comm.Send` then also hands each message to the same client's handlers for the other role (the
 bettor side appears to the bookie as the member `Loopback`, whom you approve). It is a test aid;
 leave it off for real play.
+
+**Compression:** a message over 200 bytes is deflated (LibDeflate, vendored in `Libs/`) and sent
+as `ZD1` + encoded bytes before AceComm chunks it. A whole-book SYNC of 90 markets drops from
+19.5 KB (about 28 s at the throttle rate) to about 1.5 KB. Clients older than this change cannot
+read compressed messages, so everyone in a book must update together.
 
 **Player names:** in Forever the sender of an addon message arrives as "Tuesday lol" or "Steve
 Spinebreaker" (a space and a second word) while `UnitName("player")` returns only "Tuesday" or
