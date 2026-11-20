@@ -55,7 +55,14 @@ function Frame.Enter(self) local f = script(self, "OnEnterPressed"); assert(f, "
 function Frame.Escape(self) local f = script(self, "OnEscapePressed"); assert(f, "no OnEscapePressed"); f(self) end
 local function newFrame() return setmetatable({}, Frame) end
 
-function CreateFrame() return newFrame() end
+-- like the game, a named frame becomes a global (UISpecialFrames only takes global names)
+function CreateFrame(_, name)
+    local f = newFrame()
+    if name then _G[name] = f end
+    return f
+end
+UISpecialFrames = {}
+tinsert = table.insert
 UIParent = newFrame()
 local T = 1000000
 function GetServerTime() return T end
@@ -126,6 +133,11 @@ local function shownMRows() local n = 0; for _, r in ipairs(UI.mrows) do if r:Is
 
 -- open the window: no book yet -> create-book prompt ------------------------------------------
 UI.Show()
+do
+    local special = {}
+    for _, n in ipairs(UISpecialFrames) do special[n] = true end
+    check(special.SteveBookBookieFrame and _G.SteveBookBookieFrame == W.frame, "the window is a named global registered for Escape (UISpecialFrames)")
+end
 check(W.prompt:IsShown() and not W.scroll:IsShown(), "no book: prompt shown")
 check(not W.panel:IsShown() and not W.head:IsShown(), "no book: no import panel or table heading")
 W.prompt.input:SetText("   ")

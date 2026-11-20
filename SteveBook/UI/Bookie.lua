@@ -1049,7 +1049,7 @@ end
 local function build()
     -- Named so Escape can close it (UISpecialFrames only takes global names).
     frame = CreateFrame("Frame", "SteveBookBookieFrame", UIParent, "BasicFrameTemplateWithInset")
-    tinsert(UISpecialFrames, "SteveBookBookieFrame")
+    if UISpecialFrames then table.insert(UISpecialFrames, "SteveBookBookieFrame") end
     frame:SetSize(WIN_W, WIN_H)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)
