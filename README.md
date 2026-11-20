@@ -24,6 +24,11 @@ Fast loop: clone the repo on the machine that runs WoW and link the `SteveBook/`
 (`/book new <name>`), turn loopback on, open `/bet`, join your own code, then approve the member
 named **Loopback** in `/bookie`. Turn it off again (`/book loopback`) for real play.
 
+## Odds display
+
+`/book ratio` toggles the bettor window and chat between American odds (-110, +150, the default) and
+ratios (profit per 1 staked: -500 is 0.2x, +150 is 1.5x). The bookie window always uses American odds.
+
 ## Tests
 
 Pure-logic modules are tested outside the game with plain Lua:

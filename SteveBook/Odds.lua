@@ -45,10 +45,31 @@ function Odds.Delta(stake, odds, outcome)
     return nil, "bad outcome"
 end
 
--- +150 / -110 for display.
-function Odds.Format(odds)
+-- +150 / -110, always American. Use this wherever the text is typed back in (edit boxes, forms).
+function Odds.FormatAmerican(odds)
     if not Odds.IsValid(odds) then return "?" end
     return odds > 0 and ("+" .. odds) or tostring(odds)
+end
+
+-- Ratio view: profit per 1 staked, so -500 is 0.2x, +150 is 1.5x and -110 is 0.91x (two decimals,
+-- trailing zeros dropped). Display only: it is not exact (-230 and -233 both show 0.43x) and
+-- Odds.Parse does not read it.
+function Odds.FormatRatio(odds)
+    if not Odds.IsValid(odds) then return "?" end
+    local r = odds > 0 and odds / 100 or 100 / -odds
+    local s = string.format("%.2f", r):gsub("0+$", "")
+    return (s:gsub("%.$", "")) .. "x"
+end
+
+-- The player's display setting: "american" (default) or "ratio" (/book ratio).
+Odds.view = "american"
+function Odds.SetView(view) Odds.view = (view == "ratio") and "ratio" or "american" end
+function Odds.GetView() return Odds.view end
+
+-- Odds as the player wants to read them.
+function Odds.Format(odds)
+    if Odds.view == "ratio" then return Odds.FormatRatio(odds) end
+    return Odds.FormatAmerican(odds)
 end
 
 -- "+150", "-110", "150" -> integer odds, or nil if not valid American odds.

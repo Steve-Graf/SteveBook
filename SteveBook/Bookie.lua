@@ -651,13 +651,14 @@ Bookie._clip = clip      -- test seam
 
 -- "LAL +5.5 -110, LAL @ BOS" for a single (the pick as it was taken: the bet's own line, odds, then
 -- the event); "3-leg parlay +738: LAL +5.5, Over 231.5, MIA ML" for a parlay (each leg's own line;
--- legs that do not fit are replaced by "..."). ASCII only: this travels to every member's client.
+-- legs that do not fit are replaced by "..."). ASCII only, and always American odds (never the
+-- bookie's own odds view): this travels to every member's client.
 function Bookie.BetText(book, bet)
     local max = Bookie.GROUP_TEXT_MAX
     if bet.legs then
         local picks = {}
         for i, leg in ipairs(Bookie.LegRows(book, bet)) do picks[i] = leg.pick end
-        local head = ("%d-leg parlay %s: "):format(#picks, Odds.Format(bet.odds))
+        local head = ("%d-leg parlay %s: "):format(#picks, Odds.FormatAmerican(bet.odds))
         local text = head .. table.concat(picks, ", ")
         if #text <= max then return text end
         for n = #picks - 1, 1, -1 do
@@ -667,7 +668,7 @@ function Bookie.BetText(book, bet)
         return clip(text, max)
     end
     local m = book.markets[bet.marketId]
-    return clip(("%s %s, %s"):format(Bookie.SelectionText(m, bet.selectionId, bet.line), Odds.Format(bet.odds),
+    return clip(("%s %s, %s"):format(Bookie.SelectionText(m, bet.selectionId, bet.line), Odds.FormatAmerican(bet.odds),
         m and m.event or "?"), max)
 end
 

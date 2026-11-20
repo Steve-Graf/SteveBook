@@ -15,6 +15,7 @@ local function help()
     say("/book bookie (or /bookie)  open the bookie window")
     say("/book bet (or /bet)        open the bettor window")
     say("/book loopback     test alone: let this character be bookie and bettor of its own book")
+    say("/book ratio        toggle odds between American (-110) and ratio (0.91x) display")
     say("/book debug        print every message sent and received (for troubleshooting)")
     say("/book              open the bettor window (same as /bet)")
     say("/book status       show the active book")
@@ -53,6 +54,15 @@ local function handle(msg)
         db.debug = not db.debug
         say(db.debug and "Debug ON: every message in and out is printed here. Run /book debug again to stop."
             or "Debug OFF.")
+    elseif cmd == "ratio" then
+        db.ratio = not db.ratio
+        ns.Odds.SetView(db.ratio and "ratio" or "american")
+        say(db.ratio and "Odds shown as ratios (profit per 1 staked: -500 is 0.2x, +150 is 1.5x). /book ratio again for American odds."
+            or "Odds shown as American odds (-110, +150).")
+        for _, w in ipairs({ "Bettor", "Bookie" }) do
+            local ui = ns.UI and ns.UI[w]
+            if ui and ui.Refresh then pcall(ui.Refresh) end
+        end
     elseif cmd == "bookie" or cmd == "bet" then
         local ui = ns.UI and ns.UI[cmd == "bookie" and "Bookie" or "Bettor"]
         if ui and ui.Toggle then ui.Toggle() else say("That window is not available yet.") end
@@ -72,6 +82,7 @@ f:SetScript("OnEvent", function(_, _, name)
     if name ~= ADDON then return end
     SteveBookDB = SteveBookDB or Model.NewDB()
     SteveBookDB.cache = SteveBookDB.cache or ns.Cache.NewStore()   -- bettor-side cache (Cache.lua)
+    ns.Odds.SetView(SteveBookDB.ratio and "ratio" or "american")
     math.randomseed(GetServerTime() + floor(GetTime() * 1000))
     f:UnregisterEvent("ADDON_LOADED")
 end)

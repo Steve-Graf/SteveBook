@@ -85,6 +85,13 @@ do
     eq(e[b1.id].text, "LAL +5.5 -110, LAL @ BOS", "after a line and odds move the bet still reads as it was taken")
     eq(e[b1.id].win, Odds.Profit(20 * S, -110), "...and wins at its own odds")
 
+    -- the text is rendered for other people: it is American whatever view the bookie has chosen
+    Odds.SetView("ratio")
+    local gr = byId(Bookie.GroupBets(book, NOW))
+    Odds.SetView("american")
+    eq(gr[b1.id].text, "LAL +5.5 -110, LAL @ BOS", "a single's text stays American in the ratio view")
+    eq(gr[b2.id].text, "MIA ML +130, MIA @ NYK", "...also for an underdog")
+
     -- newest placed first
     eq(g[1].id, b4.id, "newest first (1)")
     eq(g[4].id, b1.id, "newest first (4)")
@@ -109,6 +116,11 @@ do
     eq(g[1].win, Odds.ParlayProfit(20 * S, { -110, -110, 130 }), "an open parlay's win is the parlay profit")
     eq(g[1].stake, 20 * S, "stake")
     eq(g[1].status, "accepted", "open")
+
+    Odds.SetView("ratio")
+    local pr = Bookie.GroupBets(book, NOW)[1].text
+    Odds.SetView("american")
+    eq(pr, ("3-leg parlay %s: LAL +5.5, Over 231.5, MIA ML"):format(Odds.FormatAmerican(p.odds)), "a parlay's combined odds stay American in the ratio view")
 
     -- the legs keep the line they were taken at after the market moves
     assert(Bookie.EditMarket(book, spread.id, { line = 9 }, NOW))

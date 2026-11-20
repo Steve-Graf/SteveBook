@@ -173,6 +173,15 @@ do
     check(okd and env.to == "Friend", "JOIN_DENY is addressed to Friend")
 end
 
+-- /book ratio toggles the odds view and remembers it.
+do
+    check(ns.Odds.GetView() == "american", "american odds by default")
+    run("ratio")
+    check(SteveBookDB.ratio == true and ns.Odds.Format(-500) == "0.2x", "/book ratio switches to ratio view")
+    run("ratio")
+    check(not SteveBookDB.ratio and ns.Odds.Format(-500) == "-500", "/book ratio again switches back")
+end
+
 -- /book debug traces what is sent and received.
 do
     run("debug")

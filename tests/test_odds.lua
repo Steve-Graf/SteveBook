@@ -146,4 +146,26 @@ do
     eq(select(2, Odds.GradeParlay(0, legs({ -110, "won" }, { 130, "won" }))), "bad stake", "grade needs a stake")
 end
 
+-- Display views
+do
+    eq(Odds.Format(-110), "-110", "american is the default view")
+    eq(Odds.Format(150), "+150", "american positive")
+    eq(Odds.FormatRatio(-500), "0.2x", "-500 is 0.2x")
+    eq(Odds.FormatRatio(150), "1.5x", "+150 is 1.5x")
+    eq(Odds.FormatRatio(-110), "0.91x", "-110 is 0.91x")
+    eq(Odds.FormatRatio(100), "1x", "+100 is 1x")
+    eq(Odds.FormatRatio(-100), "1x", "-100 is 1x")
+    eq(Odds.FormatRatio(165), "1.65x", "+165")
+    eq(Odds.FormatRatio(1000), "10x", "+1000 drops the zeros")
+    eq(Odds.FormatRatio(-200), "0.5x", "-200")
+    eq(Odds.FormatRatio(7), "?", "invalid odds")
+    Odds.SetView("ratio")
+    eq(Odds.GetView(), "ratio", "view switches to ratio")
+    eq(Odds.Format(-500), "0.2x", "Format follows the view")
+    eq(Odds.FormatAmerican(-500), "-500", "FormatAmerican ignores the view")
+    Odds.SetView("nonsense")
+    eq(Odds.GetView(), "american", "an unknown view falls back to american")
+    eq(Odds.Format(-500), "-500", "and Format is american again")
+end
+
 if fails == 0 then print("odds: all tests passed") else os.exit(1) end

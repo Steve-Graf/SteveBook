@@ -349,8 +349,8 @@ local function openForm(mode, market)
         f.f.event:SetText(market.event)
         f.f.label1:SetText(market.selections[1].label)
         f.f.label2:SetText(market.selections[2].label)
-        f.f.odds1:SetText(Odds.Format(market.selections[1].odds))
-        f.f.odds2:SetText(Odds.Format(market.selections[2].odds))
+        f.f.odds1:SetText(Odds.FormatAmerican(market.selections[1].odds))
+        f.f.odds2:SetText(Odds.FormatAmerican(market.selections[2].odds))
         if market.line then f.f.line:SetText(("%g"):format(market.line)) end
         f.ok:SetText("Save")
         enableNameFields(false)
@@ -474,7 +474,7 @@ local function oddsBox(r, col, side)
     e:SetScript("OnEscapePressed", function(self)
         local book = currentBook()
         local m = book and book.markets[self.row.mid]
-        if m then self:SetText(Odds.Format(m.selections[self.side].odds)) end
+        if m then self:SetText(Odds.FormatAmerican(m.selections[self.side].odds)) end
         self:ClearFocus()
     end)
     tip(e, function(self)
@@ -557,13 +557,13 @@ local function fillMRow(r, row, book, t)
     r.o2:SetShown(live)
     r.result:SetShown(not live)
     if live then
-        setBoxText(r.o1, Odds.Format(s1.odds))
-        setBoxText(r.o2, Odds.Format(s2.odds))
+        setBoxText(r.o1, Odds.FormatAmerican(s1.odds))
+        setBoxText(r.o2, Odds.FormatAmerican(s2.odds))
         r.closes:SetText(GREY .. closesText(m.closesAt) .. "|r")
     else
         local text
         if s == "started" then
-            text = GREY .. esc(s1.label) .. " " .. Odds.Format(s1.odds) .. " / " .. esc(s2.label) .. " " .. Odds.Format(s2.odds) .. "|r"
+            text = GREY .. esc(s1.label) .. " " .. Odds.FormatAmerican(s1.odds) .. " / " .. esc(s2.label) .. " " .. Odds.FormatAmerican(s2.odds) .. "|r"
         elseif s == "settled" then
             text = GOLD .. (m.result == "push" and "Push" or (m.selections[m.result] and esc(m.selections[m.result].label) .. " won") or "?") .. "|r"
         else
@@ -794,18 +794,18 @@ local function betEntries(book)
             local lines = {}
             for _, leg in ipairs(Bookie.LegRows(book, b)) do
                 lines[#lines + 1] = ("%s%d. %s: %s (%s)  %s|r"):format(LEG_COLOR[leg.status], leg.index, esc(leg.event),
-                    esc(leg.pick), Odds.Format(leg.odds), LEG_WORD[leg.status])
+                    esc(leg.pick), Odds.FormatAmerican(leg.odds), LEG_WORD[leg.status])
             end
             entry = {
                 text = ("#%d  %s  %s on a %d-leg parlay %s  %s"):format(b.id, b.bettor, money(b.stake), #b.legs,
-                    Odds.Format(b.odds), betResult(b)),
+                    Odds.FormatAmerican(b.odds), betResult(b)),
                 sub = table.concat(lines, "\n"), rawSub = true, h = 22 + LEG_LINE_H * #lines + 4,
             }
         else
             local m = book.markets[b.marketId]
             entry = {
                 text = ("#%d  %s  %s on %s %s  (%s)  %s"):format(b.id, b.bettor, money(b.stake),
-                    esc(Bookie.SelectionText(m, b.selectionId, b.line)), Odds.Format(b.odds), m and esc(m.event) or "?", betResult(b)),
+                    esc(Bookie.SelectionText(m, b.selectionId, b.line)), Odds.FormatAmerican(b.odds), m and esc(m.event) or "?", betResult(b)),
                 h = 24,
             }
         end
@@ -882,17 +882,17 @@ local function importEntries(book)
             local lineText = s.type == "spread" and ("  " .. esc(s.selections[1].label) .. " " .. signed(s.line))
                           or s.type == "total" and ("  " .. ("%g"):format(s.line)) or ""
             entries[#entries + 1] = { h = 22, text = ("%sNEW|r  %s  %s%s   %s %s / %s %s   closes %s"):format(GREEN,
-                TYPE_NAME[s.type], esc(s.event), lineText, esc(s.selections[1].label), Odds.Format(s.selections[1].odds),
-                esc(s.selections[2].label), Odds.Format(s.selections[2].odds), when(s.closesAt)) }
+                TYPE_NAME[s.type], esc(s.event), lineText, esc(s.selections[1].label), Odds.FormatAmerican(s.selections[1].odds),
+                esc(s.selections[2].label), Odds.FormatAmerican(s.selections[2].odds), when(s.closesAt)) }
         elseif it.status == "update" then
             local m = book.markets[it.marketId]
             local parts = {}
             for i = 1, 2 do
                 local label1 = esc(m.selections[i].label)
                 if it.changes[i] then
-                    parts[#parts + 1] = ("%s %s -> %s%s|r"):format(label1, Odds.Format(it.before[i]), GOLD, Odds.Format(it.changes[i]))
+                    parts[#parts + 1] = ("%s %s -> %s%s|r"):format(label1, Odds.FormatAmerican(it.before[i]), GOLD, Odds.FormatAmerican(it.changes[i]))
                 else
-                    parts[#parts + 1] = ("%s %s"):format(label1, Odds.Format(m.selections[i].odds))
+                    parts[#parts + 1] = ("%s %s"):format(label1, Odds.FormatAmerican(m.selections[i].odds))
                 end
             end
             local lineText = ""

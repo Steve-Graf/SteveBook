@@ -790,6 +790,94 @@ do
     check(not liveAfterFinal, "live markets are listed before finished ones")
 end
 
+-- the odds view (/book ratio) never changes the bookie window: typed and shown odds stay American ----------
+do
+    local O = ns.Odds
+    O.SetView("ratio")
+    check(O.Format(-110) == "0.91x" and O.FormatAmerican(-110) == "-110", "setup: the ratio view is on (Odds.Format shows 0.91x)")
+    local function ratioish(text) return tostring(text):find("%dx") end
+    local function scanTable()
+        local bad
+        for _, r in ipairs(UI.mrows) do
+            if r:IsShown() then
+                for _, f in ipairs({ "game", "mkt", "o1", "o2", "result", "closes", "status", "risk" }) do
+                    if ratioish(r[f]:GetText()) then bad = bad or (f .. ": " .. r[f]:GetText()) end
+                end
+            end
+        end
+        return bad
+    end
+    W.tabs.markets:Click()
+    UI.Refresh()
+    eq(scanTable(), nil, "the Markets table shows no ratio text")
+    local live = 0
+    for _, r in ipairs(UI.mrows) do
+        if r:IsShown() and r.o1:IsShown() then
+            live = live + 1
+            check(r.o1:GetText():find("^[+-]%d+$") and r.o2:GetText():find("^[+-]%d+$"), "odds boxes hold American text: " .. r.o1:GetText() .. " / " .. r.o2:GetText())
+        end
+    end
+    check(live >= 2, "setup: several rows with odds boxes (" .. live .. ")")
+
+    -- an unchanged box saved on click-away changes nothing and sends nothing
+    local row
+    for _, r in ipairs(UI.mrows) do if r:IsShown() and r.o1:IsShown() then row = r; break end end
+    local mkt = book.markets[row.mid]
+    local o1, o2, rev = mkt.selections[1].odds, mkt.selections[2].odds, book.rev
+    local was = row.o1:GetText()
+    drain(); chatText()
+    row.o1:SetFocus(); row.o1:ClearFocus()
+    row.o2:SetFocus(); row.o2:ClearFocus()
+    check(mkt.selections[1].odds == o1 and mkt.selections[2].odds == o2, "unchanged boxes saved on click-away leave the market alone")
+    eq(book.rev, rev, "...and the book is not touched")
+    eq(#drain(), 0, "...and nothing is broadcast")
+    eq(chatText(), "", "...and no 'odds look like' complaint (the box text still parses)")
+    eq(row.o1:GetText(), was, "the box still reads as before")
+    -- a real edit still works in the ratio view
+    row.o1:SetFocus(); row.o1:SetText(o1 < 0 and tostring(o1 - 5) or ("+" .. (o1 + 5))); row.o1:Enter()
+    eq(mkt.selections[1].odds, o1 < 0 and o1 - 5 or o1 + 5, "typing American odds still saves in the ratio view")
+    eq(row.o1:GetText(), O.FormatAmerican(mkt.selections[1].odds), "...and the box shows the new odds in American")
+    drain()
+    -- Escape abandons a half-typed edit and shows the market's odds in American again
+    chatText()
+    row.o2:SetFocus(); row.o2:SetText("junk"); row.o2:Escape()
+    eq(row.o2:GetText(), O.FormatAmerican(mkt.selections[2].odds), "Escape restores the box in American")
+    eq(chatText(), "", "...without an 'odds look like' complaint (the restored text parses)")
+    eq(#drain(), 0, "...and nothing sent")
+
+    -- a started game's prices (plain text), the edit form, the Bets tab and the import preview
+    local sg = mrowFor("Kickoff @ Now")
+    check(sg and sg.result:GetText():find("K %-110 / N %-110"), "a started row shows American prices: " .. tostring(sg and sg.result:GetText()))
+    mbtn(row, "Edit"):Click()
+    check(W.form.f.odds1:GetText():find("^[+-]%d+$") and W.form.f.odds2:GetText():find("^[+-]%d+$"), "the edit form is prefilled in American: " .. W.form.f.odds1:GetText())
+    W.form.cancel:Click()
+    W.tabs.bets:Click()
+    local sawBet, sawLeg = false, false
+    for i = 1, 20 do
+        local t, sub = rowText(i), rowSub(i)
+        check(not ratioish(t) and not ratioish(sub), "Bets tab row " .. i .. " shows no ratio text: " .. t .. " " .. sub)
+        if t:find("on a %d%-leg parlay [+-]%d+") then sawLeg = true end
+        if t:find("on .- [+-]%d+  %(") then sawBet = true end
+    end
+    check(sawBet and sawLeg, "the Bets tab lists a single and a parlay with American odds (" .. tostring(sawBet) .. "/" .. tostring(sawLeg) .. ")")
+    W.tabs.markets:Click()
+    local lalMarket
+    for _, mk in pairs(book.markets) do if mk.event == "LAL @ BOS" and mk.type == "moneyline" and mk.closesAt > T + 100000 then lalMarket = mk end end
+    check(lalMarket and lalMarket.status == "open", "setup: the imported LAL @ BOS moneyline is open")
+    local newOdds1 = lalMarket.selections[1].odds + 10
+    P.box:SetText(ML("LAL @ BOS", "LAL:" .. newOdds1, "BOS:" .. lalMarket.selections[2].odds)
+        .. "\nML|NBA|RAT @ IO|2026-12-05T20:00-05:00|RAT:-120|IO:+100")
+    W.tabs.import:Click()
+    check(rowText(1):find("UPDATE") and rowText(1):find("%->") and not ratioish(rowText(1)), "the import preview's old -> new odds are American: " .. rowText(1))
+    check(rowText(1):find(O.FormatAmerican(lalMarket.selections[1].odds), 1, true) and rowText(1):find(O.FormatAmerican(newOdds1), 1, true)
+          and rowText(1):find(O.FormatAmerican(lalMarket.selections[2].odds), 1, true), "...old, new and the unchanged side all in American: " .. rowText(1))
+    check(rowText(2):find("NEW") and rowText(2):find("RAT %-120") and rowText(2):find("IO %+100") and not ratioish(rowText(2)), "a NEW preview row shows American odds: " .. rowText(2))
+    for i = 1, 5 do check(not ratioish(P.sum[i]:GetText()), "import summary line " .. i .. " has no ratio text") end
+    P.clear:Click()
+    W.tabs.markets:Click()
+    O.SetView("american")
+end
+
 -- a book owned by another character is never shown or listed ---------------------------------------
 local theirs = assert(Model.CreateBook(SteveBookDB, "Theirs", "Other", T))   -- also becomes db.activeBook
 UI.Refresh()
