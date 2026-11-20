@@ -393,6 +393,7 @@ messages.
   once; split aces get one card each). A player who does nothing for 30 s is stood; the host can
   **Skip** a player. Blackjack pays 3:2, wins 1:1, a tie returns the bet, the dealer stands on every
   17 and peeks for blackjack (a dealer blackjack ends the round at once, a player blackjack pushes).
+  After the dealer plays, the finished round stays on the table for 5 seconds (the dealer's cards and each seat's WIN / PUSH / LOSE / BUST on show, no betting, a countdown); then the next round opens and the window asks the players for a new bet.
   No insurance and no surrender. Players who sat out a round simply are not dealt in. A fresh
   shoe is shuffled when fewer than 60 cards remain. Every wager, double and split is a stack in the
   player's `bets` list, so kicking, leaving, closing or a reload returns exactly what is on the table.

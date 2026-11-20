@@ -110,6 +110,29 @@ eq(#mine, 2, "Split makes two hands"); eq(tc.balance < balanceBefore, true, "and
 click(allByText("Stand")[1]); settle()
 click(allByText("Stand")[1]); settle(); settle()
 eq(t.round, 3, "both hands played out and the round finished")
+-- the finished round lingers, then asks for a new bet
+do
+    local function pass() stub.advance(1); stub.runAfters() end
+    click(allByText("Place bet")[1]); settle()
+    t.bj.shoe = { "TS", "9H", "KD", "8C" }; t.bj.pos = 1                    -- player 20 against dealer 17
+    click(allByText("Deal")[1]); settle()
+    click(allByText("Stand")[1])
+    local tries = 0
+    while t.status ~= "results" and tries < 12 do pass(); tries = tries + 1 end
+    pass()                                                                  -- the results reach the player
+    check(textOf("Round over.") ~= nil, "the window says the round is over")
+    check(textOf("Next round in") ~= nil, "with the time until the next one")
+    check(textOf("|cff40ff40WIN|r") ~= nil, "and the seat shows the outcome")
+    check(textOf("Get ready to place a new bet.") ~= nil, "and asks the player to get ready to bet")
+    check(textOf("|cffffd100Round over|r") ~= nil, "the decision panel says so as well")
+    check(not UI.IsGlowing(allByText("Place bet")[1]), "nothing to press yet")
+    pass()                                                                  -- betting reopens
+    pass()
+    check(UI.IsGlowing(allByText("Place bet")[1]), "once betting reopens Place bet glows again")
+    check(textOf("|cffffd100Place a bet to be dealt in.|r") ~= nil, "and the window asks for a new bet")
+    check(textOf("Round over.") == nil, "the results are gone")
+end
+
 -- leaving
 click(allByText("Leave table")[#allByText("Leave table")]); settle()
 check(tc.status == "left" or tc.status == "seated", "the leave button works without errors")

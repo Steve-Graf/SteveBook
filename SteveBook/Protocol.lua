@@ -86,7 +86,7 @@ Protocol.Spec = {
     TBL_JOIN_DENY  = { dir = "bookie", fields = { ownerName = "string", reason = "string?" } },
     TBL_STATE      = { dir = "bookie", fields = {      -- public table state, broadcast (join, chips, spin, result)
         rev = "number", game = "string", name = "string",
-        status = "string",      -- "betting" | "spinning" | "closed"
+        status = "string",      -- "betting" | "spinning" | "closed" (roulette); "betting" | "playing" | "dealer" | "results" | "closed" (blackjack)
         round = "number",
         minBet = "number", maxBet = "number",           -- copper per bet
         zero = "string?",       -- roulette wheel: "single" | "double" | "none"

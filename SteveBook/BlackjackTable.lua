@@ -3,11 +3,13 @@
 -- messages stay in Casino.lua. The host's client holds the shoe and the dealer's hole card, so a
 -- player only ever receives cards that are face up.
 --
--- t.bj = { phase = "betting" | "playing" | "dealer", shoe, pos, dealer = { cards }, hole = bool,
+-- t.bj = { phase = "betting" | "playing" | "dealer" | "results", shoe, pos, dealer = { cards }, hole = bool,
 --          order = { names dealt in }, hands = { [name] = { {cards, bet, state, natural, doubled,
 --          split, aces} } }, turn = { name, hand } | nil, deadline }
 -- Hand states: "playing" | "stand" | "bust" | "blackjack". t.status mirrors the phase
--- ("betting" | "playing" | "dealer") and is "closed" once the table is closed.
+-- ("betting" | "playing" | "dealer" | "results") and is "closed" once the table is closed. After the
+-- dealer plays, the table stays in "results" for E.RESULTS_SECONDS (cards and outcomes on show, no
+-- betting), then NextRound opens the next round.
 -- A member's m.bets lists every chip stack they have out (wager, doubles, splits) so the generic
 -- refund (kick, leave, close, recover) returns exactly what is on the table.
 local ADDON, ns = ...
@@ -20,6 +22,7 @@ Casino.Engines.blackjack = E
 
 E.TURN_SECONDS = 30            -- a player who does nothing is stood after this long
 E.DEALER_SECONDS = 2           -- the pause before the dealer's cards turn over
+E.RESULTS_SECONDS = 5          -- how long the finished round stays on the table before betting reopens
 E.RESHUFFLE_BELOW = 60         -- shuffle a fresh shoe when fewer cards than this are left
 
 local function touch(t) t.rev = (t.rev or 0) + 1 end
@@ -261,6 +264,7 @@ function E.FinishDealer(t, now)
             for i, h in ipairs(hands) do
                 local outcome, ret = Blackjack.Settle(h, dres)
                 staked, returned = staked + h.bet, returned + ret
+                h.outcome, h.win = outcome, ret                      -- shown on the table during the results pause
                 entries[i] = { cards = copyCards(h.cards), bet = h.bet, outcome = outcome, win = ret }
             end
             m.balance = m.balance + returned
@@ -272,10 +276,21 @@ function E.FinishDealer(t, now)
         round = t.round, at = now, results = results,
         dealer = { cards = copyCards(bj.dealer), total = dres.total, bust = dres.bust, blackjack = dres.blackjack },
     }
+    bj.phase = "results"                                           -- the round stays on show for a moment
+    t.status = "results"
+    bj.turn = nil
+    bj.deadline = (now or 0) + E.RESULTS_SECONDS
+    touch(t)
+    return t.lastResult
+end
+
+-- The results pause is over: clear the table and open the next round for bets.
+function E.NextRound(t, now)
+    if t.status ~= "results" then return nil, "not_results" end
     t.round = t.round + 1
     resetRound(t)
     touch(t)
-    return t.lastResult
+    return true
 end
 
 ------------------------------------------------------------------------------------------
@@ -296,7 +311,11 @@ function E.OnClosed(t) resetRound(t) end
 
 -- After a reload: a round that never finished is cancelled and every stack is returned.
 function E.Recover(t)
-    if t.status == "playing" or t.status == "dealer" then
+    if t.status == "results" then
+        t.round = t.round + 1                           -- everything was already paid; open the next round
+        resetRound(t)
+        touch(t)
+    elseif t.status == "playing" or t.status == "dealer" then
         for _, m in pairs(t.members) do Casino.Refund(m) end
         resetRound(t)
         touch(t)
@@ -327,11 +346,13 @@ function E.Public(t)
         local hands = {}
         for i, h in ipairs(bj.hands[name] or {}) do
             local v, soft = Blackjack.Value(h.cards)
-            hands[i] = { cards = copyCards(h.cards), bet = h.bet, state = h.state, value = v, soft = soft and true or false }
+            hands[i] = { cards = copyCards(h.cards), bet = h.bet, state = h.state, value = v, soft = soft and true or false,
+                         outcome = h.outcome, win = h.win }
         end
         pub.hands[#pub.hands + 1] = { name = name, hands = hands }
     end
-    if bj.turn then pub.turn, pub.turnHand, pub.deadline = bj.turn.name, bj.turn.hand, bj.deadline end
+    if bj.turn then pub.turn, pub.turnHand, pub.deadline = bj.turn.name, bj.turn.hand, bj.deadline
+    elseif bj.phase == "results" then pub.nextAt = bj.deadline end
     return pub
 end
 

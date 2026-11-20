@@ -256,6 +256,23 @@ function UI.HandsText(hands)
     return table.concat(parts, "   |   ")
 end
 
+-- How a finished hand is shown: WIN / BLACKJACK / PUSH / LOSE / BUST (two hands after a split give two
+-- labels), or nil while the round is still being played.
+local OUTCOME = { win = GREEN .. "WIN|r", blackjack = GREEN .. "BLACKJACK|r", push = MUTED .. "PUSH|r", lose = RED .. "LOSE|r", bust = RED .. "BUST|r" }
+local function outcomeBadge(hands)
+    local parts = {}
+    for i, h in ipairs(hands) do
+        if not h.outcome then return nil end
+        parts[i] = OUTCOME[h.outcome] or h.outcome
+    end
+    return #parts > 0 and table.concat(parts, " | ") or nil
+end
+local function handsNet(hands)
+    local n = 0
+    for _, h in ipairs(hands) do n = n + (h.win or 0) - (h.bet or 0) end
+    return n
+end
+
 -- A playing card: a white rectangle with the rank on top and the suit letter below (red for hearts
 -- and diamonds), or a dark back with a gold edge when it is face down.
 local function newCard(parent, w, h)
@@ -581,6 +598,10 @@ local function hostHint(t)
     for _, name in ipairs(seated) do
         if #t.members[name].bets > 0 then bettors = bettors + 1 end
     end
+    if t.status == "results" then
+        local left = t.bj and t.bj.deadline and math.max(0, t.bj.deadline - GetServerTime()) or 0
+        return "The results are on the table. The next round opens in " .. left .. " s; players will place new bets then.", nil
+    end
     if t.game == "blackjack" then
         if t.status == "betting" then
             if bettors > 0 then
@@ -603,6 +624,8 @@ local function hostHint(t)
 end
 
 local function miniHandsBadge(hands)
+    local done = outcomeBadge(hands)
+    if done then return done end
     local one = #hands == 1 and hands[1] or nil
     if one and one.state == "bust" then return RED .. "BUST|r" end
     if one and one.state == "blackjack" then return GREEN .. "BLACKJACK|r" end
@@ -750,7 +773,7 @@ local function refreshHost()
     local bjGame = t.game == "blackjack"
     H.head:SetText(t.name)
     local statusText = ({ betting = GREEN .. "Taking bets|r", spinning = GOLD .. "Spinning...|r", closed = RED .. "Closed|r",
-        playing = GOLD .. "Players are deciding|r", dealer = GOLD .. "Dealer's turn|r" })[t.status]
+        playing = GOLD .. "Players are deciding|r", dealer = GOLD .. "Dealer's turn|r", results = GOLD .. "Showing the results|r" })[t.status]
     H.status:SetText(("%s   %sRound %d   Bets %s to %s   %s|r"):format(statusText or t.status, MUTED, t.round, money(t.minBet), money(t.maxBet),
         bjGame and "blackjack pays 3:2" or ({ single = "single zero", double = "double zero", none = "no zero" })[t.zero]))
     local ago = CN.LastAnnounce()
@@ -1441,6 +1464,9 @@ local function refreshBlackjack()
     elseif not st then statusText = GOLD .. "Waiting for the table...|r"
     elseif st.status == "betting" then statusText = GREEN .. "Place your bets|r" .. MUTED .. ("   Round %d   %s to %s"):format(st.round, money(st.minBet), money(st.maxBet)) .. "|r"
     elseif st.status == "dealer" then statusText = GOLD .. "The dealer plays...|r"
+    elseif st.status == "results" then
+        local left = pub and pub.nextAt and math.max(0, pub.nextAt - GetServerTime()) or 0
+        statusText = GOLD .. "Round over." .. "|r" .. MUTED .. ("   Next round in %d s: you will place a new bet then."):format(left) .. "|r"
     elseif pub and pub.turn == me then statusText = GREEN .. "Your turn|r"
     elseif pub and pub.turn then statusText = GOLD .. "Waiting for " .. pub.turn .. "|r"
     else statusText = GOLD .. "Playing...|r" end
@@ -1457,7 +1483,8 @@ local function refreshBlackjack()
         else c:Hide() end
     end
     if pub and #pub.dealer.cards > 0 then
-        B.dealerNote:SetText(pub.dealer.value and ("Dealer has " .. pub.dealer.value) or (MUTED .. "showing " .. Blackjack.Points(Blackjack.Rank(pub.dealer.cards[1])) .. "|r"))
+        B.dealerNote:SetText(pub.dealer.value and (pub.dealer.value > 21 and (RED .. "Dealer busts with " .. pub.dealer.value .. "|r") or ("Dealer has " .. pub.dealer.value))
+            or (MUTED .. "showing " .. Blackjack.Points(Blackjack.Rank(pub.dealer.cards[1])) .. "|r"))
     else
         local last = tc.lastResult and tc.lastResult.dealer
         B.dealerNote:SetText(last and (MUTED .. ("Last round: dealer %d%s"):format(last.total or 0, last.bust and " (bust)" or "") .. "|r") or "")
@@ -1493,13 +1520,19 @@ local function refreshBlackjack()
             for j = k + 1, BJ_CARDS do r.cards[j]:Hide() end
             r.bet.text:SetText(GOLD .. shortMoney(bet) .. "|r")
             local one = #h.hands == 1 and h.hands[1] or nil
-            if one and (one.state == "bust" or one.state == "blackjack") then
+            local done = outcomeBadge(h.hands)
+            if done then
+                r.badge:SetText(done)
+            elseif one and (one.state == "bust" or one.state == "blackjack") then
                 r.badge:SetText(one.state == "bust" and (RED .. "BUST|r") or (GREEN .. "BLACKJACK|r"))
             else
                 r.badge:SetText(#values > 0 and table.concat(values, " | ") or (MUTED .. "bet|r"))
             end
             local note = ""
-            if pub.turn == h.name then note = GOLD .. (mine and "your turn" or "thinking...") .. "|r"
+            if done then
+                local net = handsNet(h.hands)
+                note = net == 0 and (MUTED .. "bet back|r") or ((net > 0 and GREEN .. "+" or RED .. "-") .. money(math.abs(net)) .. "|r")
+            elseif pub.turn == h.name then note = GOLD .. (mine and "your turn" or "thinking...") .. "|r"
             elseif one and one.state == "stand" then note = MUTED .. "stands|r"
             elseif one and one.state == "bet" then note = MUTED .. "bet placed|r" end
             r.note:SetText(note)
@@ -1529,6 +1562,22 @@ local function refreshBlackjack()
         local frac = left and math.max(0, math.min(1, left / ns.BlackjackTable.TURN_SECONDS)) or 1
         B.barFill:SetSize(math.max(1, 576 * frac), 6)
         B.barTrack:Show(); B.barFill:Show()
+    elseif st and st.status == "results" and pub then
+        glow(B.hit, false); glow(B.stand, false)
+        B.hit:Hide(); B.stand:Hide(); B.double:Hide(); B.split:Hide()
+        local left = pub.nextAt and (pub.nextAt - GetServerTime()) or 0
+        B.actTitle:SetText(GOLD .. "Round over|r")
+        B.timer:SetText(MUTED .. ("next round in %d s"):format(math.max(0, left)) .. "|r")
+        local frac = math.max(0, math.min(1, left / ns.BlackjackTable.RESULTS_SECONDS))
+        B.barFill:SetSize(math.max(1, 576 * frac), 6); B.barTrack:Show(); B.barFill:Show()
+        local mine = Client.MyHands(tc, me)
+        if mine and outcomeBadge(mine) then
+            local net = handsNet(mine)
+            local said = net > 0 and (GREEN .. "You won +" .. money(net) .. "|r") or (net < 0 and (RED .. "You lost " .. money(-net) .. "|r") or "You got your bet back.")
+            B.waiting:SetText(said .. MUTED .. "   Get ready to place a new bet.|r")
+        else
+            B.waiting:SetText(MUTED .. "You sat this round out. Get ready to place a bet.|r")
+        end
     else
         B.actTitle:SetText(MUTED .. "Your decision|r")
         glow(B.hit, false); glow(B.stand, false)

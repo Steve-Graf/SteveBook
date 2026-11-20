@@ -70,8 +70,20 @@ eq(t.status, "dealer", "dealer phase"); eq(t.bj.hole, false, "hole card turned o
 pub = E.Public(t); eq(#pub.dealer.cards, 2, "both dealer cards are public now"); eq(pub.dealer.value, 17, "value 17")
 local res = assert(E.FinishDealer(t, NOW + 2))
 eq(res.dealer.total, 17, "dealer stood on 17"); eq(res.results[1].net, 1000, "Ann won 10s"); eq(res.results[1].hands[1].outcome, "win", "outcome")
-eq(ann.balance, 9000 + 2000, "paid 2x the bet back"); eq(t.round, 2, "next round"); eq(t.status, "betting", "betting again"); eq(#t.members.Ann.bets, 0, "table clear")
+eq(ann.balance, 9000 + 2000, "paid 2x the bet back"); eq(#t.members.Ann.bets, 0, "the chips are settled")
 eq(t.lastResult.round, 1, "result round")
+-- the finished round stays on the table for a few seconds
+eq(t.status, "results", "results are on show"); eq(t.round, 1, "the round number holds until betting reopens"); eq(t.bj.phase, "results", "phase")
+eq(select(2, wager(t, "Ann", 1000, "early")), "round_closed", "no bets while the results show")
+pub = E.Public(t)
+eq(pub.phase, "results", "public phase"); eq(#pub.dealer.cards, 2, "the dealer's cards stay face up"); eq(pub.hands[1].hands[1].outcome, "win", "the outcome is shown")
+eq(pub.hands[1].hands[1].win, 2000, "with what came back"); eq(pub.nextAt, NOW + 2 + E.RESULTS_SECONDS, "and when the next round opens")
+eq(pub.turn, nil, "nobody's turn")
+eq(select(2, E.Act(t, "Ann", 1, "hit", NOW)), "round_closed", "no decisions during the results")
+eq(select(2, E.Deal(t, nil, NOW)), "not_betting", "cannot deal during the results")
+eq(E.NextRound(t, NOW + 7), true, "the pause ends"); eq(t.round, 2, "next round"); eq(t.status, "betting", "betting again")
+eq(#t.bj.order, 0, "the table is clear"); eq(E.Public(t).phase, "betting", "public phase is betting again")
+eq(select(2, E.NextRound(t, NOW)), "not_results", "nothing to do twice")
 
 -- natural blackjack pays 3:2, no turn
 wager(t, "Ann", 1000, "n1")
@@ -228,7 +240,8 @@ do
     valid("TBL_STATE", C.StateMessage(t15))
     E.Act(t15, "Quin", 1, "stand", NOW); E.FinishDealer(t15, NOW)
     valid("TBL_RESULT", C.ResultMessage(t15))
-    valid("TBL_STATE", C.StateMessage(t15))
+    valid("TBL_STATE", C.StateMessage(t15))            -- the results state, with outcomes
+    E.NextRound(t15, NOW + 5)
     -- Handle: TBL_ACT through the generic dispatcher
     wager(t15, "Quin", 1000); rig(t15, { "TS", "9D", "7H", "8C" }); E.Deal(t15, nil, NOW)
     local out, ev = C.Handle(t15, "Quin", "TBL_ACT", { ref = "a1", round = t15.round, action = "stand" }, NOW)

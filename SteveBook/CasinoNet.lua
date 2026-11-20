@@ -210,6 +210,17 @@ local function finishBlackjack(code)
         t.name, r.dealer.total, r.dealer.bust and " (bust)" or "", r.round, #r.results,
         house >= 0 and GREEN or RED, (house >= 0 and "+" or "") .. money(house)))
     send(code, { { type = "TBL_RESULT", payload = Casino.ResultMessage(t) }, stateMsg(t) })
+    changed(code)
+    -- the round stays on the table for a few seconds, then betting reopens
+    if C_Timer and C_Timer.After then C_Timer.After(ns.BlackjackTable.RESULTS_SECONDS, function() CasinoNet.NextBlackjackRound(code) end)
+    else CasinoNet.NextBlackjackRound(code) end
+end
+
+function CasinoNet.NextBlackjackRound(code)
+    local t = hosted(code)
+    if not (t and t.status == "results") then return end
+    ns.BlackjackTable.NextRound(t, now())
+    send(code, { stateMsg(t) })
     CasinoNet.Announce()
     changed(code)
 end

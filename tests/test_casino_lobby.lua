@@ -94,6 +94,29 @@ assert(CN.Deal(t)); settle()
 eq(CN.Skip(t), true, "skip"); settle()
 eq(t.round, 5, "skipping stood the hand and finished the round")
 eq(select(2, CN.Skip(t)), "There is nobody to skip.", "nobody left to skip")
+-- the finished round lingers on the table before betting reopens
+do
+    local function pass() stub.advance(1); stub.runAfters() end
+    assert(CN.Wager(t.code, 1000)); settle()
+    t.bj.shoe = { "TS", "9H", "6D", "8C", "KH" }; t.bj.pos = 1
+    assert(CN.Deal(t)); settle()
+    eq(t.status, "playing", "dealt")
+    assert(CN.Act(t.code, "stand"))
+    local tries = 0
+    while t.status ~= "results" and tries < 12 do pass(); tries = tries + 1 end
+    eq(t.status, "results", "after the dealer plays the table shows the results")
+    local round = t.round
+    pass()                                    -- the results reach the player; the pause is still running
+    eq(tc.state.status, "results", "the player sees the results state"); eq(Client.CanBet(tc), false, "and cannot bet yet")
+    check(tc.state.bj.hands[1] and tc.state.bj.hands[1].hands[1].outcome ~= nil, "the outcome is on the table")
+    check(#tc.state.bj.dealer.cards >= 2, "and so are the dealer's cards")
+    eq(select(2, CN.Wager(t.code, 1000)), "Betting is closed right now.", "betting is closed during the results")
+    pass()                                    -- the pause ends
+    eq(t.status, "betting", "betting reopens"); eq(t.round, round + 1, "as the next round")
+    pass()
+    eq(tc.state.status, "betting", "the player sees it"); eq(Client.CanBet(tc), true, "and can bet again")
+    eq(#tc.state.bj.hands, 0, "with the old hands cleared")
+end
 eq(#stub.errors, 0, "no errors so far: " .. table.concat(stub.errors, "; "))
 
 ------------------------------------------------------------------------------------------
