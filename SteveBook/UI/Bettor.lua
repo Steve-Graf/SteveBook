@@ -764,7 +764,9 @@ end
 local function setTab(name) tab = name; showJoin = false; Bettor.Refresh() end
 
 local function build()
-    frame = CreateFrame("Frame", nil, UIParent, "BasicFrameTemplateWithInset")
+    -- Named so Escape can close it (UISpecialFrames only takes global names).
+    frame = CreateFrame("Frame", "SteveBookBettorFrame", UIParent, "BasicFrameTemplateWithInset")
+    tinsert(UISpecialFrames, "SteveBookBettorFrame")
     frame:SetSize(WIN_W, WIN_H)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)

@@ -1047,7 +1047,9 @@ local function buildImportPanel()
 end
 
 local function build()
-    frame = CreateFrame("Frame", nil, UIParent, "BasicFrameTemplateWithInset")
+    -- Named so Escape can close it (UISpecialFrames only takes global names).
+    frame = CreateFrame("Frame", "SteveBookBookieFrame", UIParent, "BasicFrameTemplateWithInset")
+    tinsert(UISpecialFrames, "SteveBookBookieFrame")
     frame:SetSize(WIN_W, WIN_H)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)

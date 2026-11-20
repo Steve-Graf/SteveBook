@@ -130,6 +130,12 @@ for _, w in ipairs({ "bookie", "bet" }) do
     run(w); run(w); run(w)
 end
 check(stub.lastPrint() == stub.lastPrint(), "windows toggled")
+do
+    local special = {}
+    for _, n in ipairs(UISpecialFrames) do special[n] = true end
+    check(special.SteveBookBookieFrame and special.SteveBookBettorFrame, "both windows close on Escape (UISpecialFrames)")
+    check(_G.SteveBookBookieFrame ~= nil and _G.SteveBookBettorFrame ~= nil, "the windows have global names for UISpecialFrames")
+end
 
 -- Login: PLAYER_ENTERING_WORLD schedules a delayed channel join for known books.
 stub.channels = {}
