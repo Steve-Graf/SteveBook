@@ -125,6 +125,11 @@ other client drops them. Addon WHISPERs are not used: in Forever the send call r
 but the message never arrived. Consequence: other members' clients receive (and ignore) each
 other's balances and bets on the wire, which fits the friends-only trust model below.
 
+**Testing alone:** `/book loopback` lets one character act as bookie and bettor of its own book.
+`Comm.Send` then also hands each message to the same client's handlers for the other role (the
+bettor side appears to the bookie as the member `Loopback`, whom you approve). It is a test aid;
+leave it off for real play.
+
 **Authority:** the bookie's client validates everything. Bettor clients only *request*.
 (These are friends; clients can be modified, so this is about preventing mistakes and races,
 not cheating.)

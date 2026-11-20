@@ -14,6 +14,7 @@ local function help()
     say("/book use <# or code>  choose the active book")
     say("/book bookie (or /bookie)  open the bookie window")
     say("/book bet (or /bet)        open the bettor window")
+    say("/book loopback     test alone: let this character be bookie and bettor of its own book")
     say("/book              show the active book")
 end
 
@@ -38,6 +39,14 @@ local function handle(msg)
         local b, err = Model.PickBook(db, rest)
         if not b then return say(err) end
         say("Active book: " .. describe(b))
+    elseif cmd == "loopback" then
+        db.loopback = not db.loopback
+        if db.loopback then
+            say("Loopback ON. Join your own book in /bet, then approve the member named " ..
+                (ns.Comm and ns.Comm.LOOPBACK_NAME or "Loopback") .. " in /bookie.")
+        else
+            say("Loopback OFF.")
+        end
     elseif cmd == "bookie" or cmd == "bet" then
         local ui = ns.UI and ns.UI[cmd == "bookie" and "Bookie" or "Bettor"]
         if ui and ui.Toggle then ui.Toggle() else say("That window is not available yet.") end

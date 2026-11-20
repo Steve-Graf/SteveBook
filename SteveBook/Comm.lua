@@ -127,6 +127,50 @@ function Comm.LeaveBook(code)
 end
 
 -- ---------------------------------------------------------------------------------------
+-- Delivery to handlers, and loopback (testing alone)
+
+local function dispatch(msgType, sender, payload, code)
+    for _, fn in ipairs(handlers[msgType] or {}) do
+        local hok, herr = pcall(fn, sender, payload, code)
+        if not hok then
+            Comm.lastError = herr
+            if geterrorhandler then geterrorhandler()(herr) end
+        end
+    end
+end
+
+-- Loopback lets one character be bookie and bettor of its own book (/book loopback). A client
+-- never hears its own messages, so with it on, Send also hands each message straight to this
+-- client's own handlers for the other role. The bettor side shows up to the bookie as the
+-- member LOOPBACK_NAME, so approve that member.
+local LOOPBACK_NAME = "Loopback"
+Comm.LOOPBACK_NAME = LOOPBACK_NAME
+local BETTOR_ORIGIN = { JOIN_REQ = true, SYNC_REQ = true, BET_PLACE = true, PING = true }
+
+function Comm.LoopbackActive(code)
+    local db = SteveBookDB
+    local cached = db and db.cache and db.cache.books
+    return db ~= nil and db.loopback == true and isOwner(code) and cached ~= nil and cached[code] ~= nil
+end
+
+local function loopback(text, msgType, code, to)
+    local sender
+    if BETTOR_ORIGIN[msgType] then
+        sender = LOOPBACK_NAME
+    else
+        if to and baseName(to) ~= LOOPBACK_NAME then return end   -- addressed to a real player
+        sender = myName()
+    end
+    local function run()
+        local ok, env = AceSer:Deserialize(text)                 -- same copy a real receiver gets
+        if not ok then return end
+        local t, c, payload = Protocol.Unwrap(env)
+        if t then dispatch(t, sender, payload, c) end
+    end
+    if C_Timer and C_Timer.After then C_Timer.After(0.2, run) else run() end
+end
+
+-- ---------------------------------------------------------------------------------------
 -- Sending
 
 local function rawSend(text, code, prio)
@@ -180,6 +224,7 @@ function Comm.Send(msgType, payload, bookCode, target)
     local sok, text = pcall(AceSer.Serialize, AceSer, env)
     if not sok then return false, tostring(text) end
     local prio = PRIORITY[msgType]
+    if Comm.LoopbackActive(bookCode) then loopback(text, msgType, bookCode, env.to) end
     -- pcall returns (ok, rawSend's first result, rawSend's second result)
     local ok, sent, serr = pcall(rawSend, text, bookCode, prio)
     if not ok then return false, tostring(sent) end
@@ -209,13 +254,7 @@ Comm:RegisterComm(PREFIX, function(_, message, _, sender)
     -- Addressed to someone else (see Comm.Send)? Not for us.
     if env.to ~= nil and (type(env.to) ~= "string" or baseName(normalize(env.to)) ~= baseName(myName())) then return end
     if not Protocol.ShouldDeliver(msgType, isOwner(code)) then return end
-    for _, fn in ipairs(handlers[msgType] or {}) do
-        local hok, herr = pcall(fn, sent, payload, code)
-        if not hok then
-            Comm.lastError = herr
-            if geterrorhandler then geterrorhandler()(herr) end
-        end
-    end
+    dispatch(msgType, sent, payload, code)
 end)
 
 -- ---------------------------------------------------------------------------------------
