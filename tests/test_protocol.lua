@@ -44,4 +44,22 @@ check(P.CanonicalCode("NFL-K7Q2") == "NFL-K7Q2", "canonical stays")
 check(P.CanonicalCode("") == "" and P.CanonicalCode(nil) == "", "empty code")
 check(P.CanonicalCode("AB-1") == "AB1", "short codes lose the hyphen")
 
+-- parlay BET_PLACE
+do
+    local function leg(m, s, o) return { marketId = m, selectionId = s, odds = o } end
+    local ok = P.Wrap("BET_PLACE", "NFL-K7Q2", { ref = "p1", stake = 2000, legs = { leg(1, 1, -110), leg(2, 2, 130) } })
+    check(ok, "a two-leg parlay validates")
+    check(not P.Wrap("BET_PLACE", "X", { ref = "p", stake = 2000, legs = { leg(1, 1, -110) } }), "one leg is not a parlay")
+    local many = {}
+    for i = 1, 9 do many[i] = leg(i, 1, -110) end
+    check(not P.Wrap("BET_PLACE", "X", { ref = "p", stake = 2000, legs = many }), "too many legs rejected")
+    check(not P.Wrap("BET_PLACE", "X", { ref = "p", stake = 2000, legs = { leg(1, 1, -110), { marketId = 2 } } }), "a malformed leg is rejected")
+    check(not P.Wrap("BET_PLACE", "X", { ref = "p", stake = 2000, marketId = 1, selectionId = 1, odds = -110, legs = { leg(1, 1, -110), leg(2, 1, 100) } }),
+        "single fields and legs together are rejected")
+    check(not P.Wrap("BET_PLACE", "X", { ref = "p", stake = 2000 }), "neither single fields nor legs is rejected")
+    check(not P.Wrap("BET_PLACE", "X", { ref = "p", stake = 2000, marketId = 1 }), "a half-filled single bet is rejected")
+    check(P.Wrap("BET_REJECT", "X", { ref = "p", reason = "parlay_conflict", legIndex = 2 }), "parlay_conflict reject with legIndex")
+    check(P.Wrap("BET_REJECT", "X", { ref = "p", reason = "odds_changed", currentOdds = -120, legIndex = 1 }), "odds_changed reject names the leg")
+end
+
 if fails == 0 then print("protocol: all tests passed") else os.exit(1) end

@@ -88,4 +88,62 @@ eq(select(2, Odds.StakeCheck(-100)), "bad_stake", "negative")
 eq(select(2, Odds.StakeCheck(150.5)), "bad_stake", "fractional")
 eq(select(2, Odds.StakeCheck("20s")), "bad_stake", "non-number")
 
+-- Parlays
+local function near(got, want, label) eq(got ~= nil and math.abs(got - want) < 1e-9, true, label .. " (got " .. tostring(got) .. ")") end
+near(Odds.Decimal(150), 2.5, "decimal +150")
+near(Odds.Decimal(-200), 1.5, "decimal -200")
+eq(Odds.Decimal(50), nil, "decimal rejects +50")
+near(Odds.ParlayDecimal({ -110, -110, 130 }), (1 + 100 / 110) ^ 2 * 2.3, "3-leg decimal")
+eq(Odds.ParlayOdds({ -110, -110 }), 264, "two -110 legs are +264")
+eq(Odds.ParlayOdds({ -110, -110, 130 }), 738, "-110 -110 +130 is +738")
+eq(Odds.ParlayOdds({ 100, 100 }), 300, "two even-money legs are +300")
+eq(Odds.ParlayOdds({ -1000, -1000 }), -476, "two -1000 legs are -476 (rounded)")
+eq(Odds.FromDecimal(1.5), -200, "1.5 decimal is -200")
+eq(Odds.FromDecimal(2.0), 100, "2.0 decimal is +100")
+eq(Odds.FromDecimal(1), nil, "decimal must exceed 1")
+eq(Odds.ParlayProfit(2000, { -110, -110, 130 }), 14765, "20s on a +738 parlay wins 1g 47s 65c")
+eq(Odds.ParlayProfit(10000, { 100, 100 }), 30000, "1g on +300 wins 3g")
+eq(select(2, Odds.ParlayProfit(0, { 100, 100 })), "bad stake", "parlay stake must be positive")
+eq(select(2, Odds.ParlayProfit(100, { 100, 7 })), "bad odds", "parlay rejects bad leg odds")
+eq(Odds.ParlayLegCheck(2), true, "2 legs ok")
+eq(Odds.ParlayLegCheck(Odds.MAX_PARLAY_LEGS), true, "max legs ok")
+eq(select(2, Odds.ParlayLegCheck(1)), "bad_request", "1 leg is not a parlay")
+eq(select(2, Odds.ParlayLegCheck(Odds.MAX_PARLAY_LEGS + 1)), "bad_request", "too many legs")
+
+local ML  = { id = 1, event = "LAL @ BOS", closesAt = 100, type = "moneyline" }
+local SP  = { id = 2, event = "LAL @ BOS", closesAt = 100, type = "spread" }
+local TOT = { id = 3, event = "LAL @ BOS", closesAt = 100, type = "total" }
+local TOT2 = { id = 4, event = "LAL @ BOS", closesAt = 100, type = "total" }
+local OTHER = { id = 5, event = "DEN @ PHX", closesAt = 200, type = "moneyline" }
+local ML_LATER = { id = 6, event = "LAL @ BOS", closesAt = 999, type = "moneyline" }
+eq(Odds.ParlayConflict({ ML, TOT }), true, "ML + total from one game is allowed")
+eq(Odds.ParlayConflict({ SP, TOT }), true, "spread + total from one game is allowed")
+eq(Odds.ParlayConflict({ ML, OTHER, TOT }), true, "different games never conflict")
+eq(select(2, Odds.ParlayConflict({ ML, SP })), "same_game_conflict", "ML + spread conflict")
+eq(select(2, Odds.ParlayConflict({ TOT, TOT2 })), "same_game_conflict", "over + under conflict")
+eq(select(2, Odds.ParlayConflict({ ML, TOT, SP })), "same_game_conflict", "a second side bet conflicts")
+eq(select(2, Odds.ParlayConflict({ ML, ML })), "duplicate_market", "same market twice")
+eq(Odds.ParlayConflict({ ML, ML_LATER }), true, "same event string at another time is another game")
+do
+    local ok, why, i, j = Odds.ParlayConflict({ OTHER, ML, SP })
+    eq(ok, false, "conflict found after a clean leg"); eq(i, 2, "first conflicting leg"); eq(j, 3, "second conflicting leg")
+end
+
+local function legs(...) local l = {}; for i, v in ipairs({ ... }) do l[i] = { odds = v[1], status = v[2] } end; return l end
+do
+    local st, d, o = Odds.GradeParlay(2000, legs({ -110, "won" }, { -110, "won" }, { 130, "won" }))
+    eq(st, "won", "all legs won"); eq(d, 14765, "all-won profit"); eq(o, 738, "all-won odds")
+    st, d = Odds.GradeParlay(2000, legs({ -110, "won" }, { -110, "lost" }, { 130, "pending" }))
+    eq(st, "lost", "a lost leg decides it while others are pending"); eq(d, -2000, "lost delta")
+    st, d = Odds.GradeParlay(2000, legs({ -110, "won" }, { 130, "pending" }))
+    eq(st, "pending", "pending while a leg is open"); eq(d, 0, "pending delta")
+    st, d, o = Odds.GradeParlay(2000, legs({ -110, "won" }, { -110, "push" }, { 130, "void" }))
+    eq(st, "won", "push and void legs drop out"); eq(d, 1818, "profit on the one winning leg (-110 on 20s)"); eq(o, -110, "odds of the remaining leg")
+    st, d = Odds.GradeParlay(2000, legs({ -110, "push" }, { 130, "void" }))
+    eq(st, "push", "push + void with no winner is a push"); eq(d, 0, "push delta")
+    st, d = Odds.GradeParlay(2000, legs({ -110, "void" }, { 130, "void" }))
+    eq(st, "void", "all void"); eq(d, 0, "void delta")
+    eq(select(2, Odds.GradeParlay(0, legs({ -110, "won" }, { 130, "won" }))), "bad stake", "grade needs a stake")
+end
+
 if fails == 0 then print("odds: all tests passed") else os.exit(1) end

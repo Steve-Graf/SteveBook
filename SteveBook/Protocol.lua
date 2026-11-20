@@ -34,16 +34,19 @@ Protocol.Spec = {
 
     BET_PLACE  = { dir = "bettor", fields = {
         ref = "string",         -- client nonce chosen by bettor; stored on the Bet, echoed in ACK/REJECT
-        marketId = "number",    -- SPEC §4 ids are numbers
-        selectionId = "number",
+        marketId = "number?",   -- SPEC §4 ids are numbers. A single bet has marketId, selectionId and
+        selectionId = "number?",--   odds; a parlay has `legs` instead (checked in Validate).
         stake = "number",       -- copper
-        odds = "number",        -- American odds the bettor saw
+        odds = "number?",       -- American odds the bettor saw
+        legs = "table?",        -- parlay: list of { marketId, selectionId, odds }, 2..8 long, in slip order
     } },
     BET_ACK    = { dir = "bookie", fields = { ref = "string", bet = "table", balance = "number?" } },
     BET_REJECT = { dir = "bookie", fields = {
         ref = "string",
         reason = "string",      -- one of Protocol.REJECT_REASONS
         currentOdds = "number?",    -- set when reason == "odds_changed"
+        legIndex = "number?",       -- parlay only: 1-based leg the reason is about (odds_changed, market_closed,
+                                    --   no_market, bad_selection) or the later leg of a parlay_conflict
         available = "number?",      -- copper still available, set when reason == "credit_limit"
     } },
 
@@ -56,6 +59,7 @@ Protocol.Spec = {
 Protocol.REJECT_REASONS = {
     "not_member", "no_market", "market_closed", "bad_selection",
     "bad_stake", "odds_changed", "credit_limit", "bad_request", "book_error",
+    "parlay_conflict",      -- two legs that may not share a parlay (Odds.ParlayConflict)
 }
 
 local function isReason(r)
@@ -80,6 +84,25 @@ function Protocol.Validate(msgType, payload)
     end
     if msgType == "BET_REJECT" and not isReason(payload.reason) then
         return false, "unknown reject reason"
+    end
+    if msgType == "BET_PLACE" then
+        local single = payload.marketId ~= nil or payload.selectionId ~= nil or payload.odds ~= nil
+        if payload.legs ~= nil then
+            if single then return false, "a parlay has legs instead of marketId, selectionId and odds" end
+            local n = #payload.legs
+            local lo = ns.Odds and ns.Odds.MIN_PARLAY_LEGS or 2
+            local hi = ns.Odds and ns.Odds.MAX_PARLAY_LEGS or 8
+            if n < lo or n > hi then return false, "a parlay needs " .. lo .. " to " .. hi .. " legs" end
+            for i = 1, n do
+                local leg = payload.legs[i]
+                if type(leg) ~= "table" or type(leg.marketId) ~= "number"
+                    or type(leg.selectionId) ~= "number" or type(leg.odds) ~= "number" then
+                    return false, "leg " .. i .. " needs numeric marketId, selectionId and odds"
+                end
+            end
+        elseif payload.marketId == nil or payload.selectionId == nil or payload.odds == nil then
+            return false, "missing field: marketId, selectionId and odds (or legs)"
+        end
     end
     return true
 end

@@ -70,6 +70,30 @@ Rounding: always floor profit to whole copper. Keep the math in one pure functio
 
 ---
 
+## 3a. Parlays
+
+A parlay is one stake on 2 to 8 legs (`Odds.MIN_PARLAY_LEGS`, `Odds.MAX_PARLAY_LEGS`). Every leg is a
+selection on an open market. There is no payout cap in v1 (a huge hit is a feature). The stake rules
+in §3 apply unchanged, and the stake is the amount at risk (credit limits count it like any bet).
+
+- **Price:** multiply each leg's decimal odds; the stored `Bet.odds` is the combined American odds
+  (rounded, for display). Profit is computed from the decimal product and floored to whole copper
+  (`Odds.ParlayProfit`), never from the rounded American number.
+- **Which legs may share a parlay** (`Odds.ParlayConflict`): legs on different games never conflict.
+  Within one game (same event and close time) a parlay may hold **one side bet (moneyline or spread)
+  plus one total (over or under)**. Rejected: moneyline + spread, two spreads, over + under, and the
+  same market twice.
+- **Locked-in odds:** each leg keeps the odds at the moment the bookie accepted the parlay. If any
+  leg's odds changed since the bettor saw them, the whole parlay is rejected (`odds_changed`, with
+  `legIndex`), same as a single bet.
+- **Grading** (`Odds.GradeParlay`): a lost leg loses the parlay at once, even while other legs are
+  still pending. Otherwise the parlay stays open until every leg is resolved. A push or void leg
+  drops out and the rest are priced without it. If nothing won, the result is a push (or void when
+  every leg is void). Correcting a market result re-grades every parlay with a leg on it, reversing
+  the old ledger effect first, exactly like single bets.
+- A game that has started is closed for parlays too: the bookie rejects any parlay with a leg whose
+  market is not open (`market_closed`, `legIndex`).
+
 ## 4. Data model (bookie's SavedVariables are the source of truth)
 
 Saved data is per character (`SavedVariablesPerCharacter`): a book belongs to the character that
@@ -96,9 +120,10 @@ Market {
 }
 
 Bet {
-  id, bettor, marketId, selectionId,
+  id, bettor, marketId, selectionId,   -- a single bet; a parlay has `legs` instead (below)
+  legs? = { { marketId, selectionId, odds, status = "pending"|"won"|"lost"|"push"|"void" }, ... },
   stake,                      -- copper
-  odds,                       -- locked in at acceptance
+  odds,                       -- locked in at acceptance (a parlay: combined American odds)
   status = "pending"|"accepted"|"rejected"|"won"|"lost"|"push"|"void",
   placedAt, settledAt, rejectReason?
 }
@@ -143,7 +168,7 @@ not cheating.)
 | SYNC_REQ       | bettor → bookie  | "Send me current state" (on login, on join, on reconnect) with last known `rev` |
 | SYNC           | bookie → bettor  | Markets + that bettor's bets + balance (chunked) |
 | MARKET         | bookie → all     | New/updated/locked/settled market |
-| BET_PLACE      | bettor → bookie  | marketId, selectionId, stake, odds the bettor saw |
+| BET_PLACE      | bettor → bookie  | marketId, selectionId, stake, odds the bettor saw; or `legs` (parlay, §3a) instead of the three |
 | BET_ACK / BET_REJECT | bookie → bettor | Accepted (with final odds) or rejected with reason |
 | BALANCE        | bookie → bettor  | Balance changed (settlement or payment) |
 | PING / PONG    | either           | Presence, so the bettor UI knows if the book is online |
@@ -222,9 +247,7 @@ TOTAL|NFL|PHI @ DAL|2026-11-26T16:30-05:00|47.5|Over:-110|Under:-110
 
 ## 8. Not in v1 (notes for later)
 
-- **Parlays**: multi-leg bets; combined decimal odds = product of each leg's decimal odds,
-  converted back to American; a push/void leg drops out of the parlay. Needs a Bet model with
-  `legs = {}`. Design the Bet table so this can be added without migration pain.
+- **Parlays** moved into v1: see §3a.
 - Off-WoW line-pulling script (outputs the §7 format).
 - Automatic settle-up detection from trades.
 - Live in-game notifications when a line moves.
