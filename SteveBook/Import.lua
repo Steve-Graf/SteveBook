@@ -129,7 +129,10 @@ end
 -- in the pasted text. `now` is optional (epoch seconds).
 function Import.Parse(text, now)
     local items, n = {}, 0
-    for raw in (tostring(text or "") .. "\n"):gmatch("(.-)\r?\n") do
+    -- WoW edit boxes escape every typed or pasted "|" as "||". Names cannot contain "|"
+    -- (SPEC §7), so a doubled pipe is always one separator.
+    text = tostring(text or ""):gsub("||", "|")
+    for raw in (text .. "\n"):gmatch("(.-)\r?\n") do
         n = n + 1
         local line = trim(raw)
         if line ~= "" and line:sub(1, 1) ~= "#" then

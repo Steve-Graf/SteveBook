@@ -100,7 +100,8 @@ bad("PARLAY|NFL|x|2026-11-26T16:30Z|a:-110|b:-110", 'unknown market type "PARLAY
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-150", "need 6", "ML missing a field")
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|-3.5|PHI:-150|DAL:+130", "need 6", "ML with a line field")
 bad("SPREAD|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-110|DAL:-110", "need 7", "spread without a line")
-bad("ML|NFL||2026-11-26T16:30Z|PHI:-150|DAL:+130", "event is empty", "empty event")
+-- an empty field typed in game arrives as "||||" (each "|" doubled); "||" alone is one separator
+bad("ML|NFL||||2026-11-26T16:30Z|PHI:-150|DAL:+130", "event is empty", "empty event")
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30|PHI:-150|DAL:+130", "UTC offset", "time without an offset")
 bad("ML|NFL|PHI @ DAL|2026-02-30T16:30Z|PHI:-150|DAL:+130", "day out of range", "impossible date")
 bad("ML|NFL|PHI @ DAL|2026-11-19T16:30Z|PHI:-150|DAL:+130", "already passed", "already closed")
@@ -146,5 +147,12 @@ local other = Import.Plan(pbook, "ML|NFL|phi @ dal|2026-11-26T16:30-05:00|PHI:-1
 eq(other.duplicate, 1, "duplicate check ignores event case")
 local later = Import.Plan(pbook, "ML|NFL|PHI @ DAL|2026-11-26T16:35-05:00|PHI:-150|DAL:+130", NOW)
 eq(later.ok, 1, "same game at a different time is not a duplicate")
+
+-- WoW edit boxes double every "|" (so a pasted line arrives as ML||NFL||...)
+local dbl = Import.Parse("ML||NFL||PHI @ DAL||2026-11-26T16:30-05:00||PHI:-150||DAL:+130\nTOTAL||NFL||PHI @ DAL||2026-11-26T16:30-05:00||47.5||Over:-110||Under:-110", NOW)
+eq(#dbl, 2, "doubled pipes: two lines")
+check(dbl[1].spec ~= nil, "doubled pipes: ML parses: " .. tostring(dbl[1].err))
+check(dbl[2].spec ~= nil, "doubled pipes: total parses: " .. tostring(dbl[2].err))
+eq(dbl[1].text, "ML|NFL|PHI @ DAL|2026-11-26T16:30-05:00|PHI:-150|DAL:+130", "doubled pipes: shown with single pipes")
 
 if fails == 0 then print("import: all tests passed") else os.exit(1) end

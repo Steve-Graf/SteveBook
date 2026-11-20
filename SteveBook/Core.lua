@@ -12,8 +12,8 @@ local function help()
     say("/book new <name>   create a book (generates a join code)")
     say("/book list         list your books")
     say("/book use <# or code>  choose the active book")
-    say("/book bookie       open the bookie window")
-    say("/book bet          open the bettor window")
+    say("/book bookie (or /bookie)  open the bookie window")
+    say("/book bet (or /bet)        open the bettor window")
     say("/book              show the active book")
 end
 
@@ -61,3 +61,9 @@ end)
 
 SLASH_STEVEBOOK1 = "/book"
 SlashCmdList["STEVEBOOK"] = handle
+
+-- Shortcuts: /bookie and /bet open the two windows directly.
+SLASH_STEVEBOOKIE1 = "/bookie"
+SlashCmdList["STEVEBOOKIE"] = function() handle("bookie") end
+SLASH_STEVEBET1 = "/bet"
+SlashCmdList["STEVEBET"] = function() handle("bet") end
