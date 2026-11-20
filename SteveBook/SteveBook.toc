@@ -3,6 +3,7 @@
 ## Notes: In-game sportsbook: run a book, bet gold on credit.
 ## Author: Steve-Graf
 ## Version: 0.1.0
+## X-Curse-Project-ID: 1818097
 ## SavedVariablesPerCharacter: SteveBookDB
 
 Libs\embeds.xml

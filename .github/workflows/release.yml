@@ -31,3 +31,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" "SteveBook-${GITHUB_REF_NAME}.zip" --title "$GITHUB_REF_NAME" --generate-notes
+
+      - name: Upload to CurseForge
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          CF_PROJECT_ID: "1818097"
+          CF_GAME_VERSION: "1.60.1"
+        run: |
+          if [ -z "$CF_API_KEY" ]; then
+            echo "CF_API_KEY is not set; skipping the CurseForge upload."
+            exit 0
+          fi
+          API="https://wow.curseforge.com/api"
+          VERSION_ID=$(curl -fsS -H "X-Api-Token: $CF_API_KEY" "$API/game/versions" \
+            | jq -r --arg n "$CF_GAME_VERSION" '[.[] | select(.name == $n)][0].id // empty')
+          if [ -z "$VERSION_ID" ]; then
+            echo "CurseForge has no game version named $CF_GAME_VERSION."
+            exit 1
+          fi
+          # Betas until the addon is proven in game; change to "release" later.
+          META=$(jq -nc --arg name "$GITHUB_REF_NAME" --argjson v "$VERSION_ID" \
+            --arg log "Release $GITHUB_REF_NAME. Notes: https://github.com/Steve-Graf/SteveBook/releases/tag/$GITHUB_REF_NAME" \
+            '{changelog: $log, changelogType: "markdown", displayName: $name, gameVersions: [$v], releaseType: "beta"}')
+          curl -fsS -H "X-Api-Token: $CF_API_KEY" \
+            -F "metadata=$META" \
+            -F "file=@SteveBook-${GITHUB_REF_NAME}.zip" \
+            "$API/projects/$CF_PROJECT_ID/upload-file"
