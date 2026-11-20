@@ -119,6 +119,12 @@ frames, and send addon messages over `CHANNEL`. Bettors never need the bookie's 
 Fallback if CHANNEL addon messages are restricted in Forever: bettor enters the bookie's name
 too and everything goes over addon `WHISPER`.
 
+**Addressed replies:** messages meant for one player (JOIN_OK/DENY, SYNC, BET_ACK/REJECT, BALANCE)
+go out on the same hidden channel with the envelope field `to` set to that player's name; every
+other client drops them. Addon WHISPERs are not used: in Forever the send call returned success
+but the message never arrived. Consequence: other members' clients receive (and ignore) each
+other's balances and bets on the wire, which fits the friends-only trust model below.
+
 **Authority:** the bookie's client validates everything. Bettor clients only *request*.
 (These are friends; clients can be modified, so this is about preventing mistakes and races,
 not cheating.)

@@ -144,11 +144,12 @@ do
     }
     local want = { JOIN_OK = "ALERT", JOIN_DENY = "ALERT", BET_ACK = "ALERT", BET_REJECT = "ALERT",
                    PING = "ALERT", PONG = "ALERT", SYNC = "BULK" }
+    stub.channels[Protocol.ChannelName("PRI-0001")] = 7         -- the channel is up
     for msgType, payload in pairs(P) do
         spy = {}
-        local ok, err = Comm.Send(msgType, payload, "PRI-0001", "Bob")        -- whisper: no channel needed
-        check(ok == true, msgType .. " whisper sent: " .. tostring(err))
-        check(#spy == 1 and spy[1].dist == "WHISPER" and spy[1].target == "Bob", msgType .. " went out as a WHISPER to Bob")
+        local ok, err = Comm.Send(msgType, payload, "PRI-0001", "Bob")        -- addressed to Bob, on the channel
+        check(ok == true, msgType .. " sent: " .. tostring(err))
+        check(#spy == 1 and spy[1].dist == "CHANNEL" and spy[1].target == 7, msgType .. " went out on the channel, never as a WHISPER")
         eq(spy[1] and spy[1].prio, want[msgType], msgType .. " priority")
         eq(spy[1] and spy[1].prefix, "SteveBook", msgType .. " prefix")
     end
@@ -160,6 +161,7 @@ end
 ------------------------------------------------------------------------------------------
 do
     stub.addonMessages = {}
+    stub.channels[Protocol.ChannelName("ORD-0001")] = 9
     local markets = {}
     for i = 1, 40 do
         markets[i] = { id = i, sport = "NFL", event = "Team" .. i .. " @ Other" .. i, type = "spread", line = -3.5,
@@ -280,15 +282,16 @@ do
         markets[i] = { id = i, event = "Game " .. i, type = "moneyline",
             selections = { { id = 1, label = "A", odds = -150 }, { id = 2, label = "B", odds = 130 } }, status = "open" }
     end
-    Comm.Send("SYNC", { rev = 5, bookName = "Round", markets = markets, bets = {}, balance = -250, creditLimit = 50000 }, code, "Bob")
+    stub.channels[Protocol.ChannelName(code)] = 8
+    Comm.Send("SYNC", { rev = 5, bookName = "Round", markets = markets, bets = {}, balance = -250, creditLimit = 50000 }, code, "Tester")
     tick(60)
     local parts = stub.addonMessages
     check(#parts > 10, "the SYNC went out in many parts: " .. #parts)
     drainSeen()
-    -- feed them back as another client's whisper (this client does not own the code)
+    -- feed them back as another client's channel message addressed to us (we do not own the code)
     for i, m in ipairs(parts) do
         local text = textOf(m, i)
-        if text then stub.fire("CHAT_MSG_ADDON", m.prefix, text, "WHISPER", "Real-Realm") end
+        if text then stub.fire("CHAT_MSG_ADDON", m.prefix, text, "CHANNEL", "Real-Realm") end
     end
     local got = drainSeen()
     eq(#got, 1, "reassembled into exactly one delivery")
@@ -445,4 +448,23 @@ if #stub.errors > 0 then
     fails = fails + 1
     out_("FAIL: errors reported to the error handler:\n  " .. table.concat(stub.errors, "\n  "))
 end
+------------------------------------------------------------------------------------------
+-- 9. addressed messages: only the named player acts on them
+------------------------------------------------------------------------------------------
+do
+    local code = "ADR-0001"
+    local function send(to)
+        local env = assert(Protocol.Wrap("JOIN_DENY", code, { ownerName = "Real", reason = "denied" }))
+        if to ~= nil then env.to = to end
+        stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "CHANNEL", "Real-Realm")
+        return #drainSeen()
+    end
+    drainSeen()
+    eq(send("Tester"), 1, "addressed to us: delivered")
+    eq(send("Tester-Realm"), 1, "addressed to us with our realm: delivered")
+    eq(send("Someone"), 0, "addressed to another player: dropped")
+    eq(send(42), 0, "malformed address: dropped")
+    eq(send(nil), 1, "no address (everyone): delivered")
+end
+
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end

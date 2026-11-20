@@ -151,12 +151,18 @@ check(m and m.prefix == "SteveBook" and m.chatType == "CHANNEL" and m.target == 
     "PING went to the book's channel with our prefix")
 check(m and #m.text <= 255, "addon message is within 255 bytes")
 
--- A whisper (bookie -> one bettor) uses WHISPER.
+-- A reply to one bettor goes out on the channel, addressed to them (never as a WHISPER).
 before = #stub.addonMessages
-check(ns.Comm.Send("JOIN_DENY", { ownerName = "Tester", reason = "denied" }, code, "Friend") == true, "Comm.Send whisper succeeds")
+check(ns.Comm.Send("JOIN_DENY", { ownerName = "Tester", reason = "denied" }, code, "Friend") == true, "Comm.Send addressed message succeeds")
 stub.advance(1); stub.advance(1)
 m = stub.addonMessages[#stub.addonMessages]
-check(#stub.addonMessages > before and m.chatType == "WHISPER" and m.target == "Friend", "JOIN_DENY went out as a WHISPER")
+check(#stub.addonMessages > before and m.chatType == "CHANNEL" and m.target == stub.channels[ns.Protocol.ChannelName(code)],
+    "JOIN_DENY went out on the book's channel")
+do
+    local AceSer = LibStub("AceSerializer-3.0")
+    local okd, env = AceSer:Deserialize(m.text)
+    check(okd and env.to == "Friend", "JOIN_DENY is addressed to Friend")
+end
 
 -- Sending before the channel is up queues and flushes once it is.
 stub.channels = {}

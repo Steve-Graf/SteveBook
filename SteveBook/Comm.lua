@@ -5,8 +5,10 @@
 -- API (used by Bookie/Bettor code):
 --   Comm.Register(msgType, function(sender, payload, bookCode) end)
 --   Comm.Send(msgType, payload, bookCode, targetNameOrNil) -> true | false, err
---       target nil  -> hidden channel (everyone in the book hears it)
---       target name -> addon WHISPER to that player
+--       target nil  -> everyone in the book acts on it
+--       target name -> sent on the same hidden channel, addressed to that player (envelope field
+--                      `to`); every other client drops it. Addon WHISPERs were not reliable in
+--                      Forever (accepted by the API, never delivered), the channel is.
 --   Comm.JoinBook(code), Comm.LeaveBook(code), Comm.IsJoined(code)
 --   Comm.Me() -> the player's name as delivered to handlers
 --
@@ -44,6 +46,8 @@ local function myRealm() return GetNormalizedRealmName and GetNormalizedRealmNam
 local function clock() return GetTime and GetTime() or 0 end
 
 function Comm.Me() return myName() end
+
+local function baseName(name) return type(name) == "string" and name:match("^([^%-]+)") or name end
 
 local function normalize(name)
     if Ambiguate then
@@ -125,11 +129,7 @@ end
 -- ---------------------------------------------------------------------------------------
 -- Sending
 
-local function rawSend(text, code, target, prio)
-    if target then
-        Comm:SendCommMessage(PREFIX, text, "WHISPER", target, prio)
-        return true
-    end
+local function rawSend(text, code, prio)
     local id = channelId(code)
     if id <= 0 then return false, "channel not ready" end
     Comm:SendCommMessage(PREFIX, text, "CHANNEL", id, prio)
@@ -148,7 +148,7 @@ local function flush()
             queued[code] = nil
         elseif channelId(code) > 0 then
             attempts[code] = nil
-            for _, m in ipairs(list) do pcall(rawSend, m.text, code, nil, m.prio) end
+            for _, m in ipairs(list) do pcall(rawSend, m.text, code, m.prio) end
             queued[code] = nil
         elseif (attempts[code] or 0) >= MAX_JOIN_ATTEMPTS then
             queued[code] = nil
@@ -176,12 +176,12 @@ end
 function Comm.Send(msgType, payload, bookCode, target)
     local env, err = Protocol.Wrap(msgType, bookCode, payload)
     if not env then return false, err end
+    if target then env.to = normalize(target) end
     local sok, text = pcall(AceSer.Serialize, AceSer, env)
     if not sok then return false, tostring(text) end
-    if target then target = normalize(target) end
     local prio = PRIORITY[msgType]
     -- pcall returns (ok, rawSend's first result, rawSend's second result)
-    local ok, sent, serr = pcall(rawSend, text, bookCode, target, prio)
+    local ok, sent, serr = pcall(rawSend, text, bookCode, prio)
     if not ok then return false, tostring(sent) end
     if sent == false and serr == "channel not ready" then
         enqueue(bookCode, text, prio)        -- joins are asynchronous; deliver once ready
@@ -206,6 +206,8 @@ Comm:RegisterComm(PREFIX, function(_, message, _, sender)
     if not ok then return end
     local msgType, code, payload = Protocol.Unwrap(env)
     if not msgType then return end
+    -- Addressed to someone else (see Comm.Send)? Not for us.
+    if env.to ~= nil and (type(env.to) ~= "string" or baseName(normalize(env.to)) ~= baseName(myName())) then return end
     if not Protocol.ShouldDeliver(msgType, isOwner(code)) then return end
     for _, fn in ipairs(handlers[msgType] or {}) do
         local hok, herr = pcall(fn, sent, payload, code)
