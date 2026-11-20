@@ -34,14 +34,15 @@ ratios (profit per 1 staked: -500 is 0.2x, +150 is 1.5x). The bookie window alwa
 A coin button on the minimap: left-click opens the bet window, right-click the bookie window, drag
 to move it. `/book icon` hides or shows it.
 
-## Casino (roulette)
+## Casino (roulette and blackjack)
 
-`/casino` opens the casino (also the Casino button in the bet window). **Host a table** to get a code
-like `RLT-K7Q2`; friends choose **Join a table** and enter it. Players sit down only when you let them
-in, and they have no chips until you add some (for example after they pay you in gold). Chips are the
-table's own credit, separate from the sportsbook. Players bet on the board; press **Spin the wheel**
-when you are ready. Choose a single zero, double zero or no-zero wheel when you create the table.
-To try it alone, turn on `/book loopback`, host a table and join your own code.
+`/casino` opens the casino (also the Casino button in the bet window). Pick a game and **Host a
+table**, or **Join a table** from the list of open tables (a code still works for a table that is not
+listed). Players sit down only when the host lets them in, and they have no chips until the host adds
+some (for example after they pay in gold). Chips are the table's own credit, separate from the
+sportsbook. Roulette: players bet on the board and the host spins. Blackjack: players bet, the host
+deals, and everyone plays the dealer in turn (hit, stand, double, split). To try a table alone, turn
+on `/book loopback`, host a table and join it from the list.
 
 ## Tests
 

@@ -6,7 +6,7 @@
 local ADDON, ns = ...
 ns = ns or {}
 
-local Casino, Client, Roulette, Odds = ns.Casino, ns.CasinoClient, ns.Roulette, ns.Odds
+local Casino, Client, Roulette, Odds, Blackjack = ns.Casino, ns.CasinoClient, ns.Roulette, ns.Odds, ns.Blackjack
 local CasinoNet = {}
 ns.CasinoNet = CasinoNet
 
@@ -63,10 +63,15 @@ local function onPlayerMessage(msgType)
     return function(sender, payload, code)
         local t = hosted(code)
         if not t or sender == t.hostName then return end
+        local rev = t.rev
         local out, events = Casino.Handle(t, sender, msgType, payload, now())
         send(code, out)
         for _, e in ipairs(events) do
-            if e.kind == "left" then send(code, { stateMsg(t) }) end
+            if e.kind == "left" then send(code, { stateMsg(t) }); CasinoNet.Announce() end
+        end
+        -- blackjack is played in the open: every wager and decision changes what everyone sees
+        if t.game == "blackjack" and t.rev ~= rev and msgType ~= "TBL_JOIN" and msgType ~= "TBL_SYNC_REQ" then
+            CasinoNet.AfterBlackjack(t)
         end
         announce(t, events)
         changed(code)
@@ -81,6 +86,7 @@ function CasinoNet.Create(spec)
     local t, err = Casino.Create(db(), spec, me(), now())
     if not t then return nil, err end
     ns.Comm.JoinBook(t.code)
+    CasinoNet.Announce()
     changed(t.code)
     return t
 end
@@ -93,6 +99,7 @@ function CasinoNet.Admit(t, name, chips)
         stateMsg(t),
         { type = "TBL_PLAYER", to = name, payload = Casino.PlayerMessage(t, name) },
     })
+    CasinoNet.Announce()
     changed(t.code)
     return m
 end
@@ -120,6 +127,8 @@ function CasinoNet.Kick(t, name)
         { type = "TBL_JOIN_DENY", to = name, payload = { ownerName = t.hostName, reason = "removed" } },
         stateMsg(t),
     })
+    if t.game == "blackjack" then CasinoNet.AfterBlackjack(t) end
+    CasinoNet.Announce()
     changed(t.code)
     return true
 end
@@ -163,6 +172,7 @@ end
 function CasinoNet.CloseTable(t)
     Casino.Close(t)
     send(t.code, { stateMsg(t) })
+    CasinoNet.Announce({ [t.code] = true })
     changed(t.code)
     local code = t.code
     if C_Timer and C_Timer.After then
@@ -183,6 +193,160 @@ function CasinoNet.Delete(t)
 end
 
 ------------------------------------------------------------------------------------------
+-- Host: blackjack
+------------------------------------------------------------------------------------------
+
+local dealerPending = {}                 -- table code -> true while the dealer's reveal is waiting to finish
+
+local function finishBlackjack(code)
+    dealerPending[code] = nil
+    local t = hosted(code)
+    if not (t and t.status == "dealer") then return end
+    local r = ns.BlackjackTable.FinishDealer(t, now())
+    if not r then return end
+    local house = 0
+    for _, e in ipairs(r.results) do house = house - e.net end
+    say(("%s: the dealer has %d%s. Round %d, %d player(s). House %s%s|r."):format(
+        t.name, r.dealer.total, r.dealer.bust and " (bust)" or "", r.round, #r.results,
+        house >= 0 and GREEN or RED, (house >= 0 and "+" or "") .. money(house)))
+    send(code, { { type = "TBL_RESULT", payload = Casino.ResultMessage(t) }, stateMsg(t) })
+    CasinoNet.Announce()
+    changed(code)
+end
+
+-- Tell everyone what the table looks like now, and if the players are done start the dealer.
+function CasinoNet.AfterBlackjack(t)
+    send(t.code, { stateMsg(t) })
+    if t.status == "dealer" and not dealerPending[t.code] then
+        dealerPending[t.code] = true
+        local code = t.code
+        if C_Timer and C_Timer.After then C_Timer.After(ns.BlackjackTable.DEALER_SECONDS, function() finishBlackjack(code) end)
+        else finishBlackjack(code) end
+    end
+    changed(t.code)
+end
+
+local DEAL_ERRORS = { no_bets = "Nobody has placed a bet yet.", not_betting = "A round is already being played." }
+
+function CasinoNet.Deal(t)
+    if t.game ~= "blackjack" then return nil, "Only blackjack tables deal." end
+    local ok, info = ns.BlackjackTable.Deal(t, nil, now())
+    if not ok then return nil, DEAL_ERRORS[info] or info end
+    if info.shuffled then say("A fresh shoe was shuffled.") end
+    CasinoNet.AfterBlackjack(t)
+    return true
+end
+
+-- Stand the player whose turn it is (the host's button).
+function CasinoNet.Skip(t)
+    local name = t.game == "blackjack" and ns.BlackjackTable.Skip(t, now())
+    if not name then return nil, "There is nobody to skip." end
+    say(name .. " was stood.")
+    CasinoNet.AfterBlackjack(t)
+    return true
+end
+
+local function blackjackTick()
+    local d = db()
+    if not d then return end
+    for _, t in ipairs(Casino.List(d)) do
+        if t.hostName == me() and t.game == "blackjack" and t.status == "playing" then
+            local name = ns.BlackjackTable.Tick(t, now())
+            if name then
+                say(name .. " ran out of time and stands.")
+                CasinoNet.AfterBlackjack(t)
+            end
+        end
+    end
+end
+
+------------------------------------------------------------------------------------------
+-- The lobby: open tables are announced in one shared channel so players can pick from a list
+------------------------------------------------------------------------------------------
+
+local ROOM_TTL = 100                     -- a listing disappears this long after the host's last announcement
+local rooms = {}                         -- code -> { entry, seen }
+local lastAnnounce = 0
+
+local function entryFor(t)
+    return { code = t.code, game = t.game, name = t.name, host = t.hostName, seats = #Casino.Seated(t),
+             status = t.status, minBet = t.minBet, maxBet = t.maxBet, zero = t.zero }
+end
+
+-- My open tables (and `extra`: codes of tables to list once more as closed), told to the lobby.
+function CasinoNet.Announce(closed)
+    local d = db()
+    if not d then return end
+    local list = {}
+    for _, t in ipairs(Casino.List(d)) do
+        if t.hostName == me() then
+            if t.status ~= "closed" then list[#list + 1] = entryFor(t)
+            elseif closed and closed[t.code] then list[#list + 1] = entryFor(t) end
+        end
+    end
+    if #list == 0 then return end
+    lastAnnounce = now()
+    ns.Comm.JoinBook(ns.Protocol.LOBBY_CODE)
+    ns.Comm.Send("LOBBY_TABLE", { tables = list }, ns.Protocol.LOBBY_CODE)
+end
+
+-- Join the lobby and ask who is hosting. Called when the player opens the list of tables.
+function CasinoNet.AskLobby()
+    ns.Comm.JoinBook(ns.Protocol.LOBBY_CODE)
+    ns.Comm.Send("LOBBY_ASK", {}, ns.Protocol.LOBBY_CODE)
+end
+
+-- Open tables of one game (or all) that I could join, newest announcement first, as entries
+-- { code, game, name, host, seats, status, minBet, maxBet, zero, age }. Tables I already sit at or
+-- host are left out (with /book loopback my own tables are listed so one character can test).
+function CasinoNet.Rooms(game)
+    local t0 = now()
+    local list = {}
+    local d = db()
+    local mine = {}
+    for _, tc in ipairs(d and d.casinoCache and Client.List(d.casinoCache) or {}) do
+        if tc.status == "requested" or tc.status == "seated" then mine[tc.code] = true end
+    end
+    for code, r in pairs(rooms) do
+        if t0 - r.seen > ROOM_TTL then rooms[code] = nil
+        elseif not mine[code] and (not game or r.entry.game == game) and r.entry.status ~= "closed" and not hosted(code) then
+            local e = {}
+            for k, v in pairs(r.entry) do e[k] = v end
+            e.age = t0 - r.seen
+            list[#list + 1] = e
+        end
+    end
+    if d and d.loopback == true then
+        for _, t in ipairs(Casino.List(d)) do
+            if t.hostName == me() and t.status ~= "closed" and not mine[t.code] and (not game or t.game == game) then
+                local e = entryFor(t); e.age = 0; list[#list + 1] = e
+            end
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.name ~= b.name then return a.name < b.name end
+        return a.code < b.code
+    end)
+    return list
+end
+
+local lobbyHandlers = {}
+
+function lobbyHandlers.LOBBY_ASK()
+    if now() - lastAnnounce >= 5 then CasinoNet.Announce() end
+end
+
+function lobbyHandlers.LOBBY_TABLE(sender, p)
+    for _, e in ipairs(p.tables) do
+        -- a listing counts only when the host announces their own table
+        if baseName(sender) == baseName(e.host) then
+            if e.status == "closed" then rooms[e.code] = nil
+            else rooms[e.code] = { entry = e, seen = now() } end
+        end
+    end
+end
+
+------------------------------------------------------------------------------------------
 -- Player: incoming
 ------------------------------------------------------------------------------------------
 
@@ -198,6 +362,8 @@ end
 local REJECT_TEXT = {
     not_seated = "You do not have a seat at this table.",
     round_closed = "Betting is closed for that round.",
+    not_your_turn = "It is not your turn.",
+    bad_action = "You cannot do that with this hand.",
     bad_bet = "That is not a valid bet.",
     table_error = "The table could not take that bet.",
 }
@@ -251,7 +417,7 @@ function handlers.TBL_BET_REJECT(sender, p, code)
     local tc = tableFor(code, sender)
     if not (tc and tc.status == "seated") then return end
     local bet = Client.ApplyBetReject(db().casinoCache, code, p.ref, p.balance)
-    if bet then say(rejectText(p)) end
+    if bet or (p.ref and p.ref:sub(1, 3) == "act") then say(rejectText(p)) end
     if p.reason == "round_closed" then CasinoNet.Sync(code) end     -- our round number was stale
 end
 
@@ -259,7 +425,14 @@ function handlers.TBL_RESULT(sender, p, code)
     local tc = tableFor(code, sender)
     if not (tc and tc.status == "seated") then return end
     Client.ApplyResult(db().casinoCache, code, p)
-    local label = Roulette.Label(p.number) .. " " .. Roulette.Color(p.number)
+    local label
+    if p.number then
+        label = Roulette.Label(p.number) .. " " .. Roulette.Color(p.number)
+    elseif p.dealer then
+        label = ("Dealer %d%s"):format(p.dealer.total or 0, p.dealer.bust and " (bust)" or (p.dealer.blackjack and " (blackjack)" or ""))
+    else
+        label = "Round over"
+    end
     local mine = Client.MyResult(tc, tc.me or me())
     if mine then
         if mine.net > 0 then say(("%s! You won %s%s|r."):format(label, GREEN, money(mine.net)))
@@ -276,13 +449,14 @@ end
 
 local seq = 0
 
-function CasinoNet.RequestJoin(code)
+function CasinoNet.RequestJoin(code, game)
     code = ns.Protocol.CanonicalCode(code)
     if not ns.Protocol.CanonicalCode(code):match("^%u%u%u%-%w%w%w%w$") then
         return nil, "That does not look like a table code (like RLT-K7Q2)."
     end
     if hosted(code) and not (db().loopback == true) then return nil, "That is your own table. Turn on /book loopback to test it alone." end
     local tc = Client.RequestJoin(db().casinoCache, code, now())
+    if game and not tc.game then tc.game = game end              -- from the list; the host confirms it later
     tc.me = (ns.Comm.LoopbackActive and ns.Comm.LoopbackActive(code)) and ns.Comm.LOOPBACK_NAME or ns.Comm.Me()
     ns.Comm.JoinBook(code)
     ns.Comm.Send("TBL_JOIN", {}, code)
@@ -323,6 +497,34 @@ function CasinoNet.PlaceBet(code, bet)
     return true
 end
 
+-- Blackjack: the wager for the next round.
+function CasinoNet.Wager(code, amount)
+    local tc = cache(code)
+    if not Client.CanBet(tc) then return nil, "Betting is closed right now." end
+    local st = tc.state
+    if amount % Odds.STAKE_STEP ~= 0 or amount <= 0 then return nil, "Bets are whole silver." end
+    if amount < st.minBet then return nil, "The minimum bet is " .. money(st.minBet) .. "." end
+    if amount > st.maxBet then return nil, "The maximum bet is " .. money(st.maxBet) .. "." end
+    if amount > (tc.balance or 0) then return nil, "You only have " .. money(tc.balance or 0) .. " in chips." end
+    if Client.Staked(tc) > 0 then return nil, "You already bet this round. Take it back first to change it." end
+    seq = seq + 1
+    local ref = ("%d-%04d-%d"):format(now(), math.random(0, 9999), seq)
+    local bet = { kind = "wager", amount = amount }
+    Client.NewPending(db().casinoCache, code, ref, bet, now())
+    ns.Comm.Send("TBL_BET", { ref = ref, round = st.round, bet = bet }, code)
+    changed(code)
+    return true
+end
+
+-- Blackjack: hit, stand, double or split on my turn.
+function CasinoNet.Act(code, action)
+    local tc = cache(code)
+    if not Client.MyTurn(tc, tc and tc.me or me()) then return nil, "It is not your turn." end
+    seq = seq + 1
+    ns.Comm.Send("TBL_ACT", { ref = "act" .. seq, round = tc.state.round, action = action }, code)
+    return true
+end
+
 function CasinoNet.ClearBets(code)
     local tc = cache(code)
     if not Client.CanBet(tc) then return nil, "Betting is closed right now." end
@@ -354,6 +556,7 @@ end
 local function tick()
     local d = db()
     if not (d and d.casinoCache) then return end
+    CasinoNet.Announce()                                  -- keeps my open tables on the list
     local t0 = now()
     for _, tc in ipairs(Client.List(d.casinoCache)) do
         if tc.status == "requested" then
@@ -368,7 +571,7 @@ local registered
 local function register()
     if registered or not (ns.Comm and ns.Comm.Register) then return end
     registered = true
-    for _, t in ipairs({ "TBL_JOIN", "TBL_LEAVE", "TBL_SYNC_REQ", "TBL_BET", "TBL_BET_CLEAR" }) do
+    for _, t in ipairs({ "TBL_JOIN", "TBL_LEAVE", "TBL_SYNC_REQ", "TBL_BET", "TBL_BET_CLEAR", "TBL_ACT" }) do
         ns.Comm.Register(t, onPlayerMessage(t))
     end
     for msgType, fn in pairs(handlers) do
@@ -377,7 +580,16 @@ local function register()
             changed(code)
         end)
     end
-    if C_Timer and C_Timer.NewTicker then C_Timer.NewTicker(TICK_SECONDS, tick) end
+    for msgType, fn in pairs(lobbyHandlers) do
+        ns.Comm.Register(msgType, function(sender, payload, code)
+            fn(sender, payload, code)
+            changed(code)
+        end)
+    end
+    if C_Timer and C_Timer.NewTicker then
+        C_Timer.NewTicker(TICK_SECONDS, tick)
+        C_Timer.NewTicker(1, blackjackTick)
+    end
 end
 
 -- Called once SteveBookDB exists (ADDON_LOADED).

@@ -9,7 +9,7 @@
 local ADDON, ns = ...
 ns.UI = ns.UI or {}
 
-local Casino, Client, CN, Roulette, Odds = ns.Casino, ns.CasinoClient, ns.CasinoNet, ns.Roulette, ns.Odds
+local Casino, Client, CN, Roulette, Odds, Blackjack = ns.Casino, ns.CasinoClient, ns.CasinoNet, ns.Roulette, ns.Odds, ns.Blackjack
 local UI = {}
 ns.UI.Casino = UI
 
@@ -91,6 +91,9 @@ local function historyText(list)
     return table.concat(parts, "  ")
 end
 
+-- "1s-1g" for a table's bet limits.
+local function shortRange(r) return money(r.minBet or 0) .. "-" .. money(r.maxBet or 0) end
+
 -- The player's own name as the table knows it.
 local function myName(tc) return tc and tc.me or UnitName("player") end
 
@@ -100,21 +103,48 @@ local function myName(tc) return tc and tc.me or UnitName("player") end
 
 local launcher = {}          -- frame, sections
 local mode = "home"          -- "home" | "host" | "join"
+local hostGame, joinGame = "roulette", "roulette"
 local wheel = "single"
 local WHEEL_TEXT = {
     single = "Single zero (0). The house keeps 2.7%.",
     double = "Double zero (0 and 00). The house keeps 5.3%.",
     none = "No zero. Fair odds, the house keeps nothing.",
 }
+local ROOM_ROWS = 7
 local confirmClose
 
-local function setMode(m)
+local function gameTitle(id) return Casino.GAMES[id] and Casino.GAMES[id].title or id end
+
+-- Which game a table code belongs to: what we were told, else its prefix (RLT / BJK).
+local function gameOfCode(code)
+    local d = db()
+    local tc = d and d.casinoCache and Client.Table(d.casinoCache, code)
+    if tc and tc.game then return tc.game end
+    local t = d and Casino.Find(d, code)
+    if t then return t.game end
+    local prefix = ns.Protocol.CanonicalCode(code):sub(1, 3)
+    for id, g in pairs(Casino.GAMES) do if g.prefix == prefix then return id end end
+    return "roulette"
+end
+
+local function setMode(m, game)
     mode = m
     local L = launcher
     if not L.frame then return end
+    if m == "host" and game then hostGame = game end
+    if m == "join" and game then joinGame = game end
     L.home:SetShown(m == "home")
     L.hostForm:SetShown(m == "host")
     L.joinForm:SetShown(m == "join")
+    if m == "host" then
+        L.hostTitle:SetText("Host a " .. gameTitle(hostGame):lower() .. " table")
+        local roulette = hostGame == "roulette"
+        L.wheelLabel:SetShown(roulette); L.wheelBtn:SetShown(roulette); L.wheelNote:SetShown(roulette)
+    elseif m == "join" then
+        L.joinTitle:SetText("Open " .. gameTitle(joinGame):lower() .. " tables")
+        CN.AskLobby()
+    end
+    UI.Refresh()
 end
 
 local function tableRows()
@@ -125,8 +155,8 @@ local function tableRows()
         if t.hostName == UnitName("player") then
             local seated = #Casino.Seated(t)
             rows[#rows + 1] = { host = true, code = t.code,
-                text = ("%sHosting|r %s  %s  %s  %d seated"):format(GOLD, t.name, GREY .. t.code .. "|r",
-                    t.status == "closed" and (RED .. "closed|r") or (GREEN .. t.status .. "|r"), seated),
+                text = ("%sHosting|r %s  %s  %s  %d seated"):format(GOLD, t.name, GREY .. gameTitle(t.game) .. "|r",
+                    t.status == "closed" and (RED .. "closed|r") or (GREEN .. "open|r"), seated),
                 closed = t.status == "closed" }
         end
     end
@@ -135,14 +165,21 @@ local function tableRows()
             denied = RED .. "turned down|r", left = GREY .. "left|r", removed = RED .. "removed|r",
             closed = GREY .. "closed|r" })[tc.status] or tc.status
         rows[#rows + 1] = { host = false, code = tc.code,
-            text = ("%s  %s  %s"):format(tc.name or "Roulette", GREY .. tc.code .. "|r", status) }
+            text = ("%s  %s  %s"):format(tc.name or gameTitle(gameOfCode(tc.code)), GREY .. gameTitle(gameOfCode(tc.code)) .. "|r", status) }
     end
     return rows
 end
 
+local function roomText(r)
+    local bits = { r.name, GREY .. "host " .. r.host .. "|r", ("%d seated"):format(r.seats or 0),
+        GREY .. "bets " .. shortRange(r) .. "|r" }
+    if r.zero then bits[#bits + 1] = GREY .. ({ single = "single zero", double = "double zero", none = "no zero" })[r.zero] .. "|r" end
+    return table.concat(bits, "   ")
+end
+
 local function buildLauncher()
     local L = launcher
-    local f = newWindow("SteveBookCasinoFrame", 520, 470, "SteveBook Casino")
+    local f = newWindow("SteveBookCasinoFrame", 560, 500, "SteveBook Casino")
     L.frame = f
 
     -- home: games and tables
@@ -157,11 +194,12 @@ local function buildLauncher()
         local row = { id = id }
         row.name = label(L.home, "GameFontHighlightLarge"); at(row.name, L.home, 0, y); row.name:SetText(g.title)
         row.note = label(L.home, "GameFontHighlightSmall"); at(row.note, L.home, 0, y + 20)
-        row.note:SetText(g.ready and (GREY .. "Everyone bets on the same wheel. The host spins.|r") or (GREY .. "Coming soon.|r"))
-        row.host = button(L.home, "Host a table", 110, function() setMode("host") end)
-        at(row.host, L.home, 270, y - 2)
-        row.join = button(L.home, "Join a table", 110, function() setMode("join") end)
-        at(row.join, L.home, 388, y - 2)
+        row.note:SetText(GREY .. (id == "roulette" and "Everyone bets on the same wheel. The host spins."
+            or "Everyone plays the dealer at the same table. Blackjack pays 3:2.") .. "|r")
+        row.host = button(L.home, "Host a table", 110, function() setMode("host", id) end)
+        at(row.host, L.home, 300, y - 2)
+        row.join = button(L.home, "Join a table", 110, function() setMode("join", id) end)
+        at(row.join, L.home, 418, y - 2)
         if not g.ready then row.host:Disable(); row.join:Disable() end
         L.games[#L.games + 1] = row
         y = y + 46
@@ -171,13 +209,13 @@ local function buildLauncher()
     for i = 1, 8 do
         local r = {}
         r.text = label(L.home, "GameFontHighlightSmall"); at(r.text, L.home, 0, y + 28 + (i - 1) * 26 + 4)
-        r.text:SetWidth(330); r.text:SetWordWrap(false)
-        r.open = button(L.home, "Open", 60, function() end, 20); at(r.open, L.home, 340, y + 28 + (i - 1) * 26)
-        r.drop = button(L.home, "Remove", 70, function() end, 20); at(r.drop, L.home, 404, y + 28 + (i - 1) * 26)
+        r.text:SetWidth(370); r.text:SetWordWrap(false)
+        r.open = button(L.home, "Open", 60, function() end, 20); at(r.open, L.home, 380, y + 28 + (i - 1) * 26)
+        r.drop = button(L.home, "Remove", 70, function() end, 20); at(r.drop, L.home, 444, y + 28 + (i - 1) * 26)
         L.rows[i] = r
     end
     L.empty = label(L.home, "GameFontHighlightSmall"); at(L.empty, L.home, 0, y + 32)
-    L.empty:SetText(GREY .. "No tables yet. Host one, or join a friend's with their code.|r")
+    L.empty:SetText(GREY .. "No tables yet. Host one, or join a friend's.|r")
     L.sport = button(L.home, "Back to the sportsbook", 170, function()
         f:Hide()
         if ns.UI.Bettor and ns.UI.Bettor.Show then ns.UI.Bettor.Show() end
@@ -188,10 +226,10 @@ local function buildLauncher()
     L.hostForm = CreateFrame("Frame", nil, f)
     L.hostForm:SetPoint("TOPLEFT", 14, -34); L.hostForm:SetPoint("BOTTOMRIGHT", -14, 14)
     local hf = L.hostForm
-    local t1 = label(hf, "GameFontNormal"); at(t1, hf, 0, 0); t1:SetText("Host a roulette table")
+    L.hostTitle = label(hf, "GameFontNormal"); at(L.hostTitle, hf, 0, 0); L.hostTitle:SetText("Host a roulette table")
     local n1 = label(hf, "GameFontHighlight"); at(n1, hf, 0, 34); n1:SetText("Table name")
     L.nameBox = editBox(hf, 240, "", 40); at(L.nameBox, hf, 130, 30)
-    local n2 = label(hf, "GameFontHighlight"); at(n2, hf, 0, 70); n2:SetText("Wheel")
+    L.wheelLabel = label(hf, "GameFontHighlight"); at(L.wheelLabel, hf, 0, 70); L.wheelLabel:SetText("Wheel")
     L.wheelBtn = button(hf, "Single zero", 140, function()
         wheel = wheel == "single" and "double" or (wheel == "double" and "none" or "single")
         L.wheelBtn:SetText(({ single = "Single zero", double = "Double zero", none = "No zero" })[wheel])
@@ -199,35 +237,48 @@ local function buildLauncher()
     end)
     at(L.wheelBtn, hf, 130, 66)
     L.wheelNote = label(hf, "GameFontHighlightSmall"); at(L.wheelNote, hf, 280, 72); L.wheelNote:SetText(GREY .. WHEEL_TEXT.single .. "|r")
-    L.wheelNote:SetWidth(210); L.wheelNote:SetWordWrap(true)
+    L.wheelNote:SetWidth(240); L.wheelNote:SetWordWrap(true)
     local n3 = label(hf, "GameFontHighlight"); at(n3, hf, 0, 110); n3:SetText("Smallest bet")
     L.minBox = editBox(hf, 80, money(Casino.DEFAULT_MIN_BET), 12); at(L.minBox, hf, 130, 106)
     local n4 = label(hf, "GameFontHighlight"); at(n4, hf, 240, 110); n4:SetText("Largest bet")
     L.maxBox = editBox(hf, 80, money(Casino.DEFAULT_MAX_BET), 12); at(L.maxBox, hf, 330, 106)
     local note = label(hf, "GameFontHighlightSmall"); at(note, hf, 0, 150)
-    note:SetWidth(470); note:SetWordWrap(true)
-    note:SetText(GREY .. "Players get no chips until you give them some. Let someone in, then add chips for what they pay you. Chips are only a record: gold changes hands by trade, outside the addon.|r")
+    note:SetWidth(500); note:SetWordWrap(true)
+    note:SetText(GREY .. "Players get no chips until you give them some. Let someone in, then add chips for what they pay you. Chips are only a record: gold changes hands by trade, outside the addon. Your table shows up in the list of open tables for everyone.|r")
     L.create = button(hf, "Create table", 120, function()
         local lo, hi = Odds.ParseMoney(L.minBox:GetText()), Odds.ParseMoney(L.maxBox:GetText())
         if not (lo and hi) then return say("Enter the bet sizes like 1s or 1g.") end
-        local t, err = CN.Create({ game = "roulette", name = L.nameBox:GetText(), zero = wheel, minBet = lo, maxBet = hi })
+        local t, err = CN.Create({ game = hostGame, name = L.nameBox:GetText(), zero = hostGame == "roulette" and wheel or nil, minBet = lo, maxBet = hi })
         if not t then return say(err) end
-        say(("Table %s created. Share the code %s%s|r so players can ask for a seat."):format(t.name, GOLD, t.code))
+        say(("Table %s created. It is on the list of open tables; the code is %s%s|r if someone wants it."):format(t.name, GOLD, t.code))
         setMode("home")
         UI.OpenHost(t.code)
         UI.Refresh()
     end)
-    at(L.create, hf, 0, 210)
-    L.hostBack = button(hf, "Back", 80, function() setMode("home") end); at(L.hostBack, hf, 130, 210)
+    at(L.create, hf, 0, 220)
+    L.hostBack = button(hf, "Back", 80, function() setMode("home") end); at(L.hostBack, hf, 130, 220)
 
-    -- join form
+    -- join form: the list of open tables, and a code box for a table that is not listed
     L.joinForm = CreateFrame("Frame", nil, f)
     L.joinForm:SetPoint("TOPLEFT", 14, -34); L.joinForm:SetPoint("BOTTOMRIGHT", -14, 14)
     local jf = L.joinForm
-    local j1 = label(jf, "GameFontNormal"); at(j1, jf, 0, 0); j1:SetText("Join a table")
-    local j2 = label(jf, "GameFontHighlight"); at(j2, jf, 0, 34); j2:SetText("Table code from the host (like RLT-K7Q2)")
-    L.codeBox = editBox(jf, 140, "", 12); at(L.codeBox, jf, 0, 58)
-    L.request = button(jf, "Ask for a seat", 130, function()
+    L.joinTitle = label(jf, "GameFontNormal"); at(L.joinTitle, jf, 0, 0); L.joinTitle:SetText("Open roulette tables")
+    L.refresh = button(jf, "Refresh", 80, function() CN.AskLobby(); UI.Refresh() end, 22)
+    at(L.refresh, jf, 440, -4 + 4)
+    L.room = {}
+    for i = 1, ROOM_ROWS do
+        local r = {}
+        local ry = 30 + (i - 1) * 32
+        r.text = label(jf, "GameFontHighlightSmall"); at(r.text, jf, 0, ry + 6); r.text:SetWidth(420); r.text:SetWordWrap(false)
+        r.join = button(jf, "Join", 70, function() end, 22); at(r.join, jf, 440, ry)
+        L.room[i] = r
+    end
+    L.noRooms = label(jf, "GameFontHighlightSmall"); at(L.noRooms, jf, 0, 36); L.noRooms:SetWidth(500); L.noRooms:SetWordWrap(true)
+    L.noRooms:SetText(GREY .. "No open tables yet. Tables show up here when a host opens one. Press Refresh to ask again.|r")
+    local cy = 30 + ROOM_ROWS * 32 + 12
+    local j2 = label(jf, "GameFontHighlightSmall"); at(j2, jf, 0, cy); j2:SetText("Have a table code? Type it here:")
+    L.codeBox = editBox(jf, 120, "", 12); at(L.codeBox, jf, 190, cy - 6)
+    L.request = button(jf, "Ask for a seat", 110, function()
         local tc, err = CN.RequestJoin(L.codeBox:GetText())
         if not tc then return say(err) end
         say("Asked for a seat at " .. tc.code .. ". Waiting for the host to let you in.")
@@ -236,10 +287,8 @@ local function buildLauncher()
         UI.OpenTable(tc.code)
         UI.Refresh()
     end)
-    at(L.request, jf, 150, 56)
-    L.joinBack = button(jf, "Back", 80, function() setMode("home") end); at(L.joinBack, jf, 290, 56)
-    local jn = label(jf, "GameFontHighlightSmall"); at(jn, jf, 0, 100); jn:SetWidth(470); jn:SetWordWrap(true)
-    jn:SetText(GREY .. "The host decides when to let you in and how many chips you get. You can place bets once you have chips.|r")
+    at(L.request, jf, 320, cy - 6)
+    L.joinBack = button(jf, "Back", 80, function() setMode("home") end); at(L.joinBack, jf, 0, cy + 30)
 
     f:SetScript("OnShow", function() UI.Refresh() end)
     setMode("home")
@@ -272,6 +321,25 @@ local function refreshLauncher()
             else
                 r.drop:SetText("Remove"); r.drop:Enable()
                 r.drop:SetScript("OnClick", function() CN.Forget(row.code); UI.Refresh() end)
+            end
+        end
+    end
+    if mode == "join" then
+        local rooms = CN.Rooms(joinGame)
+        L.noRooms:SetShown(#rooms == 0)
+        for i, r in ipairs(L.room) do
+            local room = rooms[i]
+            r.text:SetShown(room ~= nil); r.join:SetShown(room ~= nil)
+            if room then
+                r.text:SetText(roomText(room))
+                r.join:SetScript("OnClick", function()
+                    local tc, err = CN.RequestJoin(room.code, room.game)
+                    if not tc then return say(err) end
+                    say("Asked for a seat at " .. room.name .. ". Waiting for " .. room.host .. " to let you in.")
+                    setMode("home")
+                    UI.OpenTable(tc.code)
+                    UI.Refresh()
+                end)
             end
         end
     end
@@ -337,10 +405,10 @@ local function buildHost()
 
     -- right column
     local rx = 440
-    local lr = label(f, "GameFontNormal"); at(lr, f, rx, 114); lr:SetText("Wheel")
+    H.rightTitle = label(f, "GameFontNormal"); at(H.rightTitle, f, rx, 114); H.rightTitle:SetText("Wheel")
     H.number = label(f, "GameFontNormalHuge", "CENTER"); at(H.number, f, rx, 138); H.number:SetWidth(264)
     H.history = label(f, "GameFontHighlightSmall"); at(H.history, f, rx, 188); H.history:SetWidth(264); H.history:SetWordWrap(true)
-    local br = label(f, "GameFontNormal"); at(br, f, rx, 224); br:SetText("Bets this round")
+    H.betsTitle = label(f, "GameFontNormal"); at(H.betsTitle, f, rx, 224); H.betsTitle:SetText("Bets this round")
     H.bets = label(f, "GameFontHighlightSmall"); at(H.bets, f, rx, 246); H.bets:SetWidth(264); H.bets:SetWordWrap(true)
     H.bets:SetJustifyV("TOP"); H.bets:SetHeight(150)
     local ll = label(f, "GameFontNormal"); at(ll, f, rx, 404); ll:SetText("Bet limits")
@@ -359,10 +427,17 @@ local function buildHost()
 
     H.spin = button(f, "Spin the wheel", 180, function()
         local t = hostTable(); if not t then return end
-        local ok, err = CN.Spin(t)
+        local ok, err
+        if t.game == "blackjack" then ok, err = CN.Deal(t) else ok, err = CN.Spin(t) end
         if not ok then say(err) end
     end, 32)
     at(H.spin, f, 16, 500)
+    H.skip = button(f, "Skip this player", 140, function()
+        local t = hostTable(); if not t then return end
+        local ok, err = CN.Skip(t)
+        if not ok then say(err) end
+    end, 22)
+    at(H.skip, f, 210, 505)
     H.close = button(f, "Close table", 120, function()
         local t = hostTable(); if not t then return end
         if not confirmClose then
@@ -386,9 +461,14 @@ local function refreshHost()
     local t = hostTable()
     if not t then H.frame:Hide(); return end
     H.head:SetText(t.name)
-    local statusText = ({ betting = GREEN .. "Taking bets|r", spinning = GOLD .. "Spinning...|r", closed = RED .. "Closed|r" })[t.status]
+    local bjGame = t.game == "blackjack"
+    local statusText = ({ betting = GREEN .. "Taking bets|r", spinning = GOLD .. "Spinning...|r", closed = RED .. "Closed|r",
+        playing = GOLD .. "Players are deciding|r", dealer = GOLD .. "Dealer's turn|r" })[t.status]
     H.status:SetText(("%s   Round %d   Bets %s to %s   %s"):format(statusText or t.status, t.round, money(t.minBet), money(t.maxBet),
-        GREY .. ({ single = "single zero", double = "double zero", none = "no zero" })[t.zero] .. "|r"))
+        GREY .. (bjGame and "blackjack pays 3:2" or ({ single = "single zero", double = "double zero", none = "no zero" })[t.zero]) .. "|r"))
+    H.rightTitle:SetText(bjGame and "Dealer" or "Wheel")
+    H.betsTitle:SetText(bjGame and "Hands" or "Bets this round")
+    H.skip:SetShown(bjGame)
     H.codeBox:SetText(t.code)
     if not H.minBox:HasFocus() then H.minBox:SetText(money(t.minBet)) end
     if not H.maxBox:HasFocus() then H.maxBox:SetText(money(t.maxBet)) end
@@ -439,19 +519,38 @@ local function refreshHost()
         or (#ledger == 0 and (GREY .. "Nobody is seated yet.|r") or ""))
 
     local last = t.lastResult
-    H.number:SetText(last and colored(last.number) or GREY .. "-|r")
-    H.history:SetText(historyText(t.history))
     local lines = {}
-    for _, name in ipairs(Casino.Seated(t)) do
-        local m = t.members[name]
-        if #m.bets > 0 then
-            local parts = {}
-            for _, b in ipairs(m.bets) do parts[#parts + 1] = Roulette.Describe(b) .. " " .. money(b.amount) end
-            lines[#lines + 1] = name .. ": " .. table.concat(parts, ", ")
+    if bjGame then
+        local pub = ns.BlackjackTable.Public(t)
+        local dealerText = #pub.dealer.cards == 0 and (GREY .. "-|r") or UI.CardsText(pub.dealer.cards) .. (pub.dealer.hidden and " ??" or "")
+        H.number:SetText(dealerText)
+        H.history:SetText(last and last.dealer and (GREY .. ("Last round: dealer %d%s"):format(last.dealer.total, last.dealer.bust and " (bust)" or "") .. "|r") or "")
+        for _, h in ipairs(pub.hands) do
+            lines[#lines + 1] = h.name .. ": " .. UI.HandsText(h.hands)
         end
+        H.bets:SetText(#lines > 0 and table.concat(lines, "\n") or (GREY .. "No bets yet.|r"))
+        local anyWager = false
+        for _, name in ipairs(Casino.Seated(t)) do
+            for _, b in ipairs(t.members[name].bets) do if b.kind == "wager" then anyWager = true end end
+        end
+        H.spin:SetText("Deal")
+        if t.status == "betting" and anyWager then H.spin:Enable() else H.spin:Disable() end
+        if t.status == "playing" then H.skip:Enable() else H.skip:Disable() end
+    else
+        H.number:SetText(last and colored(last.number) or GREY .. "-|r")
+        H.history:SetText(historyText(t.history))
+        for _, name in ipairs(Casino.Seated(t)) do
+            local m = t.members[name]
+            if #m.bets > 0 then
+                local parts = {}
+                for _, b in ipairs(m.bets) do parts[#parts + 1] = Roulette.Describe(b) .. " " .. money(b.amount) end
+                lines[#lines + 1] = name .. ": " .. table.concat(parts, ", ")
+            end
+        end
+        H.bets:SetText(#lines > 0 and table.concat(lines, "\n") or (GREY .. "No bets yet.|r"))
+        H.spin:SetText("Spin the wheel")
+        if t.status == "betting" then H.spin:Enable() else H.spin:Disable() end
     end
-    H.bets:SetText(#lines > 0 and table.concat(lines, "\n") or (GREY .. "No bets yet.|r"))
-    if t.status == "betting" then H.spin:Enable() else H.spin:Disable() end
 end
 
 ------------------------------------------------------------------------------------------
@@ -763,6 +862,203 @@ local function refreshTable()
 end
 
 ------------------------------------------------------------------------------------------
+-- Player window: blackjack
+------------------------------------------------------------------------------------------
+
+local SUIT_COLOR = { S = "|cffdddddd", H = "|cffff5050", D = "|cff55aaff", C = "|cff55dd77" }
+
+-- "10h", "As": the rank, then the suit in its own colour (four-colour deck; plain letters, so no
+-- special glyphs are needed from the font).
+function UI.CardText(card)
+    local suit = card:sub(2, 2)
+    return Blackjack.RankLabel(card) .. (SUIT_COLOR[suit] or "") .. suit:lower() .. "|r"
+end
+
+function UI.CardsText(cards)
+    local parts = {}
+    for i, c in ipairs(cards) do parts[i] = UI.CardText(c) end
+    return table.concat(parts, " ")
+end
+
+local HAND_STATE = { stand = "stands", bust = RED .. "BUST|r", blackjack = GREEN .. "BLACKJACK|r", bet = GREY .. "bet placed|r" }
+
+-- One player's hands as a line of text: cards, total, bet, state (two hands after a split).
+function UI.HandsText(hands)
+    local parts = {}
+    for i, h in ipairs(hands) do
+        local bits = {}
+        if #h.cards > 0 then
+            bits[#bits + 1] = UI.CardsText(h.cards)
+            if h.value then bits[#bits + 1] = "= " .. (h.soft and h.value <= 21 and "soft " or "") .. h.value end
+        end
+        bits[#bits + 1] = GREY .. "bet " .. money(h.bet or 0) .. "|r"
+        if HAND_STATE[h.state] then bits[#bits + 1] = HAND_STATE[h.state] end
+        parts[i] = table.concat(bits, "  ")
+    end
+    return table.concat(parts, "   |   ")
+end
+
+local bj = {}
+local bjCode
+local BJ_ROWS = 7
+
+local function bjTable() return bjCode and db() and db().casinoCache and Client.Table(db().casinoCache, bjCode) end
+
+local function bjMessage(text) bj.message = text or ""; if bj.msg then bj.msg:SetText(bj.message) end end
+
+local function bjAct(action)
+    local ok, err = CN.Act(bjCode, action)
+    if not ok then bjMessage(RED .. err .. "|r") else bjMessage("") end
+end
+
+local function buildBlackjack()
+    local B = bj
+    local f = newWindow("SteveBookBlackjackFrame", 860, 590, "SteveBook Casino")
+    B.frame = f
+    B.head = label(f, "GameFontNormalLarge"); at(B.head, f, 16, 34)
+    B.status = label(f, "GameFontHighlight"); at(B.status, f, 16, 58); B.status:SetWidth(500)
+    B.balance = label(f, "GameFontHighlight", "RIGHT"); at(B.balance, f, 460, 36); B.balance:SetWidth(260)
+    B.leave = button(f, "Leave table", 110, function() if bjCode then CN.Leave(bjCode) end end, 22)
+    at(B.leave, f, 730, 30)
+
+    local dl = label(f, "GameFontNormal"); at(dl, f, 16, 92); dl:SetText("Dealer")
+    B.dealer = label(f, "GameFontNormalLarge"); at(B.dealer, f, 16, 114); B.dealer:SetWidth(600)
+    B.dealerNote = label(f, "GameFontHighlightSmall"); at(B.dealerNote, f, 16, 142); B.dealerNote:SetWidth(600)
+
+    local pl = label(f, "GameFontNormal"); at(pl, f, 16, 168); pl:SetText("Players")
+    B.rows = {}
+    for i = 1, BJ_ROWS do
+        local y = 192 + (i - 1) * 38
+        local r = {}
+        r.name = label(f, "GameFontHighlight"); at(r.name, f, 16, y); r.name:SetWidth(130); r.name:SetWordWrap(false)
+        r.hands = label(f, "GameFontHighlight"); at(r.hands, f, 150, y); r.hands:SetWidth(690); r.hands:SetWordWrap(true)
+        r.hands:SetJustifyV("TOP"); r.hands:SetHeight(34)
+        B.rows[i] = r
+    end
+    B.more = label(f, "GameFontHighlightSmall"); at(B.more, f, 16, 192 + BJ_ROWS * 38)
+
+    -- betting controls
+    B.betPanel = CreateFrame("Frame", nil, f)
+    B.betPanel:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -486); B.betPanel:SetSize(820, 56)
+    local cl = label(B.betPanel, "GameFontNormal"); at(cl, B.betPanel, 0, 4); cl:SetText("Your bet")
+    B.amountBox = editBox(B.betPanel, 70, money(amount), 12); at(B.amountBox, B.betPanel, 80, 0)
+    local qx = 160
+    for _, v in ipairs({ 100, 500, 1000, 5000, 10000 }) do
+        local b = button(B.betPanel, money(v), 46, function() amount = v; B.amountBox:SetText(money(v)) end, 22)
+        at(b, B.betPanel, qx, 0); qx = qx + 50
+    end
+    B.place = button(B.betPanel, "Place bet", 100, function()
+        local c = Odds.ParseMoney(B.amountBox:GetText())
+        if not c or c <= 0 then return bjMessage(RED .. "Enter a bet like 5s.|r") end
+        local ok, err = CN.Wager(bjCode, c)
+        if not ok then bjMessage(RED .. err .. "|r") else bjMessage("") end
+    end, 22)
+    at(B.place, B.betPanel, 420, 0)
+    B.back = button(B.betPanel, "Take it back", 100, function()
+        local ok, err = CN.ClearBets(bjCode)
+        if not ok then bjMessage(RED .. err .. "|r") end
+    end, 22)
+    at(B.back, B.betPanel, 526, 0)
+
+    -- decisions
+    B.actPanel = CreateFrame("Frame", nil, f)
+    B.actPanel:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -486); B.actPanel:SetSize(820, 56)
+    B.hit = button(B.actPanel, "Hit", 90, function() bjAct("hit") end, 28); at(B.hit, B.actPanel, 0, 0)
+    B.stand = button(B.actPanel, "Stand", 90, function() bjAct("stand") end, 28); at(B.stand, B.actPanel, 98, 0)
+    B.double = button(B.actPanel, "Double", 90, function() bjAct("double") end, 28); at(B.double, B.actPanel, 196, 0)
+    B.split = button(B.actPanel, "Split", 90, function() bjAct("split") end, 28); at(B.split, B.actPanel, 294, 0)
+    B.timer = label(B.actPanel, "GameFontNormal"); at(B.timer, B.actPanel, 400, 6); B.timer:SetWidth(300)
+
+    B.msg = label(f, "GameFontHighlight"); at(B.msg, f, 16, 552); B.msg:SetWidth(820)
+
+    local ticker
+    f:SetScript("OnShow", function()
+        if bjCode then CN.Sync(bjCode) end
+        if not ticker and C_Timer and C_Timer.NewTicker then ticker = C_Timer.NewTicker(1, function() UI.Refresh() end) end
+        UI.Refresh()
+    end)
+    f:SetScript("OnHide", function() if ticker then ticker:Cancel(); ticker = nil end end)
+end
+
+local function refreshBlackjack()
+    local B = bj
+    if not (B.frame and B.frame:IsShown()) then return end
+    local tc = bjTable()
+    if not tc then B.frame:Hide(); return end
+    local st = tc.state
+    local pub = st and st.bj
+    local me = myName(tc)
+    B.head:SetText(tc.name or "Blackjack")
+
+    local statusText
+    if tc.status == "requested" then statusText = GOLD .. "Waiting for the host to let you in...|r"
+    elseif tc.status == "denied" then statusText = RED .. "The host turned down your request.|r"
+    elseif tc.status == "removed" then statusText = RED .. "The host removed you from the table.|r"
+    elseif tc.status == "left" then statusText = GREY .. "You left the table.|r"
+    elseif tc.status == "closed" then statusText = RED .. "This table is closed.|r"
+    elseif not st then statusText = GOLD .. "Waiting for the table...|r"
+    elseif st.status == "betting" then statusText = GREEN .. "Place your bets|r" .. GREY .. ("   Round %d   %s to %s"):format(st.round, money(st.minBet), money(st.maxBet)) .. "|r"
+    elseif st.status == "dealer" then statusText = GOLD .. "The dealer plays...|r"
+    elseif pub and pub.turn == me then statusText = GREEN .. "Your turn|r"
+    elseif pub and pub.turn then statusText = GOLD .. "Waiting for " .. pub.turn .. "|r"
+    else statusText = GOLD .. "Playing...|r" end
+    B.status:SetText(statusText)
+    B.balance:SetText(("Chips: %s%s|r   on the table: %s"):format(GOLD, money(tc.balance or 0), money(Client.Staked(tc))))
+
+    -- dealer
+    if pub and #pub.dealer.cards > 0 then
+        B.dealer:SetText(UI.CardsText(pub.dealer.cards) .. (pub.dealer.hidden and "  ??" or ""))
+        B.dealerNote:SetText(pub.dealer.value and ("Dealer has " .. pub.dealer.value) or (GREY .. "One card is face down.|r"))
+    else
+        local last = tc.lastResult and tc.lastResult.dealer
+        B.dealer:SetText(last and UI.CardsText(last.cards) or (GREY .. "-|r"))
+        B.dealerNote:SetText(last and (GREY .. ("Last round: dealer %d%s"):format(last.total or 0, last.bust and " (bust)" or "") .. "|r") or "")
+    end
+
+    -- players
+    local hands = pub and pub.hands or {}
+    for i, r in ipairs(B.rows) do
+        local h = hands[i]
+        r.name:SetShown(h ~= nil); r.hands:SetShown(h ~= nil)
+        if h then
+            local mark = (pub.turn == h.name) and (GOLD .. "> |r") or ""
+            r.name:SetText(mark .. (h.name == me and (GOLD .. h.name .. "|r") or h.name))
+            r.hands:SetText(UI.HandsText(h.hands))
+        end
+    end
+    B.more:SetText(#hands > BJ_ROWS and (GREY .. ("+%d more"):format(#hands - BJ_ROWS) .. "|r") or
+        ((#hands == 0 and st) and (GREY .. "Nobody has bet yet.|r") or ""))
+
+    -- controls
+    local canBet = Client.CanBet(tc)
+    local myHand = Client.MyTurn(tc, me)
+    B.betPanel:SetShown(canBet)
+    B.actPanel:SetShown(myHand ~= nil)
+    if myHand then
+        local mine = Client.MyHands(tc, me) or {}
+        local h = mine[myHand]
+        local free = tc.balance or 0
+        if h then
+            if h.aces and h.split then B.hit:Disable() else B.hit:Enable() end
+            B.stand:Enable()
+            if #h.cards == 2 and not (h.aces and h.split) and free >= (h.bet or 0) then B.double:Enable() else B.double:Disable() end
+            if #mine == 1 and Blackjack.CanSplit(h.cards) and free >= (h.bet or 0) then B.split:Enable() else B.split:Disable() end
+        end
+        local left = pub.deadline and (pub.deadline - GetServerTime()) or nil
+        B.timer:SetText(left and (GOLD .. ("%d s left"):format(math.max(0, left)) .. "|r") or "")
+    end
+    if canBet then
+        if Client.Staked(tc) > 0 then B.place:Disable(); B.back:Enable() else B.place:Enable(); B.back:Disable() end
+    end
+    local mine = Client.MyResult(tc, me)
+    if (B.message or "") ~= "" then B.msg:SetText(B.message)
+    elseif mine and canBet then
+        B.msg:SetText(("Last round: %s%s|r"):format(mine.net >= 0 and GREEN or RED, (mine.net >= 0 and "+" or "") .. money(mine.net)))
+    else B.msg:SetText("") end
+    if tc.status == "seated" then B.leave:Enable() else B.leave:Disable() end
+end
+
+------------------------------------------------------------------------------------------
 -- Public
 ------------------------------------------------------------------------------------------
 
@@ -770,6 +1066,7 @@ function UI.Refresh()
     refreshLauncher()
     refreshHost()
     refreshTable()
+    refreshBlackjack()
 end
 
 function UI.OpenHost(code)
@@ -780,11 +1077,19 @@ function UI.OpenHost(code)
 end
 
 function UI.OpenTable(code)
-    if not play.frame then buildTable() end
-    playCode = ns.Protocol.CanonicalCode(code)
-    picks = {}
-    setMessage("")
-    play.frame:Show()
+    code = ns.Protocol.CanonicalCode(code)
+    if gameOfCode(code) == "blackjack" then
+        if not bj.frame then buildBlackjack() end
+        bjCode = code
+        bjMessage("")
+        bj.frame:Show()
+    else
+        if not play.frame then buildTable() end
+        playCode = code
+        picks = {}
+        setMessage("")
+        play.frame:Show()
+    end
     UI.Refresh()
 end
 

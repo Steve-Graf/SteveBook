@@ -9,10 +9,12 @@
 Libs\embeds.xml
 Odds.lua
 Roulette.lua
+Blackjack.lua
 Protocol.lua
 Clock.lua
 Model.lua
 Casino.lua
+BlackjackTable.lua
 Bookie.lua
 Import.lua
 Cache.lua

@@ -196,7 +196,7 @@ end
 local LOOPBACK_NAME = "Loopback"
 Comm.LOOPBACK_NAME = LOOPBACK_NAME
 local BETTOR_ORIGIN = { JOIN_REQ = true, SYNC_REQ = true, BET_PLACE = true, BETS_REQ = true, PING = true,
-    TBL_JOIN = true, TBL_LEAVE = true, TBL_SYNC_REQ = true, TBL_BET = true, TBL_BET_CLEAR = true }
+    TBL_JOIN = true, TBL_LEAVE = true, TBL_SYNC_REQ = true, TBL_BET = true, TBL_BET_CLEAR = true, TBL_ACT = true }
 
 function Comm.LoopbackActive(code)
     local db = SteveBookDB
@@ -340,9 +340,11 @@ local function joinAll()
         if bc.status ~= "denied" and bc.status ~= "removed" then Comm.JoinBook(code) end
     end
     -- casino tables: the ones I host and the ones I sit at
+    local hosting = false
     for code, t in pairs(db.casino and db.casino.tables or {}) do
-        if t.hostName == myName() and t.status ~= "closed" then Comm.JoinBook(code) end
+        if t.hostName == myName() and t.status ~= "closed" then Comm.JoinBook(code); hosting = true end
     end
+    if hosting then Comm.JoinBook(Protocol.LOBBY_CODE) end       -- the lobby, to announce my tables
     for code, tc in pairs(db.casinoCache and db.casinoCache.tables or {}) do
         if tc.status == "requested" or tc.status == "seated" then Comm.JoinBook(code) end
     end

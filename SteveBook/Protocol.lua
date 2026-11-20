@@ -7,6 +7,7 @@ local Protocol = {}
 ns.Protocol = Protocol
 
 Protocol.VERSION = 1
+Protocol.LOBBY_CODE = "LBY-CSNO"          -- the casino lobby channel (SBLBYCSNO)
 
 -- dir: who may send it. "bettor" = bettor -> bookie, "bookie" = bookie -> bettor (or all),
 -- "any" = either side.
@@ -70,6 +71,15 @@ Protocol.Spec = {
         bet = "table",          -- game specific; roulette: { kind, numbers?, pick?, amount } (Roulette.lua)
     } },
     TBL_BET_CLEAR  = { dir = "bettor", fields = { round = "number" } }, -- take back all my bets this round
+    TBL_ACT        = { dir = "bettor", fields = {      -- blackjack: a decision on my turn
+        ref = "string?", round = "number",
+        action = "string",      -- "hit" | "stand" | "double" | "split"
+    } },
+
+    -- The casino lobby (SPEC §11): everyone with the casino open sits in one shared hidden channel
+    -- (envelope code Protocol.LOBBY_CODE). Hosts announce their open tables there; anyone may ask.
+    LOBBY_ASK      = { dir = "any", fields = {} },                      -- "who is hosting?"; hosts answer with LOBBY_TABLE
+    LOBBY_TABLE    = { dir = "any", fields = { tables = "table" } },    -- list of { code, game, name, host, seats, status, minBet, maxBet, zero? }
 
     TBL_JOIN_OK    = { dir = "bookie", fields = { game = "string", name = "string", ownerName = "string", rev = "number" } },
     TBL_JOIN_DENY  = { dir = "bookie", fields = { ownerName = "string", reason = "string?" } },
@@ -81,6 +91,7 @@ Protocol.Spec = {
         zero = "string?",       -- roulette wheel: "single" | "double" | "none"
         seats = "table",        -- list of { name, balance }
         history = "table",      -- last results, newest first (roulette: pocket numbers)
+        bj = "table?",          -- blackjack: public hands, the dealer's face-up cards, whose turn (BlackjackTable.Public)
     } },
     TBL_PLAYER     = { dir = "bookie", fields = {      -- addressed: my chips and my bets in this round
         rev = "number", balance = "number", bets = "table",   -- bets: list of { id, ...the bet }
@@ -92,8 +103,10 @@ Protocol.Spec = {
     } },
     TBL_RESULT     = { dir = "bookie", fields = {      -- broadcast after a spin
         rev = "number", round = "number",
-        number = "number",      -- roulette: the pocket (37 = 00)
-        results = "table",      -- list of { name, net, balance, bets = list of { ..bet, win } }
+        number = "number?",     -- roulette: the pocket (37 = 00)
+        dealer = "table?",      -- blackjack: the dealer's final { cards, total, bust, blackjack }
+        results = "table",      -- list of { name, net, balance, bets = list of { ..bet, win } } (roulette)
+                                --   or { name, net, balance, hands = list of { cards, bet, outcome, win } } (blackjack)
     } },
 
     BALANCE    = { dir = "bookie", fields = { rev = "number", balance = "number", note = "string?" } },
@@ -110,6 +123,8 @@ Protocol.REJECT_REASONS = {
 
 Protocol.TBL_REJECT_REASONS = {
     "not_seated",       -- not admitted to this table
+    "not_your_turn",    -- blackjack: it is someone else's turn
+    "bad_action",       -- blackjack: that decision is not allowed on this hand
     "round_closed",     -- the table is spinning or closed, or the round number is stale
     "bad_bet",          -- the bet is not a valid bet for this game
     "min_bet", "max_bet",   -- amount outside the table limits (min / max in the reply)
@@ -151,6 +166,14 @@ function Protocol.Validate(msgType, payload)
     if msgType == "TBL_BET" then
         local b = payload.bet
         if type(b.kind) ~= "string" or type(b.amount) ~= "number" then return false, "bet needs kind and amount" end
+    end
+    if msgType == "LOBBY_TABLE" then
+        for i, e in ipairs(payload.tables) do
+            if type(e) ~= "table" or type(e.code) ~= "string" or type(e.game) ~= "string" or type(e.name) ~= "string"
+                or type(e.host) ~= "string" or type(e.status) ~= "string" then
+                return false, "table " .. i .. " needs code, game, name, host and status"
+            end
+        end
     end
     if msgType == "TBL_STATE" then
         for i, seat in ipairs(payload.seats) do

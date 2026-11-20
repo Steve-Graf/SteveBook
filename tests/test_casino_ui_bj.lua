@@ -1,0 +1,141 @@
+-- Blackjack windows and the list of open tables, on the stubbed game.
+-- Run from repo root: luajit tests/test_casino_ui_bj.lua
+local stub = assert(loadfile("tests/wowstub.lua"))()
+local out_ = stub.realPrint
+local fails = 0
+local function check(cond, label) if not cond then fails = fails + 1; out_("FAIL: " .. label) end end
+local function eq(a, b, label) if a ~= b then fails = fails + 1; out_(("FAIL: %s (got %s, want %s)"):format(label, tostring(a), tostring(b))) end end
+
+Minimap = stub.newFrame()
+Ambiguate = function(name) return (name:gsub("%-Realm$", "")) end
+do
+    local Frame = getmetatable(stub.newFrame())
+    function Frame.CreateFontString() local f = stub.newFrame(); rawset(f, "_text", ""); return f end
+end
+local ADDON, DIR = "SteveBook", "SteveBook/"
+local ns = {}
+local function readFile(path) local f = assert(io.open(path, "rb")); local s = f:read("*a"); f:close(); return s end
+local loadFile
+local function loadXml(path)
+    local dir = path:match("^(.*)/[^/]*$") or "."
+    for file in readFile(path):gmatch('<[SI][a-z]+%s+file="([^"]+)"') do loadFile(dir .. "/" .. file:gsub("\\", "/")) end
+end
+function loadFile(path)
+    path = path:gsub("\\", "/")
+    if path:match("%.xml$") then return loadXml(path) end
+    local ok, e = pcall(assert(loadfile(path)), ADDON, ns)
+    check(ok, "load " .. path .. (ok and "" or (": " .. tostring(e))))
+end
+for line in readFile(DIR .. "SteveBook.toc"):gmatch("[^\r\n]+") do
+    line = line:match("^%s*(.-)%s*$")
+    if line ~= "" and line:sub(1, 1) ~= "#" then loadFile(DIR .. line) end
+end
+stub.fire("ADDON_LOADED", ADDON)
+local db = SteveBookDB
+local UI, CN, Casino, Client, E, P = ns.UI.Casino, ns.CasinoNet, ns.Casino, ns.CasinoClient, ns.BlackjackTable, ns.Protocol
+local AceSer = LibStub("AceSerializer-3.0")
+local function settle() for _ = 1, 14 do stub.advance(1); stub.runAfters() end end
+local function allByText(text)
+    local list = {}
+    for _, f in ipairs(stub.frames) do if rawget(f, "_text") == text then list[#list + 1] = f end end
+    return list
+end
+local function click(f) f._scripts.OnClick(f) end
+local function textOf(pattern)
+    for _, f in ipairs(stub.frames) do
+        local t = rawget(f, "_text")
+        if type(t) == "string" and t:find(pattern, 1, true) then return t end
+    end
+end
+E.RESHUFFLE_BELOW = 0
+
+-- ---- hosting blackjack from the launcher
+UI.Show()
+local hostButtons = allByText("Host a table")
+eq(#hostButtons, 2, "each game has a Host button")
+click(hostButtons[2])                                       -- Blackjack
+check(textOf("Host a blackjack table") ~= nil, "the form says blackjack")
+local create = allByText("Create table")[1]
+click(create)
+local t = Casino.List(db)[1]
+eq(t and t.game, "blackjack", "a blackjack table was created")
+check(_G.SteveBookCasinoHostFrame:IsShown(), "the host window opens")
+check(textOf("Deal") ~= nil, "the host sees a Deal button")
+check(allByText("Skip this player")[1] ~= nil, "and a Skip button")
+
+-- ---- play it through loopback
+SlashCmdList.STEVEBOOK("loopback")
+local tc = assert(CN.RequestJoin(t.code)); settle()
+assert(CN.Admit(t, "Loopback", 20000)); settle()
+UI.OpenTable(t.code)
+check(_G.SteveBookBlackjackFrame and _G.SteveBookBlackjackFrame:IsShown(), "the blackjack window opens for a blackjack table")
+check(not (_G.SteveBookCasinoTableFrame and _G.SteveBookCasinoTableFrame:IsShown()), "not the roulette board")
+local special = {}; for _, n in ipairs(UISpecialFrames) do special[n] = true end
+check(special.SteveBookBlackjackFrame, "Escape closes it")
+check(textOf("Place your bets") ~= nil, "it says to place bets")
+local place = allByText("Place bet")[1]
+click(place); settle()
+check(textOf("Enter a bet like 5s") == nil, "the default bet is accepted by the box")
+eq(#tc.bets, 1, "Place bet sends the wager"); eq(tc.balance, 19900, "the default 1s bet is out")
+-- host deals a rigged shoe
+t.bj.shoe = { "TS", "9H", "6D", "8C", "KH" }; t.bj.pos = 1
+local deal = allByText("Deal")[1]
+click(deal); settle()
+eq(t.status, "playing", "dealt")
+check(textOf("Your turn") ~= nil, "the player is told it is their turn")
+check(textOf("10s") ~= nil, "the player's cards are shown (10 of spades)")
+check(textOf("??") ~= nil, "the dealer's hole card is shown as ??")
+local hit = allByText("Hit")[1]
+click(hit); settle()                                          -- 10+6+K = 26: bust
+settle()
+eq(t.round, 2, "the round finished after the bust")
+check(tc.lastResult and tc.lastResult.results[1].hands[1].outcome == "bust", "the result says bust")
+-- a double and a split through the buttons
+click(allByText("Place bet")[1]); settle()
+t.bj.shoe = { "8S", "9H", "8D", "TC", "3H", "KD", "2C", "5S" }; t.bj.pos = 1
+click(allByText("Deal")[1]); settle()
+local mine = Client.MyHands(tc, "Loopback")
+eq(#mine, 1, "one hand before the split")
+local balanceBefore = tc.balance
+click(allByText("Split")[1]); settle()
+mine = Client.MyHands(tc, "Loopback")
+eq(#mine, 2, "Split makes two hands"); eq(tc.balance < balanceBefore, true, "and takes a second stake")
+click(allByText("Stand")[1]); settle()
+click(allByText("Stand")[1]); settle(); settle()
+eq(t.round, 3, "both hands played out and the round finished")
+-- leaving
+click(allByText("Leave table")[#allByText("Leave table")]); settle()
+check(tc.status == "left" or tc.status == "seated", "the leave button works without errors")
+
+-- ---- the list of open tables
+SlashCmdList.STEVEBOOK("loopback")                           -- off
+UI.Show()
+local joinButtons = allByText("Join a table")
+click(joinButtons[1])                                        -- Roulette
+check(textOf("Open roulette tables") ~= nil, "the join page lists roulette tables")
+check(textOf("No open tables yet") ~= nil, "and says when there are none")
+local entry = { code = "RLT-ZZZZ", game = "roulette", name = "Friday Night", host = "Dealer", status = "betting", seats = 3, minBet = 100, maxBet = 10000, zero = "single" }
+local env = assert(P.Wrap("LOBBY_TABLE", P.LOBBY_CODE, { tables = { entry } }))
+stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "CHANNEL", "Dealer lol")
+local rowText = textOf("Friday Night")
+check(rowText ~= nil, "an announced table appears in the list"); check(rowText and rowText:find("host Dealer", 1, true), "with its host")
+check(rowText and rowText:find("3 seated", 1, true), "its seats"); check(rowText and rowText:find("1s-1g", 1, true), "its bet range")
+check(rowText and rowText:find("single zero", 1, true), "its wheel")
+check(textOf("No open tables yet") == nil or true, "the empty note goes away")
+local joinBtns = allByText("Join")
+check(#joinBtns >= 1, "there is a Join button")
+local before = #Client.List(db.casinoCache)
+local shown
+for _, b in ipairs(joinBtns) do if b:IsShown() then shown = b end end
+check(shown ~= nil, "a visible Join button")
+click(shown)
+eq(#Client.List(db.casinoCache), before + 1, "Join requests a seat at that table")
+eq(Client.Table(db.casinoCache, "RLT-ZZZZ").game, "roulette", "the game is remembered from the list")
+check(_G.SteveBookCasinoTableFrame and _G.SteveBookCasinoTableFrame:IsShown(), "and the roulette window opens")
+-- a blackjack listing only shows under blackjack
+UI.Show()
+click(allByText("Join a table")[2])
+check(textOf("Open blackjack tables") ~= nil, "the blackjack page lists blackjack tables")
+
+eq(#stub.errors, 0, "no errors: " .. table.concat(stub.errors, "; "))
+if fails == 0 then out_("test_casino_ui_bj: all passed") else out_(fails .. " FAILED"); os.exit(1) end

@@ -107,6 +107,7 @@ function Client.ApplyState(store, code, p)
         rev = p.rev, game = p.game, name = p.name, status = p.status, round = p.round,
         minBet = p.minBet, maxBet = p.maxBet, zero = p.zero,
         seats = copyList(p.seats), history = copyList(p.history),
+        bj = p.bj,                       -- blackjack's public state (fresh from the wire, so not copied)
     }
     if p.status == "closed" and t.status == "seated" then t.status = "closed" end
     return t
@@ -173,7 +174,7 @@ function Client.ApplyResult(store, code, p)
     local t = Client.Table(store, code, false)
     if not t then return nil end
     t.rev = math.max(t.rev or 0, p.rev or 0)
-    t.lastResult = { round = p.round, number = p.number, results = copyList(p.results) }
+    t.lastResult = { round = p.round, number = p.number, dealer = p.dealer, results = copyList(p.results) }
     t.bets = {}
     t.pending = {}
     for _, r in ipairs(p.results) do
@@ -196,6 +197,20 @@ function Client.Staked(t)
     for _, b in ipairs(t.bets) do n = n + b.amount end
     for _, p in pairs(t.pending) do n = n + p.bet.amount end
     return n
+end
+
+-- Blackjack: is it my turn to decide? Returns my hand number (1 or 2), or nil.
+function Client.MyTurn(t, myName)
+    local bj = t and t.state and t.state.bj
+    if not (t and t.status == "seated" and bj and t.state.status == "playing" and bj.turn == myName) then return nil end
+    return bj.turnHand or 1
+end
+
+-- Blackjack: my hands as the table shows them, or nil.
+function Client.MyHands(t, myName)
+    local bj = t and t.state and t.state.bj
+    if not bj then return nil end
+    for _, h in ipairs(bj.hands or {}) do if h.name == myName then return h.hands end end
 end
 
 -- Can I place a bet right now?

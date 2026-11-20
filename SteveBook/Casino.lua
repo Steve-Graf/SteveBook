@@ -21,8 +21,12 @@ local Odds, Roulette = ns.Odds, ns.Roulette
 
 Casino.GAMES = {
     roulette  = { title = "Roulette",  prefix = "RLT", ready = true },
-    blackjack = { title = "Blackjack", prefix = "BJK", ready = false },
+    blackjack = { title = "Blackjack", prefix = "BJK", ready = true },
 }
+-- Per-game round logic (everything except roulette, which lives in this file): a game registers
+-- Casino.Engines[game] = { Init, PlaceBet, ClearBets, OnRemoved, OnClosed, Recover, Public, ... }.
+Casino.Engines = {}
+local function engine(t) return Casino.Engines[t.game] end
 Casino.GAME_ORDER = { "roulette", "blackjack" }
 Casino.HISTORY_KEEP = 12
 Casino.SPIN_SECONDS = 3
@@ -78,8 +82,11 @@ function Casino.Create(db, spec, hostName, now, rand)
     local game = Casino.GAMES[spec.game]
     if not game then return nil, "Unknown game." end
     if not game.ready then return nil, game.title .. " is not available yet." end
-    local zero = spec.zero or "single"
-    if zero ~= "single" and zero ~= "double" and zero ~= "none" then return nil, "Pick a wheel: single, double or none." end
+    local zero
+    if spec.game == "roulette" then
+        zero = spec.zero or "single"
+        if zero ~= "single" and zero ~= "double" and zero ~= "none" then return nil, "Pick a wheel: single, double or none." end
+    end
     local minBet = spec.minBet or Casino.DEFAULT_MIN_BET
     local maxBet = spec.maxBet or Casino.DEFAULT_MAX_BET
     local ok, msg = Casino.CheckLimits(minBet, maxBet)
@@ -96,6 +103,8 @@ function Casino.Create(db, spec, hostName, now, rand)
         members = {}, history = {},
     }
     c.tables[code] = t
+    local e = engine(t)
+    if e and e.Init then e.Init(t) end
     return t
 end
 
@@ -120,6 +129,7 @@ local function refund(m)
     for _, b in ipairs(m.bets) do m.balance = m.balance + b.amount end
     m.bets = {}
 end
+Casino.Refund = refund
 
 -- Names of seated members, sorted.
 function Casino.Seated(t)
@@ -188,6 +198,8 @@ function Casino.Kick(t, name)
     if not m then return nil, "no_member" end
     refund(m)
     m.status = "kicked"
+    local e = engine(t)
+    if e and e.OnRemoved then e.OnRemoved(t, name) end
     touch(t)
     return true
 end
@@ -198,6 +210,8 @@ function Casino.Leave(t, name)
     if not m or m.status ~= "seated" then return nil, "not_seated" end
     refund(m)
     m.status = "left"
+    local e = engine(t)
+    if e and e.OnRemoved then e.OnRemoved(t, name) end
     touch(t)
     return true
 end
@@ -233,6 +247,8 @@ end
 --   "not_seated", "round_closed", "bad_bet", "min_bet"/"max_bet" (extra = the limit),
 --   "no_balance" (extra = chips on hand). A repeated `ref` returns the original bet and true.
 function Casino.PlaceBet(t, name, round, bet, ref)
+    local e = engine(t)
+    if e and e.PlaceBet then return e.PlaceBet(t, name, round, bet, ref) end
     local m = t.members[name]
     if not m or m.status ~= "seated" then return nil, "not_seated" end
     if ref ~= nil then
@@ -258,6 +274,8 @@ end
 
 -- Take back every bet this round. Returns how many chips went back, or nil, "round_closed".
 function Casino.ClearBets(t, name, round)
+    local e = engine(t)
+    if e and e.ClearBets then return e.ClearBets(t, name, round) end
     local m = t.members[name]
     if not m or m.status ~= "seated" then return nil, "not_seated" end
     if t.status ~= "betting" or round ~= t.round then return nil, "round_closed" end
@@ -322,6 +340,8 @@ end
 -- Close the table: every open bet goes back to its owner. Balances stay for the host to pay out.
 function Casino.Close(t)
     for _, m in pairs(t.members) do refund(m) end
+    local e = engine(t)
+    if e and e.OnClosed then e.OnClosed(t) end
     t.status = "closed"
     touch(t)
     return true
@@ -330,7 +350,10 @@ end
 -- After a /reload or login: a spin that never finished is cancelled and the bets returned.
 function Casino.Recover(db)
     for _, t in pairs(db.casino and db.casino.tables or {}) do
-        if t.status == "spinning" then
+        local e = engine(t)
+        if e and e.Recover then
+            e.Recover(t)
+        elseif t.status == "spinning" then
             for _, m in pairs(t.members) do refund(m) end
             t.status = "betting"
             t.spinAt = nil
@@ -363,10 +386,13 @@ function Casino.StateMessage(t)
     end
     local history = {}
     for i, n in ipairs(t.history) do history[i] = n end
-    return {
+    local msg = {
         rev = t.rev, game = t.game, name = t.name, status = t.status, round = t.round,
         minBet = t.minBet, maxBet = t.maxBet, zero = t.zero, seats = seats, history = history,
     }
+    local e = engine(t)
+    if e and e.Public then msg.bj = e.Public(t) end       -- the game's own public table state
+    return msg
 end
 
 function Casino.PlayerMessage(t, name)
@@ -379,7 +405,7 @@ end
 function Casino.ResultMessage(t)
     local r = t.lastResult
     if not r then return nil end
-    return { rev = t.rev, round = r.round, number = r.number, results = r.results }
+    return { rev = t.rev, round = r.round, number = r.number, dealer = r.dealer, results = r.results }
 end
 
 -- Handle a message from a player. `sender` is the name Comm delivered it from. Returns out, events;
@@ -426,6 +452,18 @@ function Casino.Handle(t, sender, msgType, payload, now)
             if reason == "min_bet" then r.min = extra elseif reason == "max_bet" then r.max = extra
             elseif reason == "no_balance" then r.balance = extra end
             reply("TBL_BET_REJECT", r)
+        end
+
+    elseif msgType == "TBL_ACT" then
+        local e = engine(t)
+        if m and m.status == "seated" and e and e.Act then
+            local ok, reason = e.Act(t, sender, payload.round, payload.action, now)
+            if ok then
+                reply("TBL_PLAYER", Casino.PlayerMessage(t, sender))
+                events[#events + 1] = { kind = "act", name = sender, action = payload.action }
+            else
+                reply("TBL_BET_REJECT", { ref = payload.ref or "act", reason = reason, balance = m.balance })
+            end
         end
 
     elseif msgType == "TBL_BET_CLEAR" then

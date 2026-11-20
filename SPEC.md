@@ -327,7 +327,8 @@ TOTAL|NFL|PHI @ DAL|2026-11-26T16:30-05:00|47.5|Over:-110|Under:-110
 
 A second feature next to the sportsbook, opened with `/casino` (or the Casino button in the bettor
 window). One player **hosts** a table of a game; friends **join** with its code and sit at the same
-table. Roulette is the first game; blackjack is listed as "coming soon".
+table. Roulette and blackjack are in; each game is an engine behind the same table, chips and
+messages.
 
 - **Separate balance.** A table has its own chips, in copper, and they are not the sportsbook
   balance. Joining gives no chips: the host lets a player in, then adds chips (for example after
@@ -336,7 +337,14 @@ table. Roulette is the first game; blackjack is listed as "coming soon".
   stake plus winnings. The host can add or take chips at any time, remove a player (open bets are
   returned) or close the table (open bets are returned; chips stay on the books for the host to pay
   out). The host sees each player's chips, what they were given (`bought`) and the result.
-- **Codes and channels.** A table code looks like `RLT-K7Q2` (prefix per game). It maps to a hidden
+- **Finding a table.** Everyone with the casino open sits in one shared hidden **lobby** channel
+  (`Protocol.LOBBY_CODE`). Hosts announce their open tables there (`LOBBY_TABLE`: code, game, name,
+  host, seats, status, bet limits, wheel) when they create or change a table and every 30 s;
+  a player's list asks with `LOBBY_ASK`. A listing counts only when announced by the host it names,
+  disappears 100 s after the last announcement, and is removed at once when the table closes. The
+  player picks a table from the list and clicks Join; a code can still be typed for a table that
+  is not listed.
+- **Codes and channels.** A table code looks like `RLT-K7Q2` or `BJK-K7Q2` (prefix per game). It maps to a hidden
   channel exactly like a book code, so the same `Comm` carries it. A table is hosted by the
   character that created it (`SteveBookDB.casino.tables`); players keep a cache
   (`SteveBookDB.casinoCache`). A host cannot sit at their own table (except with `/book loopback`).
@@ -356,5 +364,17 @@ table. Roulette is the first game; blackjack is listed as "coming soon".
   the host may set up to 10g).
 - **Wheel.** The host picks single zero (house edge 2.7%), double zero (5.3%) or no zero (a fair
   wheel for a friendly table).
-- **Not in v1:** the host playing at their own table, blackjack, a spin timer, commit-and-reveal
-  proof of fairness (players trust the host's client, as they trust the bookie's).
+- **Blackjack** (`Blackjack.lua` cards and payouts, `BlackjackTable.lua` the engine). Six decks held
+  on the host; the dealer's hole card is never sent until it turns over, and every player card is
+  face up, so there is no hidden information on the wire. Betting: one wager per round, taken back
+  to change it. The host presses **Deal**; players act in seat order (who sat first): **hit, stand,
+  double** (any two cards, also after a split) and **split** (a pair, or any two ten-value cards,
+  once; split aces get one card each). A player who does nothing for 30 s is stood; the host can
+  **Skip** a player. Blackjack pays 3:2, wins 1:1, a tie returns the bet, the dealer stands on every
+  17 and peeks for blackjack (a dealer blackjack ends the round at once, a player blackjack pushes).
+  No insurance and no surrender. Players who sat out a round simply are not dealt in. A fresh
+  shoe is shuffled when fewer than 60 cards remain. Every wager, double and split is a stack in the
+  player's `bets` list, so kicking, leaving, closing or a reload returns exactly what is on the table.
+- **Not in v1:** the host playing at their own table, a spin timer for roulette,
+  commit-and-reveal proof of fairness (players trust the host's client, as they trust the bookie's),
+  insurance and surrender, re-splitting.

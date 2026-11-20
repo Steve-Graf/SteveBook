@@ -110,4 +110,21 @@ do
     check(P.ChannelName("RLT-K7Q2") == "SBRLTK7Q2", "table channel name")
 end
 
+-- blackjack and lobby messages
+do
+    local W = function(ty, p) return P.Wrap(ty, "BJK-AAAA", p) end
+    check(W("TBL_ACT", { ref = "a", round = 2, action = "hit" }), "TBL_ACT"); check(W("TBL_ACT", { round = 2, action = "stand" }), "TBL_ACT without a ref")
+    check(not W("TBL_ACT", { round = 2 }), "TBL_ACT needs an action")
+    check(P.ShouldDeliver("TBL_ACT", true) and not P.ShouldDeliver("TBL_ACT", false), "actions go to the host")
+    check(W("TBL_RESULT", { rev = 3, round = 1, dealer = { cards = { "AS", "KH" }, total = 21 }, results = { { name = "Bob", net = 0, balance = 100, hands = {} } } }), "a blackjack result needs no number")
+    check(W("TBL_STATE", { rev = 2, game = "blackjack", name = "BJ", status = "playing", round = 1, minBet = 100, maxBet = 10000, seats = {}, history = {}, bj = { phase = "playing" } }), "TBL_STATE with blackjack state")
+    check(W("TBL_BET_REJECT", { ref = "a", reason = "not_your_turn" }), "not_your_turn"); check(W("TBL_BET_REJECT", { ref = "a", reason = "bad_action" }), "bad_action")
+    check(P.LOBBY_CODE == P.CanonicalCode(P.LOBBY_CODE), "the lobby code is canonical"); check(P.ChannelName(P.LOBBY_CODE) == "SBLBYCSNO", "lobby channel name")
+    check(P.Wrap("LOBBY_ASK", P.LOBBY_CODE, {}), "LOBBY_ASK")
+    check(P.ShouldDeliver("LOBBY_ASK", true) and P.ShouldDeliver("LOBBY_ASK", false), "lobby messages go to everyone")
+    check(P.Wrap("LOBBY_TABLE", P.LOBBY_CODE, { tables = { { code = "RLT-AAAA", game = "roulette", name = "Fri", host = "Steve", status = "betting", seats = 2, minBet = 100, maxBet = 10000 } } }), "LOBBY_TABLE")
+    check(P.Wrap("LOBBY_TABLE", P.LOBBY_CODE, { tables = {} }), "an empty LOBBY_TABLE")
+    check(not P.Wrap("LOBBY_TABLE", P.LOBBY_CODE, { tables = { { code = "RLT-AAAA" } } }), "a listing needs its fields")
+end
+
 if fails == 0 then print("protocol: all tests passed") else os.exit(1) end
