@@ -41,6 +41,17 @@ local PRIORITY = {
 }
 
 local function say(msg) print("|cffffd100SteveBook:|r " .. msg) end
+
+-- /book debug: trace every message in and out (PING/PONG left out, they repeat). For finding out
+-- why two players cannot talk; each side turns it on and reads its own chat.
+local QUIET = { PING = true, PONG = true }
+local function dbg(msgType, fmt, ...)
+    local db = SteveBookDB
+    if not (db and db.debug) or (msgType and QUIET[msgType]) then return end
+    local args = { ... }
+    for i = 1, select("#", ...) do args[i] = tostring(args[i]) end
+    say("|cff9d9d9d[debug]|r " .. fmt:format(unpack(args)))
+end
 local function myName() return UnitName("player") end
 local function myRealm() return GetNormalizedRealmName and GetNormalizedRealmName() or nil end
 local function clock() return GetTime and GetTime() or 0 end
@@ -224,6 +235,8 @@ function Comm.Send(msgType, payload, bookCode, target)
     local sok, text = pcall(AceSer.Serialize, AceSer, env)
     if not sok then return false, tostring(text) end
     local prio = PRIORITY[msgType]
+    dbg(msgType, "send %s book %s to %s on channel #%s (%d bytes)", msgType, bookCode, env.to or "everyone",
+        channelId(bookCode), #text)
     if Comm.LoopbackActive(bookCode) then loopback(text, msgType, bookCode, env.to) end
     -- pcall returns (ok, rawSend's first result, rawSend's second result)
     local ok, sent, serr = pcall(rawSend, text, bookCode, prio)
@@ -244,16 +257,26 @@ function Comm.Register(msgType, fn)
     table.insert(handlers[msgType], fn)
 end
 
-Comm:RegisterComm(PREFIX, function(_, message, _, sender)
+Comm:RegisterComm(PREFIX, function(_, message, distribution, sender)
     local sent = normalize(sender)
-    if sent == myName() then return end                       -- our own channel echo
     local ok, env = AceSer:Deserialize(message)
-    if not ok then return end
+    local label = ok and type(env) == "table" and env.t or "?"
+    if sent == myName() then                                   -- our own channel echo
+        dbg(label, "echo of my own %s (it left this client)", label)
+        return
+    end
+    if not ok then return dbg(nil, "dropped a message from %s that did not deserialize", sent) end
     local msgType, code, payload = Protocol.Unwrap(env)
-    if not msgType then return end
+    if not msgType then return dbg(nil, "dropped a message from %s: %s", sent, tostring(code)) end
     -- Addressed to someone else (see Comm.Send)? Not for us.
-    if env.to ~= nil and (type(env.to) ~= "string" or baseName(normalize(env.to)) ~= baseName(myName())) then return end
-    if not Protocol.ShouldDeliver(msgType, isOwner(code)) then return end
+    if env.to ~= nil and (type(env.to) ~= "string" or baseName(normalize(env.to)) ~= baseName(myName())) then
+        return dbg(msgType, "ignored %s from %s: addressed to %s, I am %s", msgType, sent, env.to, myName())
+    end
+    if not Protocol.ShouldDeliver(msgType, isOwner(code)) then
+        return dbg(msgType, "ignored %s from %s: not for my role (I %s book %s)", msgType, sent,
+            isOwner(code) and "own" or "do not own", code)
+    end
+    dbg(msgType, "recv %s from %s via %s, book %s", msgType, sent, distribution, code)
     dispatch(msgType, sent, payload, code)
 end)
 
@@ -278,6 +301,7 @@ f:RegisterEvent("CHAT_MSG_CHANNEL_NOTICE")
 f:SetScript("OnEvent", function(_, event, a1, ...)
     if event == "CHAT_MSG_CHANNEL_NOTICE" then
         -- First argument is the notice type. Once a channel is up, hide it from chat windows.
+        dbg(nil, "channel notice: %s", a1)
         if a1 == "YOU_JOINED" then
             for code in pairs(joined) do hideChannel(code) end
         end

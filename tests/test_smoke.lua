@@ -164,6 +164,23 @@ do
     check(okd and env.to == "Friend", "JOIN_DENY is addressed to Friend")
 end
 
+-- /book debug traces what is sent and received.
+do
+    run("debug")
+    check(SteveBookDB.debug == true, "/book debug turns tracing on")
+    local from = #stub.printed
+    ns.Comm.Send("JOIN_DENY", { ownerName = "Tester", reason = "denied" }, code, "Friend")
+    stub.advance(1); stub.advance(1)
+    local text = table.concat(stub.printed, "\n", from + 1)
+    check(text:find("send JOIN_DENY", 1, true) and text:find("to Friend", 1, true), "debug shows the send: " .. text)
+    check(text:find("echo of my own JOIN_DENY", 1, true) == nil, "no echo without a server")
+    run("debug")
+    check(SteveBookDB.debug == false, "/book debug turns tracing off")
+    from = #stub.printed
+    ns.Comm.Send("JOIN_DENY", { ownerName = "Tester", reason = "denied" }, code, "Friend")
+    check(table.concat(stub.printed, "\n", from + 1):find("[debug]", 1, true) == nil, "no tracing when off")
+end
+
 -- Sending before the channel is up queues and flushes once it is.
 stub.channels = {}
 stub.advance(6)

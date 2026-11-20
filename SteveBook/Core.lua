@@ -15,6 +15,7 @@ local function help()
     say("/book bookie (or /bookie)  open the bookie window")
     say("/book bet (or /bet)        open the bettor window")
     say("/book loopback     test alone: let this character be bookie and bettor of its own book")
+    say("/book debug        print every message sent and received (for troubleshooting)")
     say("/book              show the active book")
 end
 
@@ -47,6 +48,10 @@ local function handle(msg)
         else
             say("Loopback OFF.")
         end
+    elseif cmd == "debug" then
+        db.debug = not db.debug
+        say(db.debug and "Debug ON: every message in and out is printed here. Run /book debug again to stop."
+            or "Debug OFF.")
     elseif cmd == "bookie" or cmd == "bet" then
         local ui = ns.UI and ns.UI[cmd == "bookie" and "Bookie" or "Bettor"]
         if ui and ui.Toggle then ui.Toggle() else say("That window is not available yet.") end
