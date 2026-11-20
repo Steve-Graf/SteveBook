@@ -15,6 +15,7 @@ local function help()
     say("/book bookie (or /bookie)  open the bookie window")
     say("/book bet (or /bet)        open the bettor window")
     say("/book loopback     test alone: let this character be bookie and bettor of its own book")
+    say("/book lobby        check the lobby channel the lists of tables and books use")
     say("/book hide         hide the active book from (or show it in) the list of books")
     say("/casino            open the casino (roulette tables)")
     say("/book icon         show or hide the minimap icon")
@@ -58,6 +59,11 @@ local function handle(msg)
         db.debug = not db.debug
         say(db.debug and "Debug ON: every message in and out is printed here. Run /book debug again to stop."
             or "Debug OFF.")
+    elseif cmd == "lobby" then
+        if not (ns.CasinoNet and ns.CasinoNet.LobbyReport) then return say("The casino is not available.") end
+        if ns.CasinoNet.AskLobby then ns.CasinoNet.AskLobby() end             -- join it and ask, so the answer is fresh
+        for _, line in ipairs(ns.CasinoNet.LobbyReport()) do say(line) end
+        say("Ask your friend to open /casino and press Join a table, then run /book lobby again: they should be listed.")
     elseif cmd == "hide" then
         local b = Model.ActiveBook(db)
         if not b then return say("No active book. /book use <# or code> first.") end

@@ -40,6 +40,15 @@ In the bet window, **Join** shows the list of open books: click Join next to the
 for the bookie to approve you. A bookie can take their book off the list with `/book hide` (friends can
 still join with the code). Typing a code still works.
 
+## If a friend cannot see your table or book
+
+Everyone with the casino open sits in one hidden "lobby" channel. The number you see in a debug line
+(for example `channel #7`) is only your own slot; a friend's number can differ and it is still the
+same channel. Run `/book lobby` on both sides: it says whether you are in the channel and who has been
+heard there (a friend who opens `/casino` and presses Join a table should show up on your list). If
+you never hear each other, make sure you both run the latest version (from v0.4.0 on), and that you
+are on the same realm group and faction; custom channels do not cross realms.
+
 ## Casino (roulette and blackjack)
 
 `/casino` opens the casino (also the Casino button in the bet window). Pick a game and **Host a

@@ -206,5 +206,21 @@ do
     CN.CloseTable(ht)
 end
 
+-- /book lobby
+do
+    local lines = CN.LobbyReport()
+    check(lines[1]:find("In the lobby channel SBLBYCSNO as /", 1, true) ~= nil, "the report says the channel and the player's own number")
+    check(lines[1]:find("just your own slot", 1, true) ~= nil, "and explains that numbers differ between players")
+    check(lines[2]:find("Dealer", 1, true) ~= nil, "it lists the players heard in the lobby")
+    fromWire("Newcomer lol", "LOBBY_ASK", P.LOBBY_CODE, {})
+    local joined = table.concat(CN.LobbyReport(), "\n")
+    check(joined:find("Newcomer", 1, true) ~= nil, "a player who only asks is heard too")
+    stub.channels = {}
+    check(CN.LobbyReport()[1]:find("Not in the lobby channel", 1, true) ~= nil, "and it says so when the channel is not joined")
+    local before = #stub.printed
+    SlashCmdList.STEVEBOOK("lobby")
+    check(#stub.printed > before + 1, "/book lobby prints the report")
+end
+
 eq(#stub.errors, 0, "no errors: " .. table.concat(stub.errors, "; "))
 if fails == 0 then out_("test_casino_lobby: all passed") else out_(fails .. " FAILED"); os.exit(1) end

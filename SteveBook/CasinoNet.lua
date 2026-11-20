@@ -368,15 +368,42 @@ function CasinoNet.Rooms(game)
 end
 
 local lobbyHandlers = {}
+local peers = {}                         -- who has said anything in the lobby: name -> when
 
-function lobbyHandlers.LOBBY_ASK()
+-- /book lobby: is this client in the lobby channel, and who has been heard there? (Channel numbers
+-- are only a player's own slot: two players in the same channel usually have different numbers.)
+function CasinoNet.LobbyReport()
+    local name = ns.Protocol.ChannelName(ns.Protocol.LOBBY_CODE)
+    local id = GetChannelName and GetChannelName(name) or 0
+    local lines = {}
+    if id and id > 0 then
+        lines[1] = ("In the lobby channel %s as /%d. The number is just your own slot: everyone is reached by the channel name, so a friend on another number is fine."):format(name, id)
+    else
+        lines[1] = "Not in the lobby channel (" .. name .. ") yet. Open /casino to join it."
+    end
+    local list = {}
+    for who, at in pairs(peers) do list[#list + 1] = { who = who, ago = now() - at } end
+    table.sort(list, function(a, b) return a.ago < b.ago end)
+    if #list == 0 then
+        lines[2] = "Nobody else has been heard in the lobby yet. When a friend opens the casino's join page, or hosts a table, they should appear here."
+    else
+        local parts = {}
+        for i, e in ipairs(list) do if i <= 8 then parts[#parts + 1] = ("%s (%d s ago)"):format(e.who, e.ago) end end
+        lines[2] = "Heard in the lobby: " .. table.concat(parts, ", ") .. "."
+    end
+    return lines
+end
+
+function lobbyHandlers.LOBBY_ASK(sender)
+    if sender then peers[sender] = now() end
     if now() - lastAnnounce >= 2 then CasinoNet.Announce() end
 end
 
-function lobbyHandlers.LOBBY_BOOKS() lastHeard = now() end       -- only to know the lobby is alive
+function lobbyHandlers.LOBBY_BOOKS(sender) lastHeard = now(); if sender then peers[sender] = now() end end     -- also: the lobby is alive
 
 function lobbyHandlers.LOBBY_TABLE(sender, p)
     lastHeard = now()
+    if sender then peers[sender] = now() end
     for _, e in ipairs(p.tables) do
         -- a listing counts only when the host announces their own table
         if baseName(sender) == baseName(e.host) then
