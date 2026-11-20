@@ -256,6 +256,36 @@ function UI.HandsText(hands)
     return table.concat(parts, "   |   ")
 end
 
+-- The leave button of a player window: "Leave table" while seated; "Ask to rejoin" once they left (or were
+-- turned down), which glows; disabled while a request waits or after being removed.
+local function setLeaveButton(btn, tc, code)
+    if tc.status == "seated" then
+        btn:SetText("Leave table"); btn:Enable()
+        btn:SetScript("OnClick", function() CN.Leave(code) end)
+        glow(btn, false)
+    elseif tc.status == "left" or tc.status == "denied" then
+        btn:SetText("Ask to rejoin"); btn:Enable()
+        btn:SetScript("OnClick", function()
+            local ok, err = CN.RequestJoin(code)
+            if not ok then say(err) end
+            UI.Refresh()
+        end)
+        glow(btn, true)
+    elseif tc.status == "requested" then
+        btn:SetText("Waiting..."); btn:Disable(); glow(btn, false)
+    else
+        btn:SetText("Leave table"); btn:Disable(); glow(btn, false)
+    end
+end
+
+-- A warning when the host has gone quiet (the host's heartbeat arrives every 15 s), or nil.
+local function silenceWarning(tc)
+    if tc.status ~= "seated" or not tc.lastHeard then return nil end
+    local quiet = GetServerTime() - tc.lastHeard
+    if quiet <= 45 then return nil end
+    return GOLD .. ("No word from the host for %d s. They may be offline; your seat and chips are safe."):format(quiet) .. "|r"
+end
+
 -- How a finished hand is shown: WIN / BLACKJACK / PUSH / LOSE / BUST (two hands after a split give two
 -- labels), or nil while the round is still being played.
 local OUTCOME = { win = GREEN .. "WIN|r", blackjack = GREEN .. "BLACKJACK|r", push = MUTED .. "PUSH|r", lose = RED .. "LOSE|r", bust = RED .. "BUST|r" }
@@ -376,7 +406,7 @@ local function tableRows()
 end
 
 local function roomText(r)
-    local bits = { r.name, GREY .. "host " .. r.host .. "|r", ("%d seated"):format(r.seats or 0),
+    local bits = { r.name, GREY .. "host " .. r.host .. "|r", r.maxSeats and ("%d/%d seated"):format(r.seats or 0, r.maxSeats) or ("%d seated"):format(r.seats or 0),
         GREY .. "bets " .. shortRange(r) .. "|r" }
     if r.zero then bits[#bits + 1] = GREY .. ({ single = "single zero", double = "double zero", none = "no zero" })[r.zero] .. "|r" end
     return table.concat(bits, "   ")
@@ -582,6 +612,10 @@ local function hostHint(t)
     end
     local pending = Casino.Pending(t)
     if #pending > 0 then
+        local pm = t.members[pending[1]]
+        if pm and (pm.bought or 0) > 0 then
+            return GOLD .. "Next: " .. pending[1] .. " is back. Let them back in (their chips are kept).|r", "admit", pending[1]
+        end
         return GOLD .. "Next: let " .. pending[1] .. " in, and give them some chips.|r", "admit", pending[1]
     end
     local seated = Casino.Seated(t)
@@ -695,12 +729,22 @@ local function buildHost()
     -- roulette
     H.roulette = CreateFrame("Frame", nil, gp)
     H.roulette:SetPoint("TOPLEFT", gp, "TOPLEFT", 0, 0); H.roulette:SetSize(320, 402)
-    H.number = label(H.roulette, "GameFontNormalHuge", "LEFT"); at(H.number, H.roulette, 10, 30)
-    H.numberNote = label(H.roulette, "GameFontHighlightSmall"); at(H.numberNote, H.roulette, 90, 42); H.numberNote:SetWidth(220)
-    H.history = label(H.roulette, "GameFontHighlightSmall"); at(H.history, H.roulette, 10, 84); H.history:SetWidth(300); H.history:SetWordWrap(true)
-    local bt = label(H.roulette, "GameFontNormal"); at(bt, H.roulette, 10, 134); bt:SetText("Bets this round")
-    H.bets = label(H.roulette, "GameFontHighlightSmall"); at(H.bets, H.roulette, 10, 156); H.bets:SetWidth(300)
-    H.bets:SetWordWrap(true); H.bets:SetJustifyV("TOP"); H.bets:SetHeight(236)
+    H.spinBox = panel(H.roulette, 10, 30, 76, 66, COL.raised, COL.edge)
+    H.spinNum = label(H.spinBox, "GameFontNormalHuge", "CENTER"); H.spinNum:SetPoint("CENTER")
+    H.numberNote = label(H.roulette, "GameFontHighlightSmall"); at(H.numberNote, H.roulette, 96, 36); H.numberNote:SetWidth(214)
+    H.numberNote:SetWordWrap(true); H.numberNote:SetJustifyV("TOP"); H.numberNote:SetHeight(60)
+    H.histChips = {}
+    for i = 1, 12 do
+        local c = panel(H.roulette, 10 + (i - 1) * 25, 104, 23, 22, COL.raised, COL.line)
+        c.text = label(c, "GameFontNormalSmall", "CENTER"); c.text:SetPoint("CENTER")
+        H.histChips[i] = c
+    end
+    local tt = label(H.roulette, "GameFontNormal"); at(tt, H.roulette, 10, 140); tt:SetText("This round")
+    H.thisLines = label(H.roulette, "GameFontHighlightSmall"); at(H.thisLines, H.roulette, 10, 162); H.thisLines:SetWidth(300)
+    H.thisLines:SetWordWrap(true); H.thisLines:SetJustifyV("TOP"); H.thisLines:SetHeight(76)
+    local bt = label(H.roulette, "GameFontNormal"); at(bt, H.roulette, 10, 246); bt:SetText("Bets")
+    H.bets = label(H.roulette, "GameFontHighlightSmall"); at(H.bets, H.roulette, 10, 268); H.bets:SetWidth(300)
+    H.bets:SetWordWrap(true); H.bets:SetJustifyV("TOP"); H.bets:SetHeight(126)
     -- blackjack
     H.blackjack = CreateFrame("Frame", nil, gp)
     H.blackjack:SetPoint("TOPLEFT", gp, "TOPLEFT", 0, 0); H.blackjack:SetSize(320, 402)
@@ -795,9 +839,12 @@ local function refreshHost()
         r.name:SetShown(name ~= nil); r.admit:SetShown(name ~= nil); r.deny:SetShown(name ~= nil)
         glow(r.admit, name ~= nil and i == 1 and target == "admit")
         if name then
-            r.name:SetText(GOLD .. name .. "|r asks for a seat")
+            local pm = t.members[name]
+            local returning = pm ~= nil and (pm.bought or 0) > 0
+            r.name:SetText(GOLD .. name .. "|r asks for a seat" .. (returning and (MUTED .. " (back, " .. money(pm.balance) .. ")|r") or ""))
+            r.admit:SetText(returning and "Let back in" or "Let in with chips")
             r.admit:SetScript("OnClick", function()
-                local chips = Odds.ParseMoney(H.chips:GetText()) or 0
+                local chips = returning and 0 or (Odds.ParseMoney(H.chips:GetText()) or 0)
                 local ok, err = CN.Admit(t, name, chips)
                 if not ok then say(err) end
                 UI.Refresh()
@@ -885,19 +932,51 @@ local function refreshHost()
         H.skip:Show()
         if t.status == "playing" then H.skip:Enable() else H.skip:Disable() end
     else
-        H.number:SetText(last and last.number and colored(last.number) or GREY .. "-|r")
-        H.numberNote:SetText(last and last.number and (MUTED .. Roulette.Color(last.number) .. "|r") or (MUTED .. "No spins yet.|r"))
-        H.history:SetText(historyText(t.history))
+        local function pocketColor(n)
+            local c = Roulette.Color(n)
+            return c == "red" and { 0.56, 0.11, 0.11 } or (c == "green" and { 0.04, 0.35, 0.16 } or { 0.05, 0.04, 0.03 })
+        end
+        if last and last.number then
+            local n = last.number
+            fill(H.spinBox.fill, pocketColor(n))
+            H.spinNum:SetText("|cffffffff" .. Roulette.Label(n) .. "|r")
+            local words = { Roulette.Color(n) }
+            if n ~= 0 and n ~= Roulette.DOUBLE_ZERO then
+                words[#words + 1] = n % 2 == 1 and "odd" or "even"
+                words[#words + 1] = n <= 18 and "1-18" or "19-36"
+                words[#words + 1] = ({ "1st", "2nd", "3rd" })[math.floor((n - 1) / 12) + 1] .. " dozen"
+            end
+            local winners = 0
+            for _, r in ipairs(last.results) do if r.net > 0 then winners = winners + 1 end end
+            H.numberNote:SetText(table.concat(words, " · ") .. "\n" .. MUTED .. ("%d of %d players came out ahead"):format(winners, #last.results) .. "|r")
+        else
+            fill(H.spinBox.fill, COL.raised)
+            H.spinNum:SetText(GREY .. "-|r"); H.numberNote:SetText(MUTED .. "No spins yet.|r")
+        end
+        for i, c in ipairs(H.histChips) do
+            local n = t.history[i]
+            c:SetShown(n ~= nil)
+            if n then fill(c.fill, pocketColor(n)); c.text:SetText("|cffffffff" .. Roulette.Label(n) .. "|r") end
+        end
+        local x = Casino.Exposure(t)
+        if x and x.worst then
+            local worstText = x.worst.net < 0 and (RED .. ("Worst case: %s comes up and you pay out %s more than you took."):format(Roulette.Label(x.worst.number), money(-x.worst.net)) .. "|r")
+                or (GREEN .. "No number costs you anything right now." .. "|r")
+            H.thisLines:SetText(("%d %s bet, %s on the table\n%s\n%s"):format(x.bettors, x.bettors == 1 and "player has" or "players have", money(x.staked), worstText,
+                MUTED .. ("Best case: %s comes up and you keep %s."):format(Roulette.Label(x.best.number), money(x.best.net)) .. "|r"))
+        else
+            H.thisLines:SetText(MUTED .. "No bets yet. Once players bet you will see what the house risks here.|r")
+        end
         local lines = {}
         for _, name in ipairs(Casino.Seated(t)) do
             local m = t.members[name]
             if #m.bets > 0 then
                 local parts = {}
                 for _, b in ipairs(m.bets) do parts[#parts + 1] = Roulette.Describe(b) .. " " .. money(b.amount) end
-                lines[#lines + 1] = name .. ": " .. table.concat(parts, ", ")
+                lines[#lines + 1] = GOLD .. name .. "|r  " .. table.concat(parts, ", ")
             end
         end
-        H.bets:SetText(#lines > 0 and table.concat(lines, "\n") or (GREY .. "No bets yet.|r"))
+        H.bets:SetText(#lines > 0 and table.concat(lines, "\n") or (GREY .. "Nobody has bet yet.|r"))
         H.spin:SetText("Spin the wheel")
         if t.status == "betting" then H.spin:Enable() else H.spin:Disable() end
         H.skip:Hide()
@@ -1100,8 +1179,8 @@ local function buildTable()
     P.head = label(body, "GameFontNormalLarge"); at(P.head, body, 14, 8); P.head:SetWidth(340)
     P.status = label(body, "GameFontHighlight"); at(P.status, body, 14, 32); P.status:SetWidth(560)
     P.balance = label(body, "GameFontHighlight", "RIGHT"); at(P.balance, body, 330, 10); P.balance:SetWidth(430)
-    P.leave = button(body, "Leave table", 100, function() if playCode then CN.Leave(playCode) end end, 22)
-    at(P.leave, body, 772, 6)
+    P.leave = button(body, "Leave table", 110, function() end, 22)
+    at(P.leave, body, 762, 6)
 
     -- numbers
     local nl = label(body, "GameFontNormal"); at(nl, body, 14, 62); nl:SetText("Numbers")
@@ -1232,15 +1311,16 @@ local function refreshTable()
     local zero = st and st.zero or "single"
     local statusText
     if tc.status == "requested" then statusText = GOLD .. "Waiting for the host to let you in...|r"
-    elseif tc.status == "denied" then statusText = RED .. "The host turned down your request.|r"
+    elseif tc.status == "denied" then statusText = RED .. "The host turned down your request.|r" .. MUTED .. "  You can ask again.|r"
     elseif tc.status == "removed" then statusText = RED .. "The host removed you from the table.|r"
-    elseif tc.status == "left" then statusText = GREY .. "You left the table.|r"
+    elseif tc.status == "left" then statusText = GOLD .. "You left the table. Your chips are safe: press Ask to rejoin and the host can let you back in.|r"
     elseif tc.status == "closed" then statusText = RED .. "This table is closed.|r"
     elseif not st then statusText = GOLD .. "Waiting for the table...|r"
     elseif st.status == "spinning" then statusText = GOLD .. "No more bets: the wheel is spinning...|r"
     else statusText = GREEN .. "Taking bets|r" .. MUTED .. ("   Round %d   %s to %s   %s"):format(st.round, money(st.minBet), money(st.maxBet),
         ({ single = "single zero", double = "double zero", none = "no zero" })[zero]) .. "|r" end
-    P.status:SetText(statusText)
+    local quiet = silenceWarning(tc)
+    P.status:SetText(quiet or statusText)
     P.balance:SetText(("Chips %s%s|r   %son the table %s|r"):format(GOLD, money(tc.balance or 0), MUTED, money(Client.Staked(tc))))
 
     -- zero cells follow the wheel
@@ -1327,7 +1407,7 @@ local function refreshTable()
     end
     P.msg:SetText(message ~= "" and message or hint)
     glow(P.place, can and #slip > 0)
-    if tc.status == "seated" then P.leave:Enable() else P.leave:Disable() end
+    setLeaveButton(P.leave, tc, playCode)
 end
 
 ------------------------------------------------------------------------------------------
@@ -1361,8 +1441,8 @@ local function buildBlackjack()
     B.head = label(body, "GameFontNormalLarge"); at(B.head, body, 14, 8); B.head:SetWidth(340)
     B.status = label(body, "GameFontHighlight"); at(B.status, body, 14, 32); B.status:SetWidth(580)
     B.balance = label(body, "GameFontHighlight", "RIGHT"); at(B.balance, body, 330, 10); B.balance:SetWidth(430)
-    B.leave = button(body, "Leave table", 100, function() if bjCode then CN.Leave(bjCode) end end, 22)
-    at(B.leave, body, 772, 6)
+    B.leave = button(body, "Leave table", 110, function() end, 22)
+    at(B.leave, body, 762, 6)
 
     -- dealer
     B.dealerBox = panel(body, 14, 56, 600, 92, COL.panel, COL.line)
@@ -1457,9 +1537,9 @@ local function refreshBlackjack()
 
     local statusText
     if tc.status == "requested" then statusText = GOLD .. "Waiting for the host to let you in...|r"
-    elseif tc.status == "denied" then statusText = RED .. "The host turned down your request.|r"
+    elseif tc.status == "denied" then statusText = RED .. "The host turned down your request.|r" .. MUTED .. "  You can ask again.|r"
     elseif tc.status == "removed" then statusText = RED .. "The host removed you from the table.|r"
-    elseif tc.status == "left" then statusText = GREY .. "You left the table.|r"
+    elseif tc.status == "left" then statusText = GOLD .. "You left the table. Your chips are safe: press Ask to rejoin and the host can let you back in.|r"
     elseif tc.status == "closed" then statusText = RED .. "This table is closed.|r"
     elseif not st then statusText = GOLD .. "Waiting for the table...|r"
     elseif st.status == "betting" then statusText = GREEN .. "Place your bets|r" .. MUTED .. ("   Round %d   %s to %s"):format(st.round, money(st.minBet), money(st.maxBet)) .. "|r"
@@ -1470,7 +1550,8 @@ local function refreshBlackjack()
     elseif pub and pub.turn == me then statusText = GREEN .. "Your turn|r"
     elseif pub and pub.turn then statusText = GOLD .. "Waiting for " .. pub.turn .. "|r"
     else statusText = GOLD .. "Playing...|r" end
-    B.status:SetText(statusText)
+    local quiet = silenceWarning(tc)
+    B.status:SetText(quiet or statusText)
     B.balance:SetText(("Chips %s%s|r   %son the table %s|r"):format(GOLD, money(tc.balance or 0), MUTED, money(Client.Staked(tc))))
 
     -- dealer
@@ -1616,7 +1697,7 @@ local function refreshBlackjack()
         lines[#lines + 1] = ""
     end
     B.log:SetText(#lines > 0 and table.concat(lines, "\n") or (GREY .. "No rounds yet.|r"))
-    if tc.status == "seated" then B.leave:Enable() else B.leave:Disable() end
+    setLeaveButton(B.leave, tc, bjCode)
 end
 
 ------------------------------------------------------------------------------------------
@@ -1689,3 +1770,10 @@ function UI.Toggle()
 end
 
 CN.Subscribe(function() UI.Refresh() end)
+
+-- Closing a table window never leaves the table. When something needs the player and the window is
+-- closed, CasinoNet says so in chat.
+CN.SetWindowCheck(function(code)
+    code = ns.Protocol.CanonicalCode(code)
+    return (bjCode == code and bj.frame ~= nil and bj.frame:IsShown()) or (playCode == code and play.frame ~= nil and play.frame:IsShown())
+end)

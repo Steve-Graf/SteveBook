@@ -219,4 +219,55 @@ do
     out = C.Handle(ht, "Zoe", "TBL_JOIN", {}, NOW); eq(out[1].payload.reason, "closed", "closed table refuses"); valid(out)
 end
 
+-- seat limits
+do
+    local st = assert(C.Create({}, { game = "blackjack" }, "Host", NOW, rand))
+    eq(st.maxSeats, 5, "blackjack seats five")
+    for i = 1, 5 do C.RequestJoin(st, "P" .. i, NOW); assert(C.Admit(st, "P" .. i, 0, NOW)) end
+    C.RequestJoin(st, "P6", NOW)
+    eq(select(2, C.Admit(st, "P6", 0, NOW)), "full", "the sixth player is turned away: the table is full")
+    eq(st.members.P6.status, "pending", "and stays pending")
+    C.Leave(st, "P1")
+    assert(C.Admit(st, "P6", 0, NOW)); eq(st.members.P6.status, "seated", "a seat frees up when someone leaves")
+    -- a player coming back after leaving keeps their chips and needs a free seat
+    C.RequestJoin(st, "P1", NOW)
+    eq(select(2, C.Admit(st, "P1", 0, NOW)), "full", "a returning player needs a free seat too")
+    eq(C.Create({}, { game = "roulette" }, "Host", NOW, rand).maxSeats, 12, "roulette seats twelve")
+end
+
+-- leaving and coming back
+do
+    local lt = assert(C.Create({}, { game = "roulette" }, "Host", NOW, rand))
+    C.RequestJoin(lt, "Zed", NOW); C.Admit(lt, "Zed", 5000, NOW)
+    C.Leave(lt, "Zed")
+    eq(lt.members.Zed.balance, 5000, "leaving keeps the chips on the books")
+    eq(C.RequestJoin(lt, "Zed", NOW), "pending", "a player who left may ask to sit again")
+    local out, ev = C.Handle(lt, "Zed", "TBL_JOIN", {}, NOW)
+    eq(#out, 0, "the request waits for the host"); eq(ev == nil, false, "")
+    assert(C.Admit(lt, "Zed", 0, NOW))
+    eq(lt.members.Zed.balance, 5000, "letting them back in without chips leaves their chips as they were")
+    eq(lt.members.Zed.bought, 5000, "and what they bought")
+    C.Kick(lt, "Zed")
+    eq(select(2, C.RequestJoin(lt, "Zed", NOW)), "removed", "a player the host removed cannot ask again")
+end
+
+-- what the house risks on a roulette round
+do
+    local et = assert(C.Create({}, { game = "roulette" }, "Host", NOW, rand))
+    eq(C.Exposure(et).staked, 0, "no bets, no exposure"); eq(C.Exposure(et).worst, nil, "no worst case")
+    C.RequestJoin(et, "A", NOW); C.Admit(et, "A", 10000, NOW)
+    C.RequestJoin(et, "B", NOW); C.Admit(et, "B", 10000, NOW)
+    assert(C.PlaceBet(et, "A", 1, { kind = "straight", numbers = { 17 }, amount = 100 }, "a1"))
+    assert(C.PlaceBet(et, "B", 1, { kind = "red", amount = 200 }, "b1"))
+    local x = C.Exposure(et)
+    eq(x.staked, 300, "staked"); eq(x.bettors, 2, "two bettors")
+    eq(x.best.net, 300, "best case: the house keeps all 300 (zero, or a black number other than 17)")
+    eq(x.worst.number, 17, "worst case: 17 comes up"); eq(x.worst.net, 300 - 3600, "the 100 straight pays 3600 back; red loses; the house is down 3300")
+    -- a covering bet moves the worst case
+    assert(C.PlaceBet(et, "B", 1, { kind = "black", amount = 200 }, "b2"))
+    x = C.Exposure(et)
+    eq(x.staked, 500, "staked now 500"); eq(x.worst.number, 17, "still 17"); eq(x.worst.net, 500 - (3600 + 400), "black wins too on 17")
+    eq(C.Exposure(assert(C.Create({}, { game = "blackjack" }, "Host", NOW, rand))), nil, "blackjack has no wheel exposure")
+end
+
 if fails == 0 then print("casino: all passed") else os.exit(1) end

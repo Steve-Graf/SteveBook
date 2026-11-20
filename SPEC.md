@@ -385,6 +385,21 @@ messages.
   the host may set up to 10g).
 - **Wheel.** The host picks single zero (house edge 2.7%), double zero (5.3%) or no zero (a fair
   wheel for a friendly table).
+- **Leaving, coming back, closing windows.** A player can **leave** and later **ask to rejoin**: their
+  chips stay on the host's books, the host sees the request as "back" and lets them back in with
+  their chips as they were (no new chips). A player the host **removed** cannot ask again (the host
+  can still admit them by hand). Seats are limited (`Casino.MAX_SEATS`: roulette 12, blackjack 5); a
+  full table keeps requests waiting. **Closing a window never leaves the table or stops anything**:
+  tables, rounds, timers and the player's seat live in the addon, not in the window, and they are
+  saved, so a /reload or relog keeps them (a host who reloads mid-round gets the round cancelled and
+  the bets returned). A player who closes the blackjack window during their turn is still stood after
+  30 s, so the addon says it in chat ("It's your turn in blackjack at ...") and when betting reopens
+  ("Betting is open in ..."); no alert while the window is open. The host's client sends a heartbeat
+  (the table state) every 15 s; a player's window warns "No word from the host" after 45 s of silence,
+  and a bet the host never answers is reported after 20 s with the chips untouched.
+- **Roulette host view.** Last spin as a coloured block with its colour, parity and dozen, the last
+  twelve pockets as coloured chips, what the house risks this round (`Casino.Exposure`: the worst and
+  best pocket given everyone's bets), and each player's bets.
 - **Blackjack** (`Blackjack.lua` cards and payouts, `BlackjackTable.lua` the engine). Six decks held
   on the host; the dealer's hole card is never sent until it turns over, and every player card is
   face up, so there is no hidden information on the wire. Betting: one wager per round, taken back

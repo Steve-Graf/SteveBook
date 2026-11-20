@@ -28,6 +28,7 @@ Casino.GAMES = {
 Casino.Engines = {}
 local function engine(t) return Casino.Engines[t.game] end
 Casino.GAME_ORDER = { "roulette", "blackjack" }
+Casino.MAX_SEATS = { roulette = 12, blackjack = 5 }       -- seats per table (blackjack shows five rows)
 Casino.HISTORY_KEEP = 12
 Casino.SPIN_SECONDS = 3
 Casino.DEFAULT_MIN_BET = 100                 -- 1s
@@ -99,7 +100,7 @@ function Casino.Create(db, spec, hostName, now, rand)
     local t = {
         code = code, game = spec.game, name = name:sub(1, 40), hostName = hostName, createdAt = now,
         zero = zero, minBet = minBet, maxBet = maxBet,
-        status = "betting", round = 1, rev = 1, nextBetId = 1,
+        status = "betting", round = 1, rev = 1, nextBetId = 1, maxSeats = Casino.MAX_SEATS[spec.game],
         members = {}, history = {},
     }
     c.tables[code] = t
@@ -172,6 +173,7 @@ end
 function Casino.Admit(t, name, chips, now)
     local m = t.members[name]
     if not m then return nil, "no_member" end
+    if m.status ~= "seated" and #Casino.Seated(t) >= (t.maxSeats or Casino.MAX_SEATS[t.game] or 12) then return nil, "full" end
     if m.status == "kicked" and not chips then chips = 0 end   -- the host may take a kicked player back
     chips = chips or 0
     if not (type(chips) == "number" and chips >= 0 and chips == math.floor(chips)) then return nil, "bad_amount" end
@@ -373,6 +375,27 @@ function Casino.Ledger(t)
     end
     table.sort(list, function(a, b) return a.name < b.name end)
     return list
+end
+
+-- Roulette: what the house stands to win or lose on this round's bets, for the host's window.
+-- Returns { staked, bettors, worst = { number, net }, best = { number, net } } where net is the house's
+-- result if that pocket comes up (negative = the house pays out more than it takes in).
+function Casino.Exposure(t)
+    if t.game ~= "roulette" then return nil end
+    local bets, staked, bettors = {}, 0, 0
+    for _, name in ipairs(Casino.Seated(t)) do
+        local m = t.members[name]
+        if #m.bets > 0 then bettors = bettors + 1 end
+        for _, b in ipairs(m.bets) do bets[#bets + 1] = b; staked = staked + b.amount end
+    end
+    local out = { staked = staked, bettors = bettors }
+    if #bets == 0 then return out end
+    for _, pocket in ipairs(Roulette.Pockets(t.zero)) do
+        local net = -Roulette.Settle(bets, pocket).net                -- the house's side of the table
+        if not out.worst or net < out.worst.net then out.worst = { number = pocket, net = net } end
+        if not out.best or net > out.best.net then out.best = { number = pocket, net = net } end
+    end
+    return out
 end
 
 ------------------------------------------------------------------------------------------

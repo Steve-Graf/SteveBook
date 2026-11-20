@@ -93,7 +93,10 @@ end
 
 function CasinoNet.Admit(t, name, chips)
     local m, err = Casino.Admit(t, name, chips, now())
-    if not m then return nil, err end
+    if not m then
+        if err == "full" then return nil, ("The table is full (%d seats). Remove someone first."):format(t.maxSeats or 0) end
+        return nil, err
+    end
     send(t.code, {
         { type = "TBL_JOIN_OK", to = name, payload = { game = t.game, name = t.name, ownerName = t.hostName, rev = t.rev } },
         stateMsg(t),
@@ -283,7 +286,7 @@ local lastHeard = nil                    -- when any host's listing (table or bo
 
 local function entryFor(t)
     return { code = t.code, game = t.game, name = t.name, host = t.hostName, seats = #Casino.Seated(t),
-             status = t.status, minBet = t.minBet, maxBet = t.maxBet, zero = t.zero }
+             status = t.status, minBet = t.minBet, maxBet = t.maxBet, zero = t.zero, maxSeats = t.maxSeats }
 end
 
 -- My open tables (and `extra`: codes of tables to list once more as closed), told to the lobby.
@@ -301,6 +304,18 @@ function CasinoNet.Announce(closed)
     lastAnnounce = now()
     ns.Comm.JoinBook(ns.Protocol.LOBBY_CODE)
     ns.Comm.Send("LOBBY_TABLE", { tables = list }, ns.Protocol.LOBBY_CODE)
+end
+
+-- Tell the players at my open tables that the table is alive (and repair any state they missed). The
+-- player's window warns when it has not heard from the host for a while.
+function CasinoNet.Heartbeat()
+    local d = db()
+    if not d then return end
+    for _, t in ipairs(Casino.List(d)) do
+        if t.hostName == me() and t.status ~= "closed" and #Casino.Seated(t) > 0 then
+            send(t.code, { stateMsg(t) })
+        end
+    end
 end
 
 -- Join the lobby and ask who is hosting. Called when the player opens the list of tables.
@@ -381,7 +396,29 @@ local function tableFor(code, sender)
     local tc = cache(code)
     if not tc then return nil end
     if tc.owner and baseName(sender) ~= baseName(tc.owner) then return nil end
+    tc.lastHeard = now()                                 -- the host is alive (the window warns when this gets old)
     return tc
+end
+
+-- The window tells us whether it is open for a table, so we can speak up in chat when something needs
+-- the player and the window is closed (closing the window never leaves the table).
+local windowOpen = function() return false end
+function CasinoNet.SetWindowCheck(fn) windowOpen = fn or function() return false end end
+
+local function alertIfNeeded(tc, code, before, p)
+    if windowOpen(code) or tc.status ~= "seated" then return end
+    local me_ = tc.me or me()
+    local bj = p.bj
+    if bj and p.status == "playing" and bj.turn == me_ then
+        local key = tostring(p.round) .. ":" .. tostring(bj.turnHand or 1)
+        if tc.alertedTurn ~= key then
+            tc.alertedTurn = key
+            say(("It's your turn in blackjack at %s. /casino to open the table (you are stood after %d s)."):format(p.name, ns.BlackjackTable and ns.BlackjackTable.TURN_SECONDS or 30))
+        end
+    elseif p.status == "betting" and before and before ~= "betting" and (tc.balance or 0) > 0 and Client.Staked(tc) == 0 and tc.alertedBet ~= p.round then
+        tc.alertedBet = p.round
+        say(("Betting is open in %s at %s. /casino to place your bet."):format((Casino.GAMES[p.game] and Casino.GAMES[p.game].title or "the casino"):lower(), p.name))
+    end
 end
 
 local REJECT_TEXT = {
@@ -408,6 +445,7 @@ function handlers.TBL_JOIN_OK(sender, p, code)
     -- only the character the payload names as the host may seat us, and only if they sent it
     if not baseName(sender) or baseName(sender) ~= baseName(p.ownerName) then return end
     Client.ApplyJoinOk(db().casinoCache, code, sender, p)
+    tc.lastHeard = now()
     say(("You have a seat at %s."):format(p.name))
 end
 
@@ -425,7 +463,9 @@ end
 
 function handlers.TBL_STATE(sender, p, code)
     local tc = tableFor(code, sender)
-    if tc and tc.status == "seated" then Client.ApplyState(db().casinoCache, code, p) end
+    if not (tc and tc.status == "seated") then return end
+    local before = tc.state and tc.state.status
+    if Client.ApplyState(db().casinoCache, code, p) then alertIfNeeded(tc, code, before, p) end
 end
 
 function handlers.TBL_PLAYER(sender, p, code)
@@ -586,7 +626,12 @@ local function tick()
         if tc.status == "requested" then
             ns.Comm.Send("TBL_JOIN", {}, tc.code)                  -- idempotent; covers a host who was offline
         elseif tc.status == "seated" then
-            if Client.ExpirePending(d.casinoCache, tc.code, t0) > 0 then changed(tc.code) end
+            local dropped = Client.ExpirePending(d.casinoCache, tc.code, t0)
+            if dropped > 0 then
+                say(("The host of %s did not answer %s; your chips were not taken. Check that they are online."):format(
+                    tc.name or tc.code, dropped == 1 and "a bet" or (dropped .. " bets")))
+                changed(tc.code)
+            end
         end
     end
 end
@@ -613,7 +658,7 @@ local function register()
     if C_Timer and C_Timer.NewTicker then
         C_Timer.NewTicker(TICK_SECONDS, tick)
         C_Timer.NewTicker(1, blackjackTick)
-        C_Timer.NewTicker(ANNOUNCE_EVERY, function() CasinoNet.Announce() end)    -- keeps my open tables on the list
+        C_Timer.NewTicker(ANNOUNCE_EVERY, function() CasinoNet.Announce(); CasinoNet.Heartbeat() end)   -- list + heartbeat
     end
 end
 
