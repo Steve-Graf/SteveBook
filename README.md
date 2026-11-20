@@ -34,6 +34,12 @@ ratios (profit per 1 staked: -500 is 0.2x, +150 is 1.5x). The bookie window alwa
 A coin button on the minimap: left-click opens the bet window, right-click the bookie window, drag
 to move it. `/book icon` hides or shows it.
 
+## Joining a sportsbook
+
+In the bet window, **Join** shows the list of open books: click Join next to the one you want and wait
+for the bookie to approve you. A bookie can take their book off the list with `/book hide` (friends can
+still join with the code). Typing a code still works.
+
 ## Casino (roulette and blackjack)
 
 `/casino` opens the casino (also the Casino button in the bet window). Pick a game and **Host a

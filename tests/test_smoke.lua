@@ -151,12 +151,23 @@ check(code and stub.channels[ns.Protocol.ChannelName(code)] ~= nil, "login rejoi
 
 -- Comm.Send goes out through the real AceSerializer/AceComm/ChatThrottleLib as an addon message
 -- on the hidden channel.
+-- ChatThrottleLib sends about 800 bytes a second, and the lobby announcements share that budget.
+local function flushWire() for _ = 1, 20 do stub.advance(1) end end
+-- The newest outgoing addon message carrying this message type (other traffic, such as the
+-- lobby announcements, may be interleaved).
+local function lastOf(msgType)
+    local AceSer = LibStub("AceSerializer-3.0")
+    for i = #stub.addonMessages, 1, -1 do
+        local okd, env = AceSer:Deserialize(stub.addonMessages[i].text)
+        if okd and type(env) == "table" and env.t == msgType then return stub.addonMessages[i], env end
+    end
+end
 local before = #stub.addonMessages
 local ok, err = ns.Comm.Send("PING", {}, code)
 check(ok == true, "Comm.Send PING succeeds: " .. tostring(err))
-stub.advance(1); stub.advance(1)
+flushWire()
 check(#stub.addonMessages > before, "PING reached C_ChatInfo.SendAddonMessage")
-local m = stub.addonMessages[#stub.addonMessages]
+local m = lastOf("PING")
 check(m and m.prefix == "SteveBook" and m.chatType == "CHANNEL" and m.target == stub.channels[ns.Protocol.ChannelName(code)],
     "PING went to the book's channel with our prefix")
 check(m and #m.text <= 255, "addon message is within 255 bytes")
@@ -164,15 +175,12 @@ check(m and #m.text <= 255, "addon message is within 255 bytes")
 -- A reply to one bettor goes out on the channel, addressed to them (never as a WHISPER).
 before = #stub.addonMessages
 check(ns.Comm.Send("JOIN_DENY", { ownerName = "Tester", reason = "denied" }, code, "Friend") == true, "Comm.Send addressed message succeeds")
-stub.advance(1); stub.advance(1)
-m = stub.addonMessages[#stub.addonMessages]
-check(#stub.addonMessages > before and m.chatType == "CHANNEL" and m.target == stub.channels[ns.Protocol.ChannelName(code)],
+flushWire()
+local env
+m, env = lastOf("JOIN_DENY")
+check(#stub.addonMessages > before and m and m.chatType == "CHANNEL" and m.target == stub.channels[ns.Protocol.ChannelName(code)],
     "JOIN_DENY went out on the book's channel")
-do
-    local AceSer = LibStub("AceSerializer-3.0")
-    local okd, env = AceSer:Deserialize(m.text)
-    check(okd and env.to == "Friend", "JOIN_DENY is addressed to Friend")
-end
+check(env and env.to == "Friend", "JOIN_DENY is addressed to Friend")
 
 -- Minimap icon: on by default, /book icon hides and shows it, clicks open the windows.
 do
@@ -210,7 +218,7 @@ do
     check(SteveBookDB.debug == true, "/book debug turns tracing on")
     local from = #stub.printed
     ns.Comm.Send("JOIN_DENY", { ownerName = "Tester", reason = "denied" }, code, "Friend")
-    stub.advance(1); stub.advance(1)
+    flushWire()
     local text = table.concat(stub.printed, "\n", from + 1)
     check(text:find("send JOIN_DENY", 1, true) and text:find("to Friend", 1, true), "debug shows the send: " .. text)
     check(text:find("echo of my own JOIN_DENY", 1, true) == nil, "no echo without a server")
@@ -227,7 +235,7 @@ stub.advance(6)
 local ok2, why = ns.Comm.Send("PING", {}, code)
 check(ok2 == true and why == "queued", "Send queues while the channel is not ready: " .. tostring(ok2) .. " " .. tostring(why))
 before = #stub.addonMessages
-stub.runTickers(); stub.advance(1); stub.advance(1)
+stub.runTickers(); flushWire()
 check(#stub.addonMessages > before, "queued message flushed after the channel joined")
 
 -- Tickers (sweep, ping) run without error.

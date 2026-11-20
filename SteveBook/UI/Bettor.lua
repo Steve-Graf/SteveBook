@@ -40,6 +40,7 @@ local GREEN, RED, GOLD, GREY = "|cff40ff40", "|cffff5050", "|cffffd100", "|cff99
 
 local frame, tab, showJoin, filter
 local groupReqAt            -- when BETS_REQ was last sent (nil: send on the next refresh)
+local joinAsked              -- the lobby was asked for books since the join screen came up
 local slip = Slip.New()
 local restoreStake            -- copper to put back in the stake box after a rejection
 local seq = 0
@@ -101,6 +102,14 @@ local function requestJoin(code)
     showJoin = false
     send("JOIN_REQ", {}, code, true)
     say("Join request sent to " .. code .. ". Waiting for the bookie to approve.")
+end
+
+-- The join screen's list of open books comes from ns.BookLobby (read at call time; it may be absent).
+local JOIN_ROWS, JOIN_ROW_H = 7, 26
+
+local function askLobby()
+    local L = ns.BookLobby
+    if L and L.Ask then pcall(L.Ask) end
 end
 
 -- `req` is a BET_PLACE payload without a ref (Slip.Request builds it with one).
@@ -890,6 +899,7 @@ local function build()
     end)
     frame:SetScript("OnHide", function()
         if refresher then refresher:Cancel(); refresher = nil end
+        joinAsked = false
     end)
 
     ui.title = label(frame, "GameFontNormal", "CENTER")
@@ -1027,9 +1037,34 @@ local function build()
     local j = CreateFrame("Frame", nil, frame)
     j:SetPoint("TOPLEFT", PAD, -94)
     j:SetPoint("BOTTOMRIGHT", -PAD, 14)
+    -- Open books: listed by their bookies in the lobby channel (ns.BookLobby), one Join per row.
+    local jt = label(j, "GameFontNormal")
+    jt:SetPoint("TOPLEFT", 0, -6)
+    jt:SetText("Open books")
+    j.refresh = button(j, "Refresh", 80, function() askLobby(); Bettor.Refresh() end)
+    j.refresh:SetPoint("TOPRIGHT", 0, 0)
+    j.rows = {}
+    for i = 1, JOIN_ROWS do
+        local r = CreateFrame("Frame", nil, j)
+        r:SetSize(WIN_W - 2 * PAD, JOIN_ROW_H)
+        r:SetPoint("TOPLEFT", 0, -32 - (i - 1) * JOIN_ROW_H)
+        r.text = label(r, "GameFontHighlight")
+        r.text:SetPoint("LEFT", 6, 0)
+        r.text:SetWidth(WIN_W - 2 * PAD - 110)
+        r.text:SetWordWrap(false)
+        r.join = button(r, "Join", 70, function()
+            if r.code then requestJoin(r.code); Bettor.Refresh() end
+        end, 22)
+        r.join:SetPoint("RIGHT", -4, 0)
+        r:Hide()
+        j.rows[i] = r
+    end
+    j.empty = label(j, "GameFontHighlight")
+    j.empty:SetPoint("TOPLEFT", 6, -36)
+    j.empty:SetText("No open books yet. Books show up here when a bookie lists one.")
     local jl = label(j, "GameFontNormal")
-    jl:SetPoint("TOPLEFT", 0, -6)
-    jl:SetText("Join code from your bookie (e.g. NFL-K7Q2):")
+    jl:SetPoint("TOPLEFT", 0, -32 - JOIN_ROWS * JOIN_ROW_H - 14)
+    jl:SetText("Have a code? Type it here.")
     j.code = editBox(j, 140, 16)
     j.code:SetPoint("TOPLEFT", jl, "BOTTOMLEFT", 6, -6)
     local go = function() requestJoin(j.code:GetText()); j.code:SetText(""); j.code:ClearFocus(); Bettor.Refresh() end
@@ -1051,6 +1086,12 @@ local function build()
     j.forget:SetPoint("TOPLEFT", j.status, "BOTTOMLEFT", 0, -14)
     j:Hide()
     ui.joinPanel = j
+    local L = ns.BookLobby
+    if L and L.Subscribe then      -- the list changed: redraw the join screen if it is up
+        L.Subscribe(function()
+            if frame and frame:IsShown() and ui.joinPanel:IsShown() then Bettor.Refresh() end
+        end)
+    end
 end
 
 function Bettor.Refresh()
@@ -1074,15 +1115,31 @@ function Bettor.Refresh()
     end
 
     ui.joinPanel:SetShown(needJoin)
+    if not needJoin then joinAsked = false end
     if needJoin then
         for _, btn in pairs(ui.tabs) do btn:SetEnabled(false) end
         ui.boardArea:Hide(); ui.slipHolder:Hide(); ui.listScroll:Hide(); ui.group:Hide()
         ui.joinPanel.forget:SetShown(b ~= nil and b.status ~= "active")
+        if not joinAsked and frame:IsShown() then joinAsked = true; askLobby() end
+        local L = ns.BookLobby
+        local books = L and L.Books and L.Books() or {}
+        for i, r in ipairs(ui.joinPanel.rows) do
+            local e = books[i]
+            r.code = e and e.code
+            r:SetShown(e ~= nil)
+            if e then
+                local nmem, nmk = e.members or 0, e.markets or 0
+                r.text:SetText(("%s  %shost %s|r  %d member%s  %d open market%s"):format(
+                    plain(tostring(e.name or e.code)), GREY, plain(tostring(e.owner or "?")),
+                    nmem, nmem == 1 and "" or "s", nmk, nmk == 1 and "" or "s"))
+            end
+        end
+        ui.joinPanel.empty:SetShown(#books == 0)
         local msg = "Ask your bookie for their join code."
         if b and not showJoin then
             if b.status == "requested" then
                 msg = "Request sent to " .. b.code .. ". Waiting for the bookie to approve you.\n"
-                    .. GREY .. "You can also enter a code above to join a different book.|r"
+                    .. GREY .. "You can also pick a different book above or enter a code.|r"
             elseif b.status == "denied" then
                 msg = RED .. "The bookie denied your request for " .. b.code .. ".|r"
             end

@@ -15,6 +15,7 @@ local function help()
     say("/book bookie (or /bookie)  open the bookie window")
     say("/book bet (or /bet)        open the bettor window")
     say("/book loopback     test alone: let this character be bookie and bettor of its own book")
+    say("/book hide         hide the active book from (or show it in) the list of books")
     say("/casino            open the casino (roulette tables)")
     say("/book icon         show or hide the minimap icon")
     say("/book ratio        toggle odds between American (-110) and ratio (0.91x) display")
@@ -32,7 +33,8 @@ local function handle(msg)
         local b, err = Model.CreateBook(db, rest, UnitName("player"), GetServerTime())
         if not b then return say(err) end
         if ns.Comm then ns.Comm.JoinBook(b.code) end
-        say("Created " .. describe(b) .. ". Share the code with friends.")
+        if ns.BookLobby then ns.BookLobby.Announce() end
+        say("Created " .. describe(b) .. ". It is on the list of books; the code is for anyone who wants it.")
     elseif cmd == "list" then
         local books = Model.ListBooks(db)
         if #books == 0 then return say("No books yet. /book new <name>") end
@@ -56,6 +58,12 @@ local function handle(msg)
         db.debug = not db.debug
         say(db.debug and "Debug ON: every message in and out is printed here. Run /book debug again to stop."
             or "Debug OFF.")
+    elseif cmd == "hide" then
+        local b = Model.ActiveBook(db)
+        if not b then return say("No active book. /book use <# or code> first.") end
+        b.unlisted = not b.unlisted
+        say(b.unlisted and (b.name .. " is hidden from the list of books. Friends can still join with the code " .. b.code .. ".")
+            or (b.name .. " is listed again."))
     elseif cmd == "casino" then
         local ui = ns.UI and ns.UI.Casino
         if ui and ui.Toggle then ui.Toggle() else say("The casino is not available.") end
@@ -93,6 +101,7 @@ f:SetScript("OnEvent", function(_, _, name)
     SteveBookDB.cache = SteveBookDB.cache or ns.Cache.NewStore()   -- bettor-side cache (Cache.lua)
     ns.Odds.SetView(SteveBookDB.ratio and "ratio" or "american")
     if ns.CasinoNet then ns.CasinoNet.Init() end
+    if ns.BookLobby then ns.BookLobby.Init() end
     if ns.UI and ns.UI.Minimap then ns.UI.Minimap.Apply() end
     math.randomseed(GetServerTime() + floor(GetTime() * 1000))
     f:UnregisterEvent("ADDON_LOADED")

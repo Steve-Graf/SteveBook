@@ -80,6 +80,7 @@ Protocol.Spec = {
     -- (envelope code Protocol.LOBBY_CODE). Hosts announce their open tables there; anyone may ask.
     LOBBY_ASK      = { dir = "any", fields = {} },                      -- "who is hosting?"; hosts answer with LOBBY_TABLE
     LOBBY_TABLE    = { dir = "any", fields = { tables = "table" } },    -- list of { code, game, name, host, seats, status, minBet, maxBet, zero? }
+    LOBBY_BOOKS    = { dir = "any", fields = { books = "table" } },     -- sportsbooks: list of { code, name, owner, members?, markets? }
 
     TBL_JOIN_OK    = { dir = "bookie", fields = { game = "string", name = "string", ownerName = "string", rev = "number" } },
     TBL_JOIN_DENY  = { dir = "bookie", fields = { ownerName = "string", reason = "string?" } },
@@ -166,6 +167,13 @@ function Protocol.Validate(msgType, payload)
     if msgType == "TBL_BET" then
         local b = payload.bet
         if type(b.kind) ~= "string" or type(b.amount) ~= "number" then return false, "bet needs kind and amount" end
+    end
+    if msgType == "LOBBY_BOOKS" then
+        for i, e in ipairs(payload.books) do
+            if type(e) ~= "table" or type(e.code) ~= "string" or type(e.name) ~= "string" or type(e.owner) ~= "string" then
+                return false, "book " .. i .. " needs code, name and owner"
+            end
+        end
     end
     if msgType == "LOBBY_TABLE" then
         for i, e in ipairs(payload.tables) do

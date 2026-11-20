@@ -22,6 +22,7 @@ Slip.lua
 CasinoClient.lua
 Comm.lua
 BookieNet.lua
+BookLobby.lua
 CasinoNet.lua
 UI\Bookie.lua
 UI\Bettor.lua

@@ -127,4 +127,12 @@ do
     check(not P.Wrap("LOBBY_TABLE", P.LOBBY_CODE, { tables = { { code = "RLT-AAAA" } } }), "a listing needs its fields")
 end
 
+-- sportsbook lobby
+do
+    check(P.Wrap("LOBBY_BOOKS", P.LOBBY_CODE, { books = { { code = "NFL-AAAA", name = "TheBurgers", owner = "Steve", members = 4, markets = 9 } } }), "LOBBY_BOOKS")
+    check(P.Wrap("LOBBY_BOOKS", P.LOBBY_CODE, { books = {} }), "an empty LOBBY_BOOKS")
+    check(not P.Wrap("LOBBY_BOOKS", P.LOBBY_CODE, { books = { { code = "NFL-AAAA", name = "x" } } }), "a book listing needs an owner")
+    check(P.ShouldDeliver("LOBBY_BOOKS", true) and P.ShouldDeliver("LOBBY_BOOKS", false), "book listings go to everyone")
+end
+
 if fails == 0 then print("protocol: all tests passed") else os.exit(1) end

@@ -186,6 +186,14 @@ Spinebreaker" (a space and a second word) while `UnitName("player")` returns onl
 keep it), so members, owners and addresses are all the short form. Two friends who share a first
 name would collide; revisit if that ever happens.
 
+**Finding a book:** a bookie's client announces each of their **listed** books in the casino's shared
+hidden lobby channel (`Protocol.LOBBY_CODE`): `LOBBY_BOOKS` carries `{ code, name, owner, members,
+markets }` when a book is created or changed and every 30 s, and when a player's list asks with
+`LOBBY_ASK`. A listing counts only when the owner announces their own book, disappears 100 s after
+the last announcement, and `/book hide` takes the active book off the list (it can still be joined
+by code, and joining still needs the bookie's approval). The Join screen shows the list and keeps a
+code box for books that are hidden or not showing.
+
 **Authority:** the bookie's client validates everything. Bettor clients only *request*.
 (These are friends; clients can be modified, so this is about preventing mistakes and races,
 not cheating.)

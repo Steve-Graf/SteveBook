@@ -82,6 +82,12 @@ local function lastSent(t)
     for i = #sent, 1, -1 do if sent[i].t == t then return sent[i] end end
 end
 
+local lobby = { asks = 0, books = {}, subs = {} }
+lobby.Books = function() return lobby.books end
+lobby.Ask = function() lobby.asks = lobby.asks + 1 end
+lobby.Subscribe = function(fn) lobby.subs[#lobby.subs + 1] = fn end
+ns.BookLobby = lobby        -- the window subscribes when it is first built
+
 B.Show()   -- no books: join screen
 check(findButton("No book yet") ~= nil, "no-book header")
 
@@ -552,6 +558,72 @@ do
     check(shown == 1, "Casino click calls ns.UI.Casino.Show")
     check(not f:IsShown(), "Casino click hides the bettor window")
     ns.UI.Casino = nil
+end
+
+-- Join screen: open books from ns.BookLobby, one Join button per row.
+do
+    ns.BookLobby = lobby
+    lobby.asks, lobby.books = 0, {}
+    local subs = lobby.subs
+    B.Hide()
+    check(Cache.Book(SteveBookDB.cache, "NFL-AAAA") == nil, "lobby test starts with no such book")
+    B.Show()            -- the selected book was denied, so the join screen is up
+    check(lobby.asks == 1, "opening the join screen asks the lobby (" .. lobby.asks .. ")")
+    B.Refresh(); B.Refresh()
+    check(lobby.asks == 1, "refreshes don't ask again")
+    local empty = frameWithTextContaining("No open books yet. Books show up here when a bookie lists one.")
+    check(empty and empty:IsShown(), "empty list shows the note")
+    check(frameWithTextContaining("Open books") ~= nil, "title 'Open books'")
+    check(frameWithTextContaining("Have a code? Type it here.") ~= nil, "code box is labelled")
+
+    -- Refresh button: asks and redraws.
+    findButton("Refresh"):Click()
+    check(lobby.asks == 2, "Refresh button asks the lobby")
+
+    lobby.books = {
+        { code = "NFL-AAAA", name = "Sunday NFL", owner = "Alice", members = 3, markets = 5, age = 4 },
+        { code = "NBA-BBBB", name = "Hoops|cffff0000", owner = "Bob", members = 1, markets = 0, age = 9 },
+    }
+    check(#subs == 1, "subscribed to the lobby once (" .. #subs .. ")")
+    subs[1]()           -- the lobby says the list changed
+    local r1 = frameWithTextContaining("Sunday NFL")
+    check(r1 and r1._text:find("host Alice", 1, true)
+        and r1._text:find("3 members", 1, true) and r1._text:find("5 open markets", 1, true), "row 1 text")
+    local r2 = frameWithTextContaining("Hoops||cffff0000")
+    check(r2 and r2._text:find("1 member ", 1, true) and r2._text:find("0 open markets", 1, true), "row 2 text, singular and escaped")
+    check(empty:IsShown() == false, "empty note hidden with rows")
+    check(frameWithTextContaining("Sunday NFL") ~= frameWithTextContaining("Hoops"), "one row each")
+
+    local joins = {}
+    for _, f in ipairs(frames) do if rawget(f, "_text") == "Join" then joins[#joins + 1] = f end end
+    check(#joins >= 2, "a Join button per row")
+    local n = #sent
+    joins[1]:Click()
+    local req = lastSent("JOIN_REQ")
+    check(#sent == n + 1 and req and req.code == "NFL-AAAA", "Join on a row sends JOIN_REQ for that code")
+    local bc = Cache.Book(SteveBookDB.cache, "NFL-AAAA")
+    check(bc and bc.status == "requested" and SteveBookDB.cache.selected == "NFL-AAAA", "and marks it requested and selected")
+
+    -- The code box still works.
+    local codeBox
+    for _, f in ipairs(frames) do
+        local sc = rawget(f, "_scripts")
+        if sc and sc.OnEnterPressed and not sc.OnTextChanged then codeBox = f end
+    end
+    B.Refresh()
+    codeBox:SetText("nba bbbb")
+    findButton("Request to join"):Click()
+    local req2 = lastSent("JOIN_REQ")
+    check(req2 and req2.code == "NBA-BBBB", "typing a code still requests it")
+    check(Cache.Book(SteveBookDB.cache, "NBA-BBBB").status == "requested", "typed code is requested")
+
+    -- Closing and reopening the join screen asks again; no BookLobby at all is fine.
+    B.Hide(); lobby.asks = 0
+    B.Show()
+    check(lobby.asks == 1, "reopening the window on the join screen asks again")
+    ns.BookLobby = nil
+    B.Hide(); B.Show(); B.Refresh()
+    check(true, "no ns.BookLobby: join screen still draws")
 end
 
 print = print_real
