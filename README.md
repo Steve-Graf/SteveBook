@@ -18,6 +18,12 @@ Fast loop: clone the repo on the machine that runs WoW and link the `SteveBook/`
 `Interface/AddOns/` (a directory junction on Windows: `mklink /J`). After that, `git pull` and
 `/reload` in game is all it takes. Tagging a release is only needed for WowUp.
 
+## Testing alone
+
+`/book loopback` lets one character be both the bookie and a bettor of its own book. Create a book
+(`/book new <name>`), turn loopback on, open `/bet`, join your own code, then approve the member
+named **Loopback** in `/bookie`. Turn it off again (`/book loopback`) for real play.
+
 ## Tests
 
 Pure-logic modules are tested outside the game with plain Lua:
@@ -38,6 +44,7 @@ Run these on the Windows machine and report anything that prints `nil` or `false
     /dump ChatFrame_AddMessageEventFilter, ChatFrame_RemoveChannel, ChatFrameUtil, NUM_CHAT_WINDOWS
     /dump securecallfunction, GetFramerate, table.wipe, Enum.SendAddonMessageResult, C_ChatInfo.SendAddonMessageLogged, issecretvalue
     /run print(Ambiguate("Bob-"..GetNormalizedRealmName(), "none"), Ambiguate("Bob-Other Realm", "none"))   -- expect: Bob  and  Bob-OtherRealm
+    /run local e=CreateFrame("EditBox",nil,UIParent) print(e.HasFocus~=nil, e.SetJustifyH~=nil, GameTooltip~=nil and GameTooltip.SetOwner~=nil, GameFontNormalSmall~=nil) e:Hide()
 
 Test messaging in a city or the open world only (addon messages are restricted in instances).
 Saved data is per character (`SavedVariablesPerCharacter`), so each character has its own books and

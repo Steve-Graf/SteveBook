@@ -48,7 +48,7 @@ for _, p in ipairs({ "Libs/LibStub/LibStub.lua", "Libs/CallbackHandler-1.0/Callb
     assert(loadfile(DIR .. p))()
 end
 local ns = {}
-for _, p in ipairs({ "Odds", "Protocol", "Model", "Bookie", "Import", "Cache", "Comm", "UI/Bettor" }) do
+for _, p in ipairs({ "Odds", "Protocol", "Model", "Bookie", "Import", "Cache", "Slip", "Comm", "UI/Bettor" }) do
     local chunk = assert(loadfile(DIR .. p .. ".lua"))
     local ok, err = pcall(chunk, "SteveBook", ns)
     check(ok, "load " .. p .. ": " .. tostring(err))

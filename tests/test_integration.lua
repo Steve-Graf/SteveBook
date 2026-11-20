@@ -113,7 +113,7 @@ local function runTickers(client)
     as(client, function() for _, t in ipairs(client.tickers) do t.fn(t) end end)
 end
 
-local COMMON = { "Odds.lua", "Protocol.lua", "Model.lua", "Bookie.lua", "Cache.lua" }
+local COMMON = { "Odds.lua", "Protocol.lua", "Model.lua", "Bookie.lua", "Cache.lua", "Slip.lua" }
 local function files(...)
     local list = {}
     for _, f in ipairs(COMMON) do list[#list + 1] = f end
@@ -252,16 +252,29 @@ as(bettor, UI.Refresh)
 -- 5. Bet accepted (through the bet slip)
 ------------------------------------------------------------------------------------------
 
+-- The window's single-bet slip: pick a cell, type a stake. (`odds` is only what the caller
+-- expects to see on the slip.)
 local function betViaSlip(marketId, selectionId, odds, stakeText)
     as(bettor, function()
-        UI.OpenSlip(CODE, marketId, selectionId, odds)
-        findStakeBox():SetText(stakeText)
+        bettor.ns.Slip.ClearAll(UI.SlipState())
+        UI.Select(marketId, selectionId)
+        UI.SetStake(stakeText)
     end)
 end
-local function placeClick() as(bettor, function() stub.findByText("Place Bet"):Click() end) end
+local function placeButton()
+    return stub.findByText("Place Bet") or stub.findByText("Confirm new odds") or stub.findByText("Place Parlay")
+end
+local function placeClick() as(bettor, function() placeButton():Click() end) end
 local function place(stakeText, marketId, selectionId, odds)
     betViaSlip(marketId, selectionId, odds, stakeText)
     placeClick()
+end
+-- Tab buttons ("My Bets" carries a count, so match the start of the text).
+local function tabClick(name)
+    for _, f in ipairs(stub.frames) do
+        local x, s = rawget(f, "_text"), rawget(f, "_scripts")
+        if type(x) == "string" and x:sub(1, #name) == name and s and s.OnClick then as(bettor, function() f:Click() end); return true end
+    end
 end
 
 p0 = #stub.printed
@@ -283,11 +296,11 @@ eq(bp.payload.stake, 2000, "BET_PLACE carried the stake in copper")
 -- The window refuses bad stakes before anything is sent.
 local sent = #bus.log
 betViaSlip(m1.id, 1, -110, "2g")
-eq(rawget(stub.findByText("Place Bet"), "_enabled"), false, "window blocks a stake over 1g")
+eq(rawget(placeButton(), "_enabled"), false, "window blocks a stake over 1g")
 betViaSlip(m1.id, 1, -110, "20s 10c")
-eq(rawget(stub.findByText("Place Bet"), "_enabled"), false, "window blocks a stake with loose copper")
+eq(rawget(placeButton(), "_enabled"), false, "window blocks a stake with loose copper")
 as(bettor, function() findStakeBox():SetText("") end)
-as(bettor, function() stub.findByText("Cancel"):Click() end)
+as(bettor, function() stub.findByText("Clear"):Click() end)
 eq(#bus.log, sent, "nothing was sent for blocked stakes")
 
 -- The bookie refuses them too (raw requests, as a modified client would send).
@@ -317,26 +330,35 @@ local mr = lastLog("BET_REJECT", "Mallory")
 check(mr and mr.payload.reason == "not_member", "non-member bet is rejected as not_member")
 check(not book.bets[2], "no bet was recorded for the non-member")
 
--- Odds changed: the slip was opened at -110, then the bookie moves the line.
-as(bettor, function()
-    UI.OpenSlip(CODE, m1.id, 1, -110)
-    findStakeBox():SetText("10s")
-end)
+-- Odds changed: the slip is open at -110, then the bookie moves the line. The cache follows and the
+-- slip asks for a confirmation before anything is sent.
+betViaSlip(m1.id, 1, -110, "10s")
+p0 = #stub.printed
 as(bookie, BN.EditMarket, book, m1.id, { odds = { [1] = -120 } })
 eq(Cache.Selection(bettorBook().markets[m1.id], 1).odds, -120, "bettor cache has the new odds")
+check(stub.findByText("Confirm new odds") ~= nil, "the slip asks to confirm the new odds")
+local nPlace = countLog("BET_PLACE", "Bettor")
+placeClick()                                               -- confirms; sends nothing
+eq(countLog("BET_PLACE", "Bettor"), nPlace, "confirming the odds sends nothing")
+eq(#book.bets, 1, "bookie has not seen a bet yet")
+placeClick()                                               -- now it goes out at -120
+local bet2 = book.bets[2]
+check(bet2 and bet2.odds == -120 and bet2.stake == 1000 and bet2.status == "accepted", "bet booked at the new odds")
+eq(bettorBook().bets[2] and bettorBook().bets[2].odds, -120, "bettor cache has bet 2 at -120")
+eq(bet1.odds, -110, "bet 1 keeps its original odds")
+
+-- A stale client that still sends -110 is rejected with the current odds, and the window puts the
+-- bet back on the slip with the new odds, asking for a confirmation.
+as(bettor, function() bettor.ns.Slip.ClearAll(UI.SlipState()) end)
 p0 = #stub.printed
-placeClick()                                               -- still sending -110
+raw("stale-odds", m1.id, 1, 1000, -110)
 local rej = lastRejected()
 check(rej and rej.rejectReason == "odds_changed" and rej.currentOdds == -120, "stale odds are rejected with the current odds")
 check(printedSince(p0):find("odds changed") or printedSince(p0):find("The odds changed"), "bettor is told the odds changed")
-check(frameWithText("-120") ~= nil, "slip reopened showing the new odds")
-eq(findStakeBox():GetText(), "10s", "slip keeps the stake for re-confirming")
-eq(#book.bets, 1, "bookie did not book the stale bet")
-placeClick()                                               -- confirm at -120
-local bet2 = book.bets[2]
-check(bet2 and bet2.odds == -120 and bet2.stake == 1000 and bet2.status == "accepted", "re-confirmed bet booked at the new odds")
-eq(bettorBook().bets[2] and bettorBook().bets[2].odds, -120, "bettor cache has bet 2 at -120")
-eq(bet1.odds, -110, "bet 1 keeps its original odds")
+local restored = UI.SlipState().single
+check(restored and restored.marketId == m1.id and restored.odds == -120 and UI.SlipState().confirm.single, "the slip comes back with the new odds")
+eq(#book.bets, 2, "bookie did not book the stale bet")
+as(bettor, function() bettor.ns.Slip.ClearAll(UI.SlipState()) end)
 
 -- Credit limit: 5000 copper limit, 3000 already at risk.
 as(bookie, BN.SetCreditLimit, book, "Bettor", 5000)
@@ -381,7 +403,7 @@ local mine = Cache.MyBets(bettor.db.cache, CODE)
 eq(#mine.open, 0, "no open bets after settlement")
 check(#mine.settled >= 3, "My Bets lists settled bets")
 as(bettor, function()
-    for _, tab in ipairs({ "My Bets", "Balance", "Lines" }) do stub.findByText(tab):Click() end
+    for _, tabName in ipairs({ "My Bets", "Balance", "Lines" }) do check(tabClick(tabName), "tab " .. tabName) end
 end)
 check(#bus.errors == 0, "no handler errors so far: " .. table.concat(bus.errors, "; "))
 
@@ -406,7 +428,7 @@ local last = bettorBook().payments[#bettorBook().payments]
 check(last and last.amount == -paid and last.note, "payment history entry recorded on the bettor side")
 as(bookie, BN.RecordPayment, book, "Bettor", "in", 500, "paid back 5s")
 eq(bettorBook().balance, expected - paid + 500, "balance rises when the bettor pays the book")
-as(bettor, function() stub.findByText("Balance"):Click() end)
+tabClick("Balance")
 
 ------------------------------------------------------------------------------------------
 -- 9. A loss, and the bookie voiding a bet
@@ -415,7 +437,7 @@ as(bettor, function() stub.findByText("Balance"):Click() end)
 local m3 = as(bookie, BN.AddMarket, book, { sport = "NBA", event = "LAL @ BOS", type = "total", line = 220.5, closesAt = stub.time + 3600,
     selections = { { label = "Over", odds = -105 }, { label = "Under", odds = -115 } } })
 runTickers(bettor)
-as(bettor, function() stub.findByText("Lines"):Click() end)
+tabClick("Lines")
 place("10s", m3.id, 1, -105)
 place("10s", m3.id, 2, -115)
 local bet4, bet5 = book.bets[4], book.bets[5]
@@ -469,14 +491,12 @@ local m6 = as(bookie, BN.AddMarket, book, { sport = "NFL", event = "SEA @ SF", t
     selections = { { label = "SEA", odds = 110 }, { label = "SF", odds = -130 } } })
 runTickers(bettor)
 check(Cache.Lines(bettor.db.cache, CODE, stub.time)[1] ~= nil and bettorBook().markets[m6.id], "bettor sees the game before it starts")
-as(bettor, function()
-    UI.Show()
-    UI.OpenSlip(CODE, m6.id, 1, 110)
-    findStakeBox():SetText("10s")
-end)
+as(bettor, function() UI.Show() end)
+betViaSlip(m6.id, 1, 110, "10s")
 check(refreshTicker() ~= nil, "the open window has a refresh ticker")
-eq(rawget(stub.findByText("Place Bet"), "_enabled"), true, "Place Bet is enabled before the start")
+eq(rawget(placeButton(), "_enabled"), true, "Place Bet is enabled before the start")
 
+p0 = #stub.printed
 stub.advance(121)                                          -- the game starts; the bookie has not swept yet
 runTickers(bettor)                                          -- keeps the book online (PONG) after the time jump
 as(bettor, function() refreshTicker().fn() end)
@@ -484,9 +504,10 @@ check(not Cache.CanBet(bettor.db.cache, CODE, m6.id, stub.time), "the started ga
 for _, sp in ipairs(Cache.Lines(bettor.db.cache, CODE, stub.time)) do
     for _, ev in ipairs(sp.events) do check(ev.event ~= "SEA @ SF", "the started game is gone from Lines") end
 end
-eq(rawget(stub.findByText("Place Bet"), "_enabled"), false, "the open slip is disabled")
-check(frameWithText("This game has started.") ~= nil, "the slip says: This game has started.")
-local nPlace = countLog("BET_PLACE", "Bettor")
+eq(UI.SlipState().single, nil, "the started game is taken off the slip")
+check(printedSince(p0):find("this game has started"), "the bettor is told why")
+check(rawget(placeButton(), "_enabled") == false, "Place Bet is disabled with nothing on the slip")
+nPlace = countLog("BET_PLACE", "Bettor")
 placeClick()
 eq(countLog("BET_PLACE", "Bettor"), nPlace, "the window does not send a bet for a started game")
 
@@ -499,6 +520,184 @@ as(bookie, BN.Sweep)
 eq(book.markets[m6.id].status, "locked", "the sweep locks it afterwards")
 as(bettor, function() refreshTicker().fn() end)
 check(#bettor.ns.Cache.MyBets(bettor.db.cache, CODE).open == 0, "the bettor holds no open bets on it")
+
+------------------------------------------------------------------------------------------
+-- Parlays: the board and slip, the bookie's acceptance and grading, rejections
+------------------------------------------------------------------------------------------
+
+local function addMarket(event, type_, line, l1, o1, l2, o2)
+    return as(bookie, BN.AddMarket, book, { sport = "NFL", event = event, type = type_, line = line, closesAt = stub.time + 3600,
+        selections = { { label = l1, odds = o1 }, { label = l2, odds = o2 } } })
+end
+local gML = addMarket("GGG @ HHH", "moneyline", nil, "GGG", 120, "HHH", -140)
+local gTot = addMarket("GGG @ HHH", "total", 41.5, "Over", -110, "Under", -110)
+local gSp = addMarket("GGG @ HHH", "spread", 2.5, "GGG", -105, "HHH", -115)
+local iML = addMarket("III @ JJJ", "moneyline", nil, "III", -200, "JJJ", 170)
+runTickers(bettor)
+tabClick("Lines")
+as(bettor, function() bettor.ns.Slip.ClearAll(UI.SlipState()) end)
+check(frameWithText("GGG @ HHH") ~= nil, "the board shows the new game")
+
+local function parlayMode()
+    for _, f in ipairs(stub.frames) do
+        local x, s = rawget(f, "_text"), rawget(f, "_scripts")
+        if type(x) == "string" and x:sub(1, 8) == "Parlay (" and s and s.OnClick then as(bettor, function() f:Click() end); return end
+    end
+end
+parlayMode()
+eq(UI.SlipState().mode, "parlay", "switched the slip to parlay mode")
+local function sel(marketId, selectionId) return (as(bettor, UI.Select, marketId, selectionId)) end
+eq(sel(gML.id, 1), "added", "leg 1 (moneyline)")
+eq(sel(gTot.id, 2), "added", "leg 2 (total from the same game: allowed)")
+p0 = #stub.printed
+eq(sel(gSp.id, 1), "refused", "a spread with the moneyline from the same game is refused")
+check(printedSince(p0):find("can't go with"), "the refusal names the conflicting leg")
+eq(sel(iML.id, 2), "added", "leg 3 (another game)")
+eq(#UI.SlipState().parlay, 3, "three legs on the slip")
+
+local legOddsA = { 120, -110, 170 }
+as(bettor, function() UI.SetStake("10s") end)
+check(stub.findByText("Place Parlay") ~= nil and rawget(stub.findByText("Place Parlay"), "_enabled") == true, "Place Parlay is enabled")
+check(frameWithText("Combined odds") ~= nil, "the slip shows combined odds")
+
+local nBets = #book.bets
+p0 = #stub.printed
+placeClick()
+local parlayA = book.bets[nBets + 1]
+check(parlayA and parlayA.legs and #parlayA.legs == 3 and parlayA.stake == 1000 and parlayA.status == "accepted", "bookie booked the parlay")
+eq(parlayA and parlayA.odds, Odds.ParlayOdds(legOddsA), "the booked price is the combined odds")
+local pa = bettorBook().bets[parlayA.id]
+check(pa and pa.legs and #pa.legs == 3 and pa.legs[1].status == "pending" and next(bettorBook().pending) == nil, "bettor has the parlay with pending legs")
+check(printedSince(p0):find("parlay"), "bettor told the parlay was accepted")
+eq(#UI.SlipState().parlay, 0, "the parlay slip was cleared")
+tabClick("My Bets")
+check(frameWithText("Parlay, 3 legs") ~= nil, "My Bets lists the parlay")
+tabClick("Lines")
+
+-- Rejections from the real bookie (raw requests, as a modified or stale client would send them).
+local function rawParlay(ref, legs, stake)
+    as(bettor, function()
+        Cache.NewPending(bettor.db.cache, CODE, { ref = ref, stake = stake, legs = legs }, stub.time)
+        bettor.ns.Comm.Send("BET_PLACE", { ref = ref, stake = stake, legs = legs }, CODE)
+    end)
+end
+local function lastRej() local r = bettorBook().rejected; return r[#r] end
+rawParlay("pc", { { marketId = gML.id, selectionId = 1, odds = 120 }, { marketId = gSp.id, selectionId = 1, odds = -105 } }, 1000)
+check(lastRej().rejectReason == "parlay_conflict" and lastRej().legIndex == 2, "moneyline + spread: parlay_conflict on leg 2")
+rawParlay("pd", { { marketId = gML.id, selectionId = 1, odds = 120 }, { marketId = gML.id, selectionId = 2, odds = -140 } }, 1000)
+check(lastRej().rejectReason == "parlay_conflict", "the same market twice is a parlay_conflict")
+rawParlay("po", { { marketId = gTot.id, selectionId = 1, odds = -110 }, { marketId = gTot.id, selectionId = 2, odds = -110 } }, 1000)
+check(lastRej().rejectReason == "parlay_conflict", "over + under is a parlay_conflict")
+rawParlay("pb", { { marketId = gML.id, selectionId = 1, odds = 120 }, { marketId = iML.id, selectionId = 2, odds = 170 } }, 20000)
+check(lastRej().rejectReason == "bad_stake", "a parlay stake over 1g is rejected")
+rawParlay("pm", { { marketId = gML.id, selectionId = 1, odds = 120 }, { marketId = 9999, selectionId = 1, odds = 100 } }, 1000)
+check(lastRej().rejectReason == "no_market" and lastRej().legIndex == 2, "an unknown market is rejected with its leg index")
+as(bettor, function() bettor.ns.Slip.ClearAll(UI.SlipState()) end)
+
+-- Odds moved on leg 2 (the bettor's request is stale): odds_changed with legIndex, and the window
+-- puts the parlay back with the new price and asks for a confirmation.
+as(bookie, BN.EditMarket, book, iML.id, { odds = { [1] = -220 } })
+p0 = #stub.printed
+rawParlay("pq", { { marketId = gML.id, selectionId = 1, odds = 120 }, { marketId = iML.id, selectionId = 1, odds = -200 } }, 1000)
+check(lastRej().rejectReason == "odds_changed" and lastRej().legIndex == 2 and lastRej().currentOdds == -220, "stale leg odds: odds_changed with legIndex and the current odds")
+local sp = UI.SlipState()
+check(sp.mode == "parlay" and #sp.parlay == 2 and sp.parlay[2].odds == -220 and sp.confirm.parlay, "the parlay is back on the slip with leg 2 at -220, awaiting confirmation")
+check(printedSince(p0):find("Leg 2"), "the message names leg 2")
+eq(#book.bets, nBets + 1, "nothing was booked for any rejected parlay")
+as(bettor, function() bettor.ns.Slip.ClearAll(UI.SlipState()) end)
+
+-- Two more parlays to settle: B loses on its first leg, C has a push leg.
+local kML = addMarket("KKK @ LLL", "moneyline", nil, "KKK", 130, "LLL", -150)
+local lML = addMarket("MMM @ NNN", "moneyline", nil, "MMM", 105, "NNN", -125)
+local mSp = addMarket("OOO @ PPP", "spread", -3, "OOO", -110, "PPP", -110)
+local nML = addMarket("QQQ @ RRR", "moneyline", nil, "QQQ", -130, "RRR", 110)
+runTickers(bettor)
+local function placeParlay(a, b2)
+    as(bettor, function() bettor.ns.Slip.ClearAll(UI.SlipState()) end)
+    sel(a[1], a[2]); sel(b2[1], b2[2])
+    as(bettor, function() UI.SetStake("10s") end)
+    placeClick()
+    return book.bets[#book.bets]
+end
+local parlayB = placeParlay({ kML.id, 1 }, { lML.id, 1 })
+local parlayC = placeParlay({ mSp.id, 1 }, { nML.id, 1 })
+check(parlayB.legs and parlayC.legs and bettorBook().bets[parlayB.id] and bettorBook().bets[parlayC.id], "parlays B and C booked and acknowledged")
+
+-- Settle A leg by leg: the parlay stays open until the last leg wins.
+local bal0 = bettorBook().balance
+p0 = #stub.printed
+as(bookie, BN.Settle, book, gML.id, 1)
+eq(bettorBook().bets[parlayA.id].legs[1].status, "won", "leg 1 shows won")
+eq(bettorBook().bets[parlayA.id].status, "accepted", "the parlay is still open with legs pending")
+eq(bettorBook().balance, bal0, "no money moves until the parlay is decided")
+as(bookie, BN.Settle, book, gTot.id, 2)
+eq(bettorBook().bets[parlayA.id].legs[2].status, "won", "leg 2 shows won")
+as(bookie, BN.Settle, book, iML.id, 2)
+eq(bettorBook().bets[parlayA.id].status, "won", "all legs won: the parlay won")
+local profitA = Odds.ParlayProfit(1000, legOddsA)
+eq(bettorBook().balance, bal0 + profitA, "balance rose by the parlay profit")
+eq(Cache.BetDelta(bettorBook().bets[parlayA.id]), profitA, "the parlay's delta is its profit")
+
+-- B: the first leg loses and the parlay is lost at once, with the second leg still pending.
+bal0 = bettorBook().balance
+as(bookie, BN.Settle, book, kML.id, 2)
+eq(bettorBook().bets[parlayB.id].status, "lost", "a lost leg loses the parlay immediately")
+eq(bettorBook().bets[parlayB.id].legs[2].status, "pending", "the other leg is still pending")
+eq(bettorBook().balance, bal0 - 1000, "the stake is lost")
+as(bookie, BN.Settle, book, lML.id, 1)
+eq(bettorBook().balance, bal0 - 1000, "settling the remaining leg changes nothing")
+
+-- C: a push leg drops out; the other leg is paid as a single price.
+bal0 = bettorBook().balance
+as(bookie, BN.Settle, book, mSp.id, "push")
+eq(bettorBook().bets[parlayC.id].status, "accepted", "a push leg leaves the parlay open while the other leg is pending")
+as(bookie, BN.Settle, book, nML.id, 1)
+eq(bettorBook().bets[parlayC.id].status, "won", "the remaining leg won")
+eq(bettorBook().balance, bal0 + Odds.ParlayProfit(1000, { -130 }), "paid at the winning leg's price only")
+tabClick("My Bets"); tabClick("Balance"); tabClick("Lines")
+check(Cache.OpenRisk(bettor.db.cache, CODE) == 0, "no open risk after the parlays settle")
+
+------------------------------------------------------------------------------------------
+-- A line moves in place: bets keep the line they were accepted on
+------------------------------------------------------------------------------------------
+
+local lnSp = addMarket("SSS @ TTT", "spread", -2, "SSS", -110, "TTT", -110)
+runTickers(bettor)
+tabClick("Lines")
+tabClick("Single")                                         -- the slip's Single button (the parlay section left it in parlay mode)
+eq(UI.SlipState().mode, "single", "back on the single slip")
+place("10s", lnSp.id, 1, -110)
+local lineBet = book.bets[#book.bets]
+check(lineBet and lineBet.marketId == lnSp.id and lineBet.line == -2, "the bookie recorded the line the bet was accepted on")
+eq(bettorBook().bets[lineBet.id].line, -2, "the bettor's cache has the bet with its line")
+as(bookie, BN.EditMarket, book, lnSp.id, { line = -3 })
+eq(bettorBook().markets[lnSp.id].line, -3, "the bettor saw the line move")
+tabClick("My Bets")
+check(frameWithText("SSS -2 @") ~= nil and frameWithText("SSS -3 @") == nil, "My Bets still shows the bet at -2")
+tabClick("Lines")
+
+-- A slip that was open on the old line must confirm the new one.
+as(bettor, function() bettor.ns.Slip.ClearAll(UI.SlipState()) end)
+as(bookie, BN.EditMarket, book, lnSp.id, { line = -2 })
+betViaSlip(lnSp.id, 1, -110, "10s")
+as(bookie, BN.EditMarket, book, lnSp.id, { line = -4 })
+check(stub.findByText("Confirm new odds") ~= nil, "a line move under an open slip needs a confirmation")
+eq(UI.SlipState().single.line, -4, "the slip took the new line")
+as(bettor, function() bettor.ns.Slip.ClearAll(UI.SlipState()) end)
+
+-- A stale request (old line, same odds) is rejected with the current line and comes back on the slip.
+local nb = #book.bets
+as(bettor, function()
+    Cache.NewPending(bettor.db.cache, CODE, { ref = "stale-line", marketId = lnSp.id, selectionId = 1, stake = 1000, odds = -110, line = -2 }, stub.time)
+    bettor.ns.Comm.Send("BET_PLACE", { ref = "stale-line", marketId = lnSp.id, selectionId = 1, stake = 1000, odds = -110, line = -2 }, CODE)
+end)
+local lr = bettorBook().rejected[#bettorBook().rejected]
+check(lr and lr.rejectReason == "odds_changed" and lr.currentLine == -4, "a stale line is rejected with the current line")
+eq(#book.bets, nb, "nothing was booked on the stale line")
+check(UI.SlipState().single and UI.SlipState().single.line == -4 and UI.SlipState().confirm.single, "the bet is back on the slip at the new line")
+as(bettor, function() bettor.ns.Slip.ClearAll(UI.SlipState()) end)
+as(bookie, BN.Settle, book, lnSp.id, 1)
+eq(Cache.OpenRisk(bettor.db.cache, CODE), 0, "the line-move bet is settled")
 
 ------------------------------------------------------------------------------------------
 -- Forged removals are ignored
@@ -521,6 +720,10 @@ for id, b in pairs(book.bets) do
             eq(cb.status, b.status, "bet " .. id .. " status agrees")
             eq(cb.stake, b.stake, "bet " .. id .. " stake agrees")
             eq(cb.odds, b.odds, "bet " .. id .. " odds agrees")
+            eq(cb.line, b.line, "bet " .. id .. " line agrees")
+            for i, leg in ipairs(b.legs or {}) do
+                eq(cb.legs and cb.legs[i] and cb.legs[i].status, leg.status, "bet " .. id .. " leg " .. i .. " status agrees")
+            end
         end
     end
 end

@@ -60,10 +60,15 @@ local function announce(book, events)
             say(("%s wants to join %s. /book bookie to approve."):format(e.name, book.name))
         elseif e.kind == "bet" then
             local b = e.bet
-            local m = book.markets[b.marketId]
-            local sel = m and m.selections[b.selectionId]
-            say(("%s bet %s on %s %s (%s)."):format(b.bettor, Odds.FormatMoney(b.stake),
-                sel and sel.label or "?", Odds.Format(b.odds), m and m.event or "?"))
+            if b.legs then
+                say(("%s bet %s on a %d-leg parlay (%s)."):format(b.bettor, Odds.FormatMoney(b.stake),
+                    #b.legs, Odds.Format(b.odds)))
+            else
+                local m = book.markets[b.marketId]
+                local sel = m and m.selections[b.selectionId]
+                say(("%s bet %s on %s %s (%s)."):format(b.bettor, Odds.FormatMoney(b.stake),
+                    sel and sel.label or "?", Odds.Format(b.odds), m and m.event or "?"))
+            end
         end
         -- bet_rejected: the bettor already sees the reason; not worth chat noise here.
     end
@@ -130,6 +135,27 @@ BookieNet.AddMarket = marketOp(function(book, spec) return Bookie.AddMarket(book
 BookieNet.EditMarket = marketOp(function(book, id, changes) return Bookie.EditMarket(book, id, changes, now()) end)   -- (book, marketId, changes)
 BookieNet.LockMarket = marketOp(Bookie.Lock)                        -- (book, marketId)
 BookieNet.UnlockMarket = marketOp(function(book, id) return Bookie.Unlock(book, id, now()) end)
+
+-- Import (SPEC §7): re-plan the pasted text against the book as it is NOW (so a stale preview can't
+-- post duplicates or touch a market that closed meanwhile), then add the new markets and update the
+-- odds (and, for a moved spread or total line, the line) of the matching open market. Each change
+-- is broadcast as a MARKET like any other edit.
+-- Returns { added = n, updated = n, failed = { "line 3: message", ... }, plan = plan }.
+function BookieNet.ApplyImport(book, text)
+    local plan = ns.Import.Plan(book, text, now())
+    local r = { added = 0, updated = 0, failed = {}, plan = plan }
+    for _, it in ipairs(plan.items) do
+        if it.status == "ok" then
+            local m, err = BookieNet.AddMarket(book, it.spec)
+            if m then r.added = r.added + 1 else r.failed[#r.failed + 1] = ("line %d: %s"):format(it.line, tostring(err)) end
+        elseif it.status == "update" then
+            local m, err = BookieNet.EditMarket(book, it.marketId,
+                { odds = next(it.changes) and it.changes or nil, line = it.newLine })
+            if m then r.updated = r.updated + 1 else r.failed[#r.failed + 1] = ("line %d: %s"):format(it.line, tostring(err)) end
+        end
+    end
+    return r
+end
 
 -- Bets changed state: broadcast the market, and give each affected bettor a fresh SYNC (bet
 -- statuses and balances changed; MARKET alone doesn't carry bets).

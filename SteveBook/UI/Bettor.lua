@@ -1,20 +1,33 @@
 -- UI/Bettor.lua: the bettor window (SPEC §6) and the bettor side of the protocol (SPEC §5).
--- Bettors only REQUEST; the bookie validates. All state lives in ns.Cache (SteveBookDB.cache).
--- Exposes ns.UI.Bettor = { Show, Hide, Toggle }.
+-- Bettors only REQUEST; the bookie validates. All state lives in ns.Cache (SteveBookDB.cache);
+-- the bet slip's rules live in ns.Slip (pure). This file draws and wires.
+-- Layout (design "B", odds board): a Lines tab with sport chips, an odds board (one block per
+-- game: Spread / Total / Moneyline, two rows each) and a slip panel on the right with a
+-- Single / Parlay switch; My Bets and Balance tabs use the full width.
+-- Exposes ns.UI.Bettor = { Show, Hide, Toggle, Refresh, Select, SetStake }.
 local ADDON, ns = ...
 ns.UI = ns.UI or {}
 
-local Cache, Odds = ns.Cache, ns.Odds
+local Cache, Odds, Slip = ns.Cache, ns.Odds, ns.Slip
 local Bettor = {}
 ns.UI.Bettor = Bettor
 
 local PING_EVERY = 30
 local REFRESH_EVERY = 5   -- while the window is open: games start, so the lists must age
-local WIN_W, WIN_H = 540, 500
+local WIN_W, WIN_H = 900, 640
+local SLIP_W = 276
+local PAD = 14
+local BOARD_W = WIN_W - 2 * PAD - SLIP_W - 10       -- the board's width
+local GAME_COL_W = 150
+local CELL_GAP = 4
+local CELL_W = math.floor((BOARD_W - GAME_COL_W - 4 * CELL_GAP) / 3)
+local BLOCK_H, CELL_H = 76, 30
+local LEG_H = 32
 local GREEN, RED, GOLD, GREY = "|cff40ff40", "|cffff5050", "|cffffd100", "|cff999999"
 
-local frame, tab, slip, showJoin
-local rows = {}
+local frame, tab, showJoin, filter
+local slip = Slip.New()
+local restoreStake            -- copper to put back in the stake box after a rejection
 local seq = 0
 
 local function say(msg) print(GOLD .. "SteveBook:|r " .. msg) end
@@ -30,6 +43,7 @@ local function colorMoney(c)
 end
 
 local function when(t) return date("%a %b %d %H:%M", t) end
+local function clock(t) return date("%a %I:%M %p", t) end
 
 -- The book currently shown: the remembered one if it still exists, else the first active
 -- book, else the first book at all.
@@ -44,6 +58,12 @@ local function currentBook()
 end
 
 local function bookTitle(b) return (b.name and b.name ~= "" and b.name or "Book") .. " (" .. b.code .. ")" end
+
+-- Markets of the shown book, for the slip.
+local function getMarket(id)
+    local b = currentBook()
+    return b and b.markets[id] or nil
+end
 
 ------------------------------------------------------------------------------------------
 -- Sending
@@ -69,16 +89,19 @@ local function requestJoin(code)
     say("Join request sent to " .. code .. ". Waiting for the bookie to approve.")
 end
 
-local function placeBet(code, marketId, selectionId, stake, odds)
-    seq = seq + 1
-    local ref = ("%d-%04d-%d"):format(now(), math.random(0, 9999), seq)
-    local req = { ref = ref, marketId = marketId, selectionId = selectionId, stake = stake, odds = odds }
+-- `req` is a BET_PLACE payload without a ref (Slip.Request builds it with one).
+local function placeBet(code, req)
     Cache.NewPending(store(), code, req, now())
     if not send("BET_PLACE", req, code, true) then
-        Cache.ApplyBetReject(store(), code, ref, "book_error", nil, now())
+        Cache.ApplyBetReject(store(), code, req.ref, "book_error", nil, now())
         return false
     end
     return true
+end
+
+local function newRef()
+    seq = seq + 1
+    return ("%d-%04d-%d"):format(now(), math.random(0, 9999), seq)
 end
 
 -- Periodic PING per active book. First PONG after being offline triggers a SYNC_REQ.
@@ -112,9 +135,12 @@ local function bookFor(code, sender)
 end
 
 local function betSummary(b, bet)
+    if bet.legs then
+        return ("%d-leg parlay @ %s for %s"):format(#bet.legs, Odds.Format(bet.odds), money(bet.stake))
+    end
     local m = b.markets[bet.marketId]
     return ("%s %s @ %s for %s"):format(
-        Cache.EventName(m), Cache.SelectionText(m, bet.selectionId), Odds.Format(bet.odds), money(bet.stake))
+        Cache.EventName(m), Cache.SelectionText(m, bet.selectionId, bet.line), Odds.Format(bet.odds), money(bet.stake))
 end
 
 local handlers = {}
@@ -164,7 +190,7 @@ function handlers.MARKET(sender, p, code)
     local m = p.market
     if (m.status == "settled" or m.status == "void") and not (old and old.status == m.status) then
         for _, bet in pairs(b.bets) do
-            if bet.marketId == m.id then
+            if Cache.BetOnMarket(bet, m.id) then
                 local res = m.status == "void" and "voided"
                     or (m.result == "push" and "push" or ("won by " .. Cache.SelectionLabel(m, m.result)))
                 say(("%s %s: %s."):format(m.event, m.status == "void" and "was" or "settled", res))
@@ -179,22 +205,56 @@ function handlers.BET_ACK(sender, p, code)
     if not b then return end
     Cache.ApplyBetAck(store(), code, p.ref, p.bet, p.balance)
     say("Bet accepted: " .. betSummary(b, p.bet) .. ".")
-    if slip and slip.code == code then slip = nil end
+end
+
+-- Put a rejected request back on the slip so the bettor can fix it and go again.
+local function restoreSlip(b, bet, p)
+    local mode = bet.legs and "parlay" or "single"
+    local list = {}
+    if bet.legs then
+        for i, leg in ipairs(bet.legs) do list[i] = { marketId = leg.marketId, selectionId = leg.selectionId, odds = leg.odds, line = leg.line } end
+    else
+        list[1] = { marketId = bet.marketId, selectionId = bet.selectionId, odds = bet.odds, line = bet.line }
+    end
+    local notes = {}
+    local idx = p.legIndex
+    if p.reason == "odds_changed" and (p.currentOdds or p.currentLine) then
+        local target = list[idx or 1]
+        if target then
+            if p.currentOdds then target.odds = p.currentOdds end
+            if p.currentLine ~= nil then target.line = p.currentLine end
+        end
+        local now_ = {}
+        if p.currentLine ~= nil then now_[#now_ + 1] = ("line %g"):format(p.currentLine) end
+        if p.currentOdds then now_[#now_ + 1] = Odds.Format(p.currentOdds) end
+        notes[#notes + 1] = ("%s now %s."):format(
+            bet.legs and ("Leg " .. (idx or "?")) or "The bet", table.concat(now_, " at "))
+    elseif idx and (p.reason == "market_closed" or p.reason == "no_market" or p.reason == "bad_selection") then
+        table.remove(list, idx)                           -- that game is gone: drop the leg
+        notes[#notes + 1] = ("Leg %d was dropped (%s)."):format(idx, (Cache.ReasonText(p.reason):gsub("%.$", "")))
+    end
+    Slip.Restore(slip, mode, list, function(id) return b.markets[id] end)
+    if p.reason == "odds_changed" then slip.confirm[mode] = true end
+    restoreStake = bet.stake
+    tab, showJoin = "lines", false
+    return table.concat(notes, " ")
 end
 
 function handlers.BET_REJECT(sender, p, code)
     local b = bookFor(code, sender)
     if not b then return end
-    local bet = Cache.ApplyBetReject(store(), code, p.ref, p.reason, p.currentOdds, now(), p.available)
+    local bet = Cache.ApplyBetReject(store(), code, p.ref, p.reason, p.currentOdds, now(), p.available, p.legIndex, p.currentLine)
     if not bet then return end
     local text = Cache.ReasonText(p.reason)
-    if p.reason == "odds_changed" and p.currentOdds then
-        text = text .. " Now " .. Odds.Format(p.currentOdds) .. "; confirm again."
-        if shown() then Bettor.OpenSlip(code, bet.marketId, bet.selectionId, p.currentOdds, bet.stake) end
-    elseif p.reason == "credit_limit" and p.available then
+    if p.reason == "credit_limit" and p.available then
         text = text .. " You can still bet " .. money(p.available) .. "."
+    elseif p.reason == "parlay_conflict" and p.legIndex then
+        text = text .. (" Leg %d clashes with an earlier leg."):format(p.legIndex)
     end
-    say("Bet rejected: " .. text)
+    local note = restoreSlip(b, bet, p)
+    if p.reason == "odds_changed" then text = text .. " " .. note .. " Confirm to go ahead."
+    elseif note ~= "" then text = text .. " " .. note end
+    say((bet.legs and "Parlay" or "Bet") .. " rejected: " .. text)
 end
 
 function handlers.BALANCE(sender, p, code)
@@ -234,9 +294,9 @@ end
 -- Widgets
 ------------------------------------------------------------------------------------------
 
-local function button(parent, text, w, onClick)
+local function button(parent, text, w, onClick, h)
     local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-    b:SetSize(w, 22)
+    b:SetSize(w, h or 22)
     b:SetText(text)
     b:SetScript("OnClick", onClick)
     return b
@@ -257,81 +317,202 @@ local function editBox(parent, w, maxLetters)
     return e
 end
 
+-- Fill a texture with a flat color (SetColorTexture, or the plain white texture tinted).
+local function paint(tex, r, g, b, a)
+    if tex.SetColorTexture then tex:SetColorTexture(r, g, b, a or 1)
+    else tex:SetTexture("Interface\\Buttons\\WHITE8X8"); tex:SetVertexColor(r, g, b, a or 1) end
+end
+
+-- An odds cell: a flat button with the line on the left and the price on the right.
+local function newCell(parent, onClick)
+    local c = CreateFrame("Button", nil, parent)
+    c:SetSize(CELL_W, CELL_H)
+    c.bg = c:CreateTexture(nil, "BACKGROUND")
+    c.bg:SetAllPoints()
+    c.left = label(c, "GameFontHighlightSmall")
+    c.left:SetPoint("LEFT", 6, 0)
+    c.left:SetWidth(CELL_W - 52)
+    c.left:SetWordWrap(false)
+    c.right = label(c, "GameFontNormal", "RIGHT")
+    c.right:SetPoint("RIGHT", -6, 0)
+    c:SetScript("OnClick", onClick)
+    c:SetScript("OnEnter", function(self) if not self.selected then paint(self.bg, 0.24, 0.19, 0.11, 1) end end)
+    c:SetScript("OnLeave", function(self) if not self.selected then paint(self.bg, 0.165, 0.13, 0.085, 1) end end)
+    return c
+end
+
+local function setCellSelected(c, selected)
+    c.selected = selected
+    if selected then paint(c.bg, 0.29, 0.23, 0.11, 1) else paint(c.bg, 0.165, 0.13, 0.085, 1) end
+end
+
 ------------------------------------------------------------------------------------------
--- Body: a pooled list of rows inside a scroll frame
+-- Board (Lines tab, left)
 ------------------------------------------------------------------------------------------
 
-local scroll, content
+local ui = {}
+local blocks = {}
+
+local function onCellClick(code, market, selId)
+    local act, msg = Slip.Select(slip, market, selId)
+    if act == "refused" then say(msg) end
+    Bettor.Refresh()
+end
+
+-- "PHI -3.5" / "O 47.5" / "PHI": the left text of a cell.
+local function cellLeft(market, selId)
+    if market.type == "total" then
+        local lab = Cache.SelectionLabel(market, selId)
+        return ("%s %g"):format(lab:sub(1, 1), market.line or 0)
+    end
+    return Cache.SelectionText(market, selId)
+end
+
+local function getBlock(i)
+    local b = blocks[i]
+    if b then return b end
+    b = CreateFrame("Frame", nil, ui.boardContent)
+    b:SetSize(BOARD_W, BLOCK_H)
+    b.bg = b:CreateTexture(nil, "BACKGROUND")
+    b.bg:SetAllPoints()
+    paint(b.bg, 0.12, 0.095, 0.06, 1)
+    b.name = label(b, "GameFontNormal")
+    b.name:SetPoint("TOPLEFT", 8, -18)
+    b.name:SetWidth(GAME_COL_W - 12)
+    b.name:SetWordWrap(false)
+    b.time = label(b, "GameFontHighlightSmall")
+    b.time:SetPoint("TOPLEFT", b.name, "BOTTOMLEFT", 0, -4)
+    b.cells = {}
+    for col = 1, 3 do
+        b.cells[col] = {}
+        for row = 1, 2 do
+            local c = newCell(b, nil)
+            c:SetPoint("TOPLEFT", GAME_COL_W + (col - 1) * (CELL_W + CELL_GAP), -(6 + (row - 1) * (CELL_H + 4)))
+            b.cells[col][row] = c
+        end
+    end
+    blocks[i] = b
+    return b
+end
+
+local COLUMNS = { "spread", "total", "moneyline" }
+
+local function renderBoard(board)
+    local y = 0
+    for i, g in ipairs(board.games) do
+        local blk = getBlock(i)
+        blk:SetPoint("TOPLEFT", ui.boardContent, "TOPLEFT", 0, -y)
+        blk.name:SetText(g.event)
+        blk.time:SetText(GREY .. clock(g.closesAt) .. "|r")
+        for col, mtype in ipairs(COLUMNS) do
+            local m = g[mtype]
+            for row = 1, 2 do
+                local c = blk.cells[col][row]
+                local selId = m and g.rows[mtype] and g.rows[mtype][row]
+                local sel = selId and Cache.Selection(m, selId)
+                if sel then
+                    c.left:SetText(cellLeft(m, selId))
+                    c.right:SetText(GOLD .. Odds.Format(sel.odds) .. "|r")
+                    c:SetScript("OnClick", function() onCellClick(board.code, m, selId) end)
+                    setCellSelected(c, Slip.IsSelected(slip, m.id, selId))
+                    c:Show()
+                else
+                    c:Hide()
+                end
+            end
+        end
+        blk:Show()
+        y = y + BLOCK_H + 4
+    end
+    for i = #board.games + 1, #blocks do blocks[i]:Hide() end
+    ui.boardContent:SetHeight(math.max(y, 1))
+    ui.boardEmpty:SetShown(#board.games == 0)
+end
+
+local function renderChips(sports)
+    local names = {}
+    for _, s in ipairs(sports) do names[#names + 1] = s end
+    names[#names + 1] = "All"
+    local x = 0
+    for i, name in ipairs(names) do
+        local chip = ui.chips[i]
+        if not chip then
+            chip = button(ui.boardArea, "", 64, nil, 24)
+            ui.chips[i] = chip
+        end
+        chip:SetText(name)
+        chip:SetPoint("TOPLEFT", ui.boardArea, "TOPLEFT", x, 0)
+        chip:SetScript("OnClick", function() filter = name; Bettor.Refresh() end)
+        chip:SetEnabled((filter or "All") ~= name)
+        chip:Show()
+        x = x + 68
+    end
+    for i = #names + 1, #ui.chips do ui.chips[i]:Hide() end
+end
+
+------------------------------------------------------------------------------------------
+-- List views (My Bets, Balance): pooled text rows in a scroll frame
+------------------------------------------------------------------------------------------
+
+local rows = {}
 
 local function getRow(i)
     local r = rows[i]
     if r then return r end
-    r = CreateFrame("Frame", nil, content)
-    r.text = label(r, "GameFontHighlight")
-    r.text:SetPoint("LEFT", 0, 0)
-    r.text:SetWordWrap(false)
-    r.b1 = button(r, "", 200, nil)
-    r.b2 = button(r, "", 200, nil)
-    r.b1:SetPoint("LEFT", 60, 0)
-    r.b2:SetPoint("LEFT", r.b1, "RIGHT", 6, 0)
+    r = label(ui.listContent, "GameFontHighlight")
+    r:SetWordWrap(false)
     rows[i] = r
     return r
 end
 
--- entries: { { text=, h=, header=true } | { market=Market, code= } }
-local function render(entries)
-    local y, width = 0, content:GetWidth()
+-- entries: { { text=, h= } ... }
+local function renderList(entries)
+    local y, width = 0, ui.listContent:GetWidth()
     for i, e in ipairs(entries) do
         local r = getRow(i)
-        local h = e.h or 18
-        r:SetPoint("TOPLEFT", content, "TOPLEFT", 0, -y)
-        r:SetSize(width, h)
+        r:SetPoint("TOPLEFT", ui.listContent, "TOPLEFT", e.indent or 0, -y)
+        r:SetWidth(width - (e.indent or 0))
+        r:SetText(e.text)
         r:Show()
-        if e.market then
-            local m = e.market
-            r.text:SetText(GREY .. ({ moneyline = "ML", spread = "Spread", total = "Total" })[m.type] .. "|r")
-            r.text:SetWidth(56)
-            for k, btn in ipairs({ r.b1, r.b2 }) do
-                local sel = m.selections[k]   -- position only decides which button; ids come from sel.id
-                btn:SetText(Cache.SelectionText(m, sel.id) .. "  " .. Odds.Format(sel.odds))
-                btn:SetScript("OnClick", function() Bettor.OpenSlip(e.code, m.id, sel.id, sel.odds) end)
-                btn:SetSize(200, h - 2)
-                btn:Show()
-            end
-        else
-            r.text:SetWidth(width)
-            r.text:SetText(e.text)
-            r.b1:Hide(); r.b2:Hide()
-        end
-        y = y + h
+        y = y + (e.h or 18)
     end
     for i = #entries + 1, #rows do rows[i]:Hide() end
-    content:SetHeight(math.max(y, 1))
+    ui.listContent:SetHeight(math.max(y, 1))
 end
 
-local function linesEntries(b, t)
-    local out = {}
-    local sports = Cache.Lines(store(), b.code, t)
-    if #sports == 0 then out[1] = { text = GREY .. "No open lines right now." .. "|r" } end
-    for _, s in ipairs(sports) do
-        out[#out + 1] = { text = GOLD .. s.sport .. "|r", h = 22 }
-        for _, ev in ipairs(s.events) do
-            out[#out + 1] = { text = ev.event .. GREY .. "   closes " .. when(ev.closesAt) .. "|r" }
-            for _, m in ipairs(ev.markets) do out[#out + 1] = { market = m, code = b.code, h = 26 } end
-        end
-    end
-    return out
+local LEG_STATUS = { pending = GREY .. "Pending|r", won = GREEN .. "Won|r", lost = RED .. "Lost|r",
+    push = GREY .. "Push|r", void = GREY .. "Void|r" }
+
+local function legLine(b, leg)
+    local m = b.markets[leg.marketId]
+    return ("%s  %s  %s%s%s  %s"):format(Cache.SelectionText(m, leg.selectionId, leg.line), Odds.Format(leg.odds),
+        GREY, Cache.EventName(m), "|r", LEG_STATUS[leg.status or "pending"] or tostring(leg.status))
 end
 
 local function betLine(b, bet)
-    local m = b.markets[bet.marketId]
-    local head = ("%s  %s @ %s  stake %s"):format(
-        Cache.EventName(m), Cache.SelectionText(m, bet.selectionId), Odds.Format(bet.odds), money(bet.stake))
-    local st = bet.status
-    if st == "pending" then return GREY .. "Pending|r  " .. head end
-    if st == "accepted" then
-        return GOLD .. "Open|r  " .. head .. GREY .. "  to win " .. money(Odds.Profit(bet.stake, bet.odds) or 0) .. "|r"
+    local head
+    if bet.legs then
+        head = ("Parlay, %d legs @ %s  stake %s"):format(#bet.legs, Odds.Format(bet.odds), money(bet.stake))
+    else
+        local m = b.markets[bet.marketId]
+        head = ("%s  %s @ %s  stake %s"):format(
+            Cache.EventName(m), Cache.SelectionText(m, bet.selectionId, bet.line), Odds.Format(bet.odds), money(bet.stake))
     end
+    local st = bet.status
+    local win = ""
+    if st == "accepted" or st == "pending" then
+        local profit
+        if bet.legs then
+            local list = {}
+            for i, leg in ipairs(bet.legs) do list[i] = leg.odds end
+            profit = Odds.ParlayProfit(bet.stake, list)
+        else
+            profit = Odds.Profit(bet.stake, bet.odds)
+        end
+        win = GREY .. "  to win " .. money(profit or 0) .. "|r"
+    end
+    if st == "pending" then return GREY .. "Pending|r  " .. head end
+    if st == "accepted" then return GOLD .. "Open|r  " .. head .. win end
     if st == "rejected" then
         return RED .. "Rejected|r  " .. head .. GREY .. "  " .. Cache.ReasonText(bet.rejectReason) .. "|r"
     end
@@ -343,11 +524,17 @@ end
 local function betsEntries(b)
     local bets = Cache.MyBets(store(), b.code)
     local out = {}
+    local function add(list)
+        for _, bet in ipairs(list) do
+            out[#out + 1] = { text = betLine(b, bet) }
+            for _, leg in ipairs(bet.legs or {}) do out[#out + 1] = { text = legLine(b, leg), indent = 24 } end
+        end
+    end
     out[#out + 1] = { text = GOLD .. "Open bets (" .. #bets.open .. ")|r", h = 22 }
-    for _, bet in ipairs(bets.open) do out[#out + 1] = { text = betLine(b, bet) } end
+    add(bets.open)
     out[#out + 1] = { text = GOLD .. "Settled, last 14 days (" .. #bets.settled .. ")|r", h = 26 }
     if #bets.settled == 0 then out[#out + 1] = { text = GREY .. "None in the last 14 days.|r" } end
-    for _, bet in ipairs(bets.settled) do out[#out + 1] = { text = betLine(b, bet) } end
+    add(bets.settled)
     return out
 end
 
@@ -372,107 +559,207 @@ local function balanceEntries(b)
 end
 
 ------------------------------------------------------------------------------------------
--- Bet slip
+-- Slip panel (Lines tab, right)
 ------------------------------------------------------------------------------------------
 
-local slipFrame
+local updating = false
+
+local function stakeValue()
+    local text = ui.stake:GetText()
+    if text == nil or text == "" then return nil, false end
+    return Odds.ParseMoney(text), true
+end
+
+local PARLAY_NOTE = "All legs must win. A push or void leg drops out and the rest still pay. "
+    .. "From one game you can take one side bet (moneyline or spread) plus one total."
 
 local function slipUpdate()
-    if not slip or not slipFrame then return end
-    local b = Cache.Book(store(), slip.code)
-    -- Remember the market: a SYNC may drop a game that has started, and the slip should still
-    -- be able to say so instead of vanishing.
-    local m = b and b.markets[slip.marketId]
-    if m then slip.market = m else m = slip.market end
-    if not m then slipFrame:Hide(); return end
-    slipFrame.title:SetText(m.event .. GREY .. "  " .. ({ moneyline = "Moneyline", spread = "Spread", total = "Total" })[m.type] .. "|r")
-    slipFrame.pick:SetText(Cache.SelectionText(m, slip.selectionId) .. "  " .. GOLD .. Odds.Format(slip.odds) .. "|r")
-    local stake = Odds.ParseMoney(slipFrame.stake:GetText())
-    local ok, why = Cache.CanBet(store(), slip.code, slip.marketId, now())
-    if not ok and why == "no_market" and Cache.IsClosed(m, now()) then why = "market_closed" end
-    local msg = ""
-    local stakeOk, _, stakeMsg = Odds.StakeCheck(stake)
-    if stake and stake > 0 and not stakeOk then
-        msg = RED .. stakeMsg .. "|r"
-        slipFrame.win:SetText("To win: " .. GREY .. "-|r")
-        stake = nil
-    elseif stake and stake > 0 then
-        slipFrame.win:SetText("To win: " .. GREEN .. money(Odds.Profit(stake, slip.odds) or 0) .. "|r")
-        local avail = Cache.CreditAvailable(store(), slip.code)
-        if avail and stake > avail then msg = RED .. "Over your credit limit (" .. money(avail) .. " left)." .. "|r" end
-    else
-        slipFrame.win:SetText("To win: " .. GREY .. "-|r")
-        stake = nil
-    end
-    if not ok then msg = RED .. Cache.ReasonText(why) .. "|r" end
-    if slip.note and msg == "" then msg = GOLD .. slip.note .. "|r" end
-    slipFrame.msg:SetText(msg)
-    slipFrame.place:SetEnabled(ok and stake ~= nil)
-    slipFrame.stakeValue = stake
-end
+    if not ui.slip or updating then return end
+    local b = currentBook()
+    if not b then return end
+    local st, t = store(), now()
+    updating = true
 
-local function buildSlip()
-    local f = CreateFrame("Frame", nil, frame, "BasicFrameTemplate")
-    f:SetSize(340, 190)
-    f:SetPoint("CENTER", frame, "CENTER", 0, 0)
-    f:SetFrameLevel(frame:GetFrameLevel() + 20)
-    f:EnableMouse(true)
-    f.title = label(f, "GameFontNormal")
-    f.title:SetPoint("TOPLEFT", 12, -28)
-    f.pick = label(f, "GameFontHighlightLarge")
-    f.pick:SetPoint("TOPLEFT", 12, -50)
-    local sl = label(f, "GameFontNormal")
-    sl:SetPoint("TOPLEFT", 12, -84)
-    sl:SetText("Stake (e.g. 20s, 1g; max " .. money(Odds.MAX_STAKE) .. "):")
-    f.stake = editBox(f, 110)
-    f.stake:SetPoint("LEFT", sl, "RIGHT", 10, 0)
-    f.stake:SetScript("OnTextChanged", slipUpdate)
-    f.stake:SetScript("OnEnterPressed", function() if f.place:IsEnabled() then f.place:Click() end end)
-    f.win = label(f, "GameFontHighlight")
-    f.win:SetPoint("TOPLEFT", 12, -112)
-    f.msg = label(f, "GameFontNormalSmall")
-    f.msg:SetPoint("TOPLEFT", 12, -134)
-    f.msg:SetWidth(316)
-    f.place = button(f, "Place Bet", 100, function()
-        slipUpdate()   -- the game may have started since the last refresh
-        if not slip or not f.stakeValue or not f.place:IsEnabled() then return end
-        -- Close the slip first: a reply (e.g. odds_changed) may reopen it before we return.
-        local s, stake = slip, f.stakeValue
-        slip = nil
-        f:Hide()
-        if placeBet(s.code, s.marketId, s.selectionId, stake, s.odds) then
-            say("Bet sent: waiting for the bookie to accept.")
+    -- Bring the slip in line with the cache: started games drop out, moved odds need a confirm.
+    local dropped = Slip.Sync(slip, getMarket, t)
+    for _, d in ipairs(dropped) do
+        say(("Removed from the slip: %s (%s)."):format(Slip.Describe(d.leg),
+            d.reason == "started" and "this game has started" or "no longer available"))
+    end
+
+    if restoreStake then
+        ui.stake:SetText((money(restoreStake):gsub(" ", "")))
+        restoreStake = nil
+    end
+
+    local mode = slip.mode
+    local legs = Slip.Legs(slip)
+    ui.modeSingle:SetEnabled(mode ~= "single")
+    ui.modeParlay:SetText("Parlay (" .. Slip.ParlayCount(slip) .. ")")
+    ui.modeParlay:SetEnabled(mode ~= "parlay")
+
+    for i = 1, Odds.MAX_PARLAY_LEGS do
+        local row = ui.legRows[i]
+        local leg = legs[i]
+        if leg then
+            local m = leg.market
+            row.pick:SetText(Cache.SelectionText(m, leg.selectionId))
+            row.sub:SetText(GREY .. (m and Slip.TypeName[m.type] or "?") .. "  " .. Cache.EventName(m) .. "|r")
+            row.odds:SetText(GOLD .. Odds.Format(leg.odds) .. "|r" .. (leg.changedFrom and (RED .. " (" .. Odds.Format(leg.changedFrom) .. ")|r") or ""))
+            if leg.lineChangedFrom ~= nil then row.pick:SetText(row.pick:GetText() .. RED .. " (was " .. tostring(leg.lineChangedFrom) .. ")|r") end
+            row.remove:SetScript("OnClick", function() Slip.Remove(slip, i); Bettor.Refresh() end)
+            row:Show()
+        else
+            row:Hide()
         end
-        Bettor.Refresh()
-    end)
-    f.place:SetPoint("BOTTOMLEFT", 12, 12)
-    f.cancel = button(f, "Cancel", 80, function() slip = nil; f:Hide() end)
-    f.cancel:SetPoint("LEFT", f.place, "RIGHT", 8, 0)
-    f:Hide()
-    return f
+    end
+
+    local hasLegs = #legs > 0
+    ui.hint:SetShown(not hasLegs)
+    if not hasLegs then
+        ui.hint:SetText(mode == "single" and "Click an odds cell to start a bet." or "Click odds cells to add legs (2 to " .. Odds.MAX_PARLAY_LEGS .. ").")
+    end
+    ui.lower:SetShown(hasLegs)
+    if not hasLegs then ui.place:SetEnabled(false) end
+    ui.lower:ClearAllPoints()
+    ui.lower:SetPoint("TOPLEFT", ui.slip, "TOPLEFT", 0, -(46 + #legs * LEG_H + 8))
+
+    if hasLegs then
+        local stake, typed = stakeValue()
+        local combined = Slip.Odds(slip)
+        ui.oddsLabel:SetText(mode == "parlay" and "Combined odds" or "Odds")
+        ui.oddsValue:SetText(combined and (GOLD .. Odds.Format(combined) .. "|r") or (GREY .. "-|r"))
+
+        local ok, code, msg = Slip.Validate(slip, stake, function(id) return Cache.CanBet(st, b.code, id, t) end)
+        local validStake = stake and Odds.StakeCheck(stake)
+        local win = validStake and Slip.ToWin(slip, stake)
+        ui.win:SetText(win and (GREEN .. money(win) .. "|r") or (GREY .. "-|r"))
+
+        -- Message: why it can't be placed (only once something is typed, for stake problems).
+        local text = ""
+        if typed and not stake then text = RED .. "Enter a stake like 20s or 1g." .. "|r"
+        elseif code == "stake" and typed then text = RED .. msg .. "|r"
+        elseif code == "stake_missing" or code == "empty" then text = ""
+        elseif code == "confirm" then text = GOLD .. msg .. "|r"
+        elseif not ok then text = RED .. msg .. "|r" end
+        if ok then
+            local avail = Cache.CreditAvailable(st, b.code)
+            if avail and stake > avail then text = RED .. "Over your credit limit (" .. money(avail) .. " left)." .. "|r" end
+        end
+        ui.msg:SetText(text)
+        ui.note:SetText(mode == "parlay" and (GREY .. PARLAY_NOTE .. "|r") or "")
+
+        if code == "confirm" then
+            ui.place:SetText("Confirm new odds")
+            ui.place:SetEnabled(true)
+        else
+            ui.place:SetText(mode == "parlay" and "Place Parlay" or "Place Bet")
+            ui.place:SetEnabled(ok)
+        end
+    end
+    updating = false
 end
 
--- Open the bet slip. `stake` (copper) and a changed `odds` are used when re-confirming.
-function Bettor.OpenSlip(code, marketId, selectionId, odds, stake)
-    if not frame then return end
-    slipFrame = slipFrame or buildSlip()
-    slip = { code = code, marketId = marketId, selectionId = selectionId, odds = odds }
-    if stake then
-        slip.note = "The odds changed. Check them and confirm again."
-        slipFrame.stake:SetText((Odds.FormatMoney(stake):gsub(" ", "")))
-    else
-        slipFrame.stake:SetText("")
+-- Place (or confirm) the current slip.
+local function slipPlace()
+    local b = currentBook()
+    if not b then return end
+    slipUpdate()                                 -- a game may have started since the last refresh
+    if #Slip.Legs(slip) == 0 or not ui.place:IsEnabled() then return end
+    if Slip.NeedsConfirm(slip) then
+        Slip.Confirm(slip)
+        return Bettor.Refresh()
     end
-    slipFrame:Show()
-    slipUpdate()
-    if not stake then slipFrame.stake:SetFocus() end
+    local stake = stakeValue()
+    local req = Slip.Request(slip, newRef(), stake)
+    -- Clear the slip first: a reply (e.g. odds_changed) may put it back before we return.
+    Slip.Clear(slip)
+    updating = true; ui.stake:SetText(""); updating = false
+    if placeBet(b.code, req) then say("Bet sent: waiting for the bookie to accept.") end
+    Bettor.Refresh()
+end
+
+local function buildSlip(parent)
+    local s = CreateFrame("Frame", nil, parent)
+    s:SetSize(SLIP_W, WIN_H - 100)
+    s.bg = s:CreateTexture(nil, "BACKGROUND")
+    s.bg:SetAllPoints()
+    paint(s.bg, 0.105, 0.082, 0.055, 1)
+    ui.slip = s
+
+    ui.modeSingle = button(s, "Single", SLIP_W / 2 - 14, function() Slip.SetMode(slip, "single"); Bettor.Refresh() end, 26)
+    ui.modeSingle:SetPoint("TOPLEFT", 10, -8)
+    ui.modeParlay = button(s, "Parlay (0)", SLIP_W / 2 - 14, function() Slip.SetMode(slip, "parlay"); Bettor.Refresh() end, 26)
+    ui.modeParlay:SetPoint("LEFT", ui.modeSingle, "RIGHT", 4, 0)
+
+    ui.hint = label(s, "GameFontNormalSmall")
+    ui.hint:SetPoint("TOPLEFT", 12, -52)
+    ui.hint:SetWidth(SLIP_W - 24)
+    ui.hint:SetJustifyV("TOP")
+
+    ui.legRows = {}
+    for i = 1, Odds.MAX_PARLAY_LEGS do
+        local row = CreateFrame("Frame", nil, s)
+        row:SetSize(SLIP_W - 20, LEG_H - 2)
+        row:SetPoint("TOPLEFT", 10, -(46 + (i - 1) * LEG_H))
+        row.bg = row:CreateTexture(nil, "BACKGROUND")
+        row.bg:SetAllPoints()
+        paint(row.bg, 0.165, 0.13, 0.085, 1)
+        row.pick = label(row, "GameFontHighlight")
+        row.pick:SetPoint("TOPLEFT", 6, -3)
+        row.pick:SetWidth(SLIP_W - 120)
+        row.pick:SetWordWrap(false)
+        row.sub = label(row, "GameFontHighlightSmall")
+        row.sub:SetPoint("TOPLEFT", row.pick, "BOTTOMLEFT", 0, -1)
+        row.sub:SetWidth(SLIP_W - 120)
+        row.sub:SetWordWrap(false)
+        row.remove = button(row, "x", 22, nil, 22)
+        row.remove:SetPoint("RIGHT", -4, 0)
+        row.odds = label(row, "GameFontNormal", "RIGHT")
+        row.odds:SetPoint("RIGHT", row.remove, "LEFT", -6, 0)
+        ui.legRows[i] = row
+    end
+
+    -- Everything below the legs moves with the number of legs (ui.lower is re-anchored).
+    local lower = CreateFrame("Frame", nil, s)
+    lower:SetSize(SLIP_W, 250)
+    ui.lower = lower
+    ui.oddsLabel = label(lower, "GameFontNormal")
+    ui.oddsLabel:SetPoint("TOPLEFT", 12, 0)
+    ui.oddsValue = label(lower, "GameFontNormalLarge", "RIGHT")
+    ui.oddsValue:SetPoint("TOPRIGHT", -12, 0)
+
+    local sl = label(lower, "GameFontNormal")
+    sl:SetPoint("TOPLEFT", 12, -34)
+    sl:SetText("Stake (max " .. money(Odds.MAX_STAKE) .. ")")
+    ui.stake = editBox(lower, 90)
+    ui.stake:SetPoint("TOPRIGHT", -12, -30)
+    ui.stake:SetScript("OnTextChanged", slipUpdate)
+    ui.stake:SetScript("OnEnterPressed", function() slipPlace() end)
+
+    local wl = label(lower, "GameFontNormal")
+    wl:SetPoint("TOPLEFT", 12, -64)
+    wl:SetText("To win")
+    ui.win = label(lower, "GameFontHighlightLarge", "RIGHT")
+    ui.win:SetPoint("TOPRIGHT", -12, -62)
+
+    ui.place = button(lower, "Place Bet", SLIP_W - 24, function() slipPlace() end, 32)
+    ui.place:SetPoint("TOPLEFT", 12, -92)
+    ui.clear = button(lower, "Clear", 60, function() Slip.Clear(slip); ui.stake:SetText(""); Bettor.Refresh() end, 20)
+    ui.clear:SetPoint("TOPLEFT", ui.place, "BOTTOMLEFT", 0, -6)
+    ui.msg = label(lower, "GameFontNormalSmall")
+    ui.msg:SetPoint("TOPLEFT", ui.place, "BOTTOMLEFT", 68, -6)
+    ui.msg:SetWidth(SLIP_W - 100)
+    ui.msg:SetJustifyV("TOP")
+    ui.note = label(lower, "GameFontHighlightSmall")
+    ui.note:SetPoint("TOPLEFT", 12, -158)
+    ui.note:SetWidth(SLIP_W - 24)
+    ui.note:SetJustifyV("TOP")
 end
 
 ------------------------------------------------------------------------------------------
 -- Main window
 ------------------------------------------------------------------------------------------
-
-local ui = {}
 
 local function setTab(name) tab = name; showJoin = false; Bettor.Refresh() end
 
@@ -497,10 +784,11 @@ local function build()
         if refresher then refresher:Cancel(); refresher = nil end
     end)
 
-    local title = label(frame, "GameFontNormal", "CENTER")
-    title:SetPoint("TOP", 0, -5)
-    title:SetText("SteveBook: Place Bets")
+    ui.title = label(frame, "GameFontNormal", "CENTER")
+    ui.title:SetPoint("TOP", 0, -5)
+    ui.title:SetText("SteveBook")
 
+    -- Book picker (cycles through your books) and the join button.
     ui.book = button(frame, "", 250, function()
         local st = store()
         local list = Cache.ListBooks(st)
@@ -510,41 +798,86 @@ local function build()
         for i, x in ipairs(list) do if x.code == cur.code then idx = i end end
         st.selected = list[idx % #list + 1].code
         showJoin = false
-        slip = nil
-        if slipFrame then slipFrame:Hide() end
+        Slip.ClearAll(slip)
+        ui.stake:SetText("")
         Bettor.Refresh()
     end)
-    ui.book:SetPoint("TOPLEFT", 12, -30)
+    ui.book:SetPoint("TOPLEFT", PAD, -30)
     ui.join = button(frame, "+ Join", 60, function() showJoin = true; Bettor.Refresh() end)
     ui.join:SetPoint("LEFT", ui.book, "RIGHT", 6, 0)
-    ui.online = label(frame, "GameFontNormal", "RIGHT")
-    ui.online:SetPoint("TOPRIGHT", -14, -34)
+    ui.status = label(frame, "GameFontNormal", "RIGHT")
+    ui.status:SetPoint("TOPRIGHT", -PAD, -34)
 
     ui.tabs = {}
     local prev
     for _, t in ipairs({ { "lines", "Lines" }, { "bets", "My Bets" }, { "balance", "Balance" } }) do
-        local b = button(frame, t[2], 90, function() setTab(t[1]) end)
-        if prev then b:SetPoint("LEFT", prev, "RIGHT", 4, 0) else b:SetPoint("TOPLEFT", 12, -58) end
+        local b = button(frame, t[2], 100, function() setTab(t[1]) end, 24)
+        if prev then b:SetPoint("LEFT", prev, "RIGHT", 4, 0) else b:SetPoint("TOPLEFT", PAD, -60) end
         ui.tabs[t[1]] = b
         prev = b
     end
 
-    scroll = CreateFrame("ScrollFrame", nil, frame)
-    scroll:SetPoint("TOPLEFT", 14, -90)
-    scroll:SetPoint("BOTTOMRIGHT", -14, 14)
-    content = CreateFrame("Frame", nil, scroll)
-    content:SetSize(WIN_W - 28, 1)
-    scroll:SetScrollChild(content)
-    scroll:EnableMouseWheel(true)
-    scroll:SetScript("OnMouseWheel", function(self, delta)
-        local max = math.max(0, content:GetHeight() - self:GetHeight())
+    -- Lines: board area (left) and slip panel (right).
+    local area = CreateFrame("Frame", nil, frame)
+    area:SetPoint("TOPLEFT", PAD, -94)
+    area:SetSize(BOARD_W, WIN_H - 110)
+    ui.boardArea = area
+    ui.chips = {}
+    local header = CreateFrame("Frame", nil, area)
+    header:SetPoint("TOPLEFT", 0, -30)
+    header:SetSize(BOARD_W, 16)
+    local heads = { { "Game", 8, GAME_COL_W } }
+    for i, name in ipairs({ "Spread", "Total", "Moneyline" }) do
+        heads[#heads + 1] = { name, GAME_COL_W + (i - 1) * (CELL_W + CELL_GAP), CELL_W, true }
+    end
+    for _, h in ipairs(heads) do
+        local fs = label(header, "GameFontNormalSmall", h[4] and "CENTER" or "LEFT")
+        fs:SetPoint("LEFT", h[2], 0)
+        fs:SetWidth(h[3])
+        fs:SetText(h[1])
+    end
+    ui.boardScroll = CreateFrame("ScrollFrame", nil, area)
+    ui.boardScroll:SetPoint("TOPLEFT", 0, -50)
+    ui.boardScroll:SetPoint("BOTTOMRIGHT", 0, 22)
+    ui.boardContent = CreateFrame("Frame", nil, ui.boardScroll)
+    ui.boardContent:SetSize(BOARD_W, 1)
+    ui.boardScroll:SetScrollChild(ui.boardContent)
+    ui.boardScroll:EnableMouseWheel(true)
+    ui.boardScroll:SetScript("OnMouseWheel", function(self, delta)
+        local max = math.max(0, ui.boardContent:GetHeight() - self:GetHeight())
+        self:SetVerticalScroll(math.min(max, math.max(0, self:GetVerticalScroll() - delta * 50)))
+    end)
+    ui.boardEmpty = label(area, "GameFontNormal")
+    ui.boardEmpty:SetPoint("TOPLEFT", 8, -60)
+    ui.boardEmpty:SetText(GREY .. "No open games right now.|r")
+    local foot = label(area, "GameFontHighlightSmall")
+    foot:SetPoint("BOTTOMLEFT", 0, 0)
+    foot:SetText(GREY .. "Games that have started are hidden. Lines update when the bookie edits them.|r")
+
+    local slipHolder = CreateFrame("Frame", nil, frame)
+    slipHolder:SetPoint("TOPRIGHT", -PAD, -94)
+    slipHolder:SetSize(SLIP_W, WIN_H - 110)
+    buildSlip(slipHolder)
+    ui.slip:SetAllPoints(slipHolder)
+    ui.slipHolder = slipHolder
+
+    -- My Bets / Balance: full-width list.
+    ui.listScroll = CreateFrame("ScrollFrame", nil, frame)
+    ui.listScroll:SetPoint("TOPLEFT", PAD, -94)
+    ui.listScroll:SetPoint("BOTTOMRIGHT", -PAD, 14)
+    ui.listContent = CreateFrame("Frame", nil, ui.listScroll)
+    ui.listContent:SetSize(WIN_W - 2 * PAD, 1)
+    ui.listScroll:SetScrollChild(ui.listContent)
+    ui.listScroll:EnableMouseWheel(true)
+    ui.listScroll:SetScript("OnMouseWheel", function(self, delta)
+        local max = math.max(0, ui.listContent:GetHeight() - self:GetHeight())
         self:SetVerticalScroll(math.min(max, math.max(0, self:GetVerticalScroll() - delta * 40)))
     end)
 
     -- Join screen (replaces the body while visible)
     local j = CreateFrame("Frame", nil, frame)
-    j:SetPoint("TOPLEFT", 14, -90)
-    j:SetPoint("BOTTOMRIGHT", -14, 14)
+    j:SetPoint("TOPLEFT", PAD, -94)
+    j:SetPoint("BOTTOMRIGHT", -PAD, 14)
     local jl = label(j, "GameFontNormal")
     jl:SetPoint("TOPLEFT", 0, -6)
     jl:SetText("Join code from your bookie (e.g. NFL-K7Q2):")
@@ -579,17 +912,22 @@ function Bettor.Refresh()
     local t = now()
     local needJoin = showJoin or not b or b.status ~= "active"
 
+    ui.title:SetText("SteveBook" .. (b and b.name and (": " .. b.name) or ""))
     ui.book:SetText(b and bookTitle(b) or "No book yet")
     if b and b.status == "active" then
-        ui.online:SetText(Cache.IsOnline(st, b.code, t) and (GREEN .. "Book online|r") or (RED .. "Book offline|r"))
+        local bal = b.balance or 0
+        local dot = Cache.IsOnline(st, b.code, t) and (GREEN .. "online|r") or (RED .. "offline|r")
+        ui.status:SetText("Balance " .. (bal == 0 and money(0) or colorMoney(bal)) .. "  |  " .. dot)
+        ui.tabs.bets:SetText("My Bets (" .. #Cache.MyBets(st, b.code).open .. ")")
     else
-        ui.online:SetText("")
+        ui.status:SetText("")
+        ui.tabs.bets:SetText("My Bets")
     end
 
     ui.joinPanel:SetShown(needJoin)
-    scroll:SetShown(not needJoin)
     if needJoin then
         for _, btn in pairs(ui.tabs) do btn:SetEnabled(false) end
+        ui.boardArea:Hide(); ui.slipHolder:Hide(); ui.listScroll:Hide()
         ui.joinPanel.forget:SetShown(b ~= nil and b.status ~= "active")
         local msg = "Ask your bookie for their join code."
         if b and not showJoin then
@@ -601,18 +939,52 @@ function Bettor.Refresh()
             end
         end
         ui.joinPanel.status:SetText(msg)
-        if slipFrame then slipFrame:Hide() end
         return
     end
 
-    local entries
-    if tab == "bets" then entries = betsEntries(b)
-    elseif tab == "balance" then entries = balanceEntries(b)
-    else tab = "lines"; entries = linesEntries(b, t) end
+    tab = tab or "lines"
     for name, btn in pairs(ui.tabs) do btn:SetEnabled(name ~= tab) end
-    render(entries)
-    if slip then slipUpdate() end
+
+    if tab == "lines" then
+        ui.listScroll:Hide()
+        ui.boardArea:Show(); ui.slipHolder:Show()
+        local board = Cache.Board(st, b.code, t, filter)
+        -- A sport chip that no longer has games goes back to All.
+        local known = false
+        for _, s in ipairs(board.sports) do if s == filter then known = true end end
+        if filter and filter ~= "All" and not known then filter = nil; board = Cache.Board(st, b.code, t, nil) end
+        board.code = b.code
+        renderChips(board.sports)
+        renderBoard(board)
+        slipUpdate()
+    else
+        ui.boardArea:Hide(); ui.slipHolder:Hide()
+        ui.listScroll:Show()
+        renderList(tab == "bets" and betsEntries(b) or balanceEntries(b))
+        slipUpdate()   -- keeps announcing started games even while another tab is open
+    end
 end
+
+------------------------------------------------------------------------------------------
+-- Public helpers (also used by tests)
+------------------------------------------------------------------------------------------
+
+-- Click an odds cell programmatically: returns Slip.Select's results.
+function Bettor.Select(marketId, selectionId)
+    local b = currentBook()
+    local m = b and b.markets[marketId]
+    if not m then return "refused", "That game is not available." end
+    local act, msg = Slip.Select(slip, m, selectionId)
+    if act == "refused" then say(msg) end
+    Bettor.Refresh()
+    return act, msg
+end
+
+function Bettor.SetStake(text)
+    if ui.stake then ui.stake:SetText(text) end
+end
+
+function Bettor.SlipState() return slip end
 
 function Bettor.Show()
     if not store() then return say("SteveBook is still loading.") end

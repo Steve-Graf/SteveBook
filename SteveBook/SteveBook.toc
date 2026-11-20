@@ -13,6 +13,7 @@ Model.lua
 Bookie.lua
 Import.lua
 Cache.lua
+Slip.lua
 Comm.lua
 BookieNet.lua
 UI\Bookie.lua

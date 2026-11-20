@@ -2,6 +2,8 @@
 local ns = {}
 assert(loadfile("SteveBook/Odds.lua"))("SteveBook", ns)
 assert(loadfile("SteveBook/Protocol.lua"))("SteveBook", ns)
+local Odds_ParlayOdds = function(l) return ns.Odds.ParlayOdds(l) end
+local Odds_ParlayProfit = function(s, l) return ns.Odds.ParlayProfit(s, l) end
 local Cache = assert(loadfile("SteveBook/Cache.lua"))("SteveBook", ns)
 
 local fails = 0
@@ -180,6 +182,31 @@ do
     check(Cache.ReasonText("market_closed") == "This game has started.", "reason text")
 end
 
+-- Bets read their pick from the line they were accepted on, not the market's current line.
+do
+    local mv = { id = 1, type = "spread", line = -4.5, selections = { { id = 1, label = "PHI" }, { id = 2, label = "DAL" } } }
+    check(Cache.SelectionText(mv, 1) == "PHI -4.5" and Cache.SelectionText(mv, 1, -3.5) == "PHI -3.5", "SelectionText takes an explicit line")
+    check(Cache.SelectionText(mv, 2, -3.5) == "DAL +3.5", "other side of a bet's spread line")
+    local tv = { id = 2, type = "total", line = 48, selections = { { id = 1, label = "Over" }, { id = 2, label = "Under" } } }
+    check(Cache.SelectionText(tv, 1, 47.5) == "Over 47.5" and Cache.SelectionText(tv, 1) == "Over 48", "total uses the bet's line")
+    check(Cache.SelectionText({ id = 3, type = "moneyline", selections = { { id = 1, label = "A" } } }, 1, nil) == "A", "moneyline has no line")
+    local bk = { markets = { [1] = mv } }
+    check(Cache.BetTitle(bk, { marketId = 1, selectionId = 1, line = -3.5 }) == "PHI -3.5", "BetTitle uses the bet's line")
+    check(Cache.BetTitle(bk, { marketId = 1, selectionId = 1 }) == "PHI -4.5", "old bets without a line fall back to the market's")
+end
+
+-- Lines on pending bets and rejections.
+do
+    local ls = Cache.NewStore()
+    Cache.ApplySync(ls, "L-1", { rev = 1, balance = 0, bets = {}, markets = {} }, NOW)
+    local pend = Cache.NewPending(ls, "L-1", { ref = "s1", marketId = 1, selectionId = 1, stake = 100, odds = -110, line = -3.5 }, NOW)
+    check(pend.line == -3.5, "pending single keeps the line")
+    local pp = Cache.NewPending(ls, "L-1", { ref = "s2", stake = 100, legs = { { marketId = 1, selectionId = 1, odds = -110, line = 47.5 }, { marketId = 2, selectionId = 1, odds = 100 } } }, NOW)
+    check(pp.legs[1].line == 47.5 and pp.legs[2].line == nil, "pending parlay legs keep their lines")
+    local rj = Cache.ApplyBetReject(ls, "L-1", "s1", "odds_changed", -110, NOW, nil, nil, -4.5)
+    check(rj.currentLine == -4.5 and rj.currentOdds == -110, "reject keeps currentLine")
+end
+
 -- A bet whose market was not sent (the bookie only sends markets of the bets it includes).
 check(Cache.EventName(nil) == "Game no longer listed" and Cache.EventName({ event = "A @ B" }) == "A @ B", "EventName fallback")
 do
@@ -189,6 +216,90 @@ do
     local row = Cache.MyBets(ms, "M-1").settled[1]
     check(row and row.market == nil and row.status == "lost" and Cache.BetDelta(row) == -100, "My Bets row works without its market")
     check(Cache.SelectionText(row.market, row.selectionId) == "#1", "selection text without a market")
+end
+
+-- Parlays in the cache.
+do
+    local ps = Cache.NewStore()
+    Cache.ApplySync(ps, "P-1", { rev = 1, balance = 0, bets = {}, markets = {
+        mkt(1, "NBA", "LAL @ BOS", "moneyline", NOW + 100), mkt(2, "NBA", "DEN @ PHX", "total", NOW + 100) } }, NOW)
+    local pb = Cache.Book(ps, "P-1")
+    local legs = { { marketId = 1, selectionId = 1, odds = 150 }, { marketId = 2, selectionId = 2, odds = -110 } }
+    local pend = Cache.NewPending(ps, "P-1", { ref = "par1", stake = 2000, legs = legs }, NOW)
+    check(pend.legs and #pend.legs == 2 and pend.legs[1].status == "pending" and pend.marketId == nil, "pending parlay keeps legs, no flat fields")
+    check(pend.odds == Odds_ParlayOdds({ 150, -110 }), "pending parlay shows the combined odds")
+    check(Cache.OpenRisk(ps, "P-1") == 2000, "parlay stake counts as open risk")
+    check(Cache.BetTitle(pb, pend) == "Parlay (2 legs)", "parlay title")
+
+    -- A closed market a pending/accepted parlay leg refers to is accepted and kept.
+    local closed = mkt(3, "NBA", "MIA @ NYK", "moneyline", NOW - 5, "locked")
+    Cache.ApplyMarket(ps, "P-1", closed, NOW)
+    check(pb.markets[3] == nil, "closed market with no bets is ignored")
+    Cache.NewPending(ps, "P-1", { ref = "par2", stake = 100, legs = { { marketId = 3, selectionId = 1, odds = -110 }, { marketId = 1, selectionId = 2, odds = -170 } } }, NOW)
+    Cache.ApplyMarket(ps, "P-1", closed, NOW)
+    check(pb.markets[3] == closed, "market referred to by a pending parlay leg is accepted")
+
+    -- ACK: the pending parlay becomes a bet with legs.
+    local acked = { id = 5, ref = "par1", stake = 2000, odds = pend.odds, status = "accepted", placedAt = NOW,
+        legs = { { marketId = 1, selectionId = 1, odds = 150, status = "pending" }, { marketId = 2, selectionId = 2, odds = -110, status = "pending" } } }
+    Cache.ApplyBetAck(ps, "P-1", "par1", acked, -2000)
+    check(pb.pending.par1 == nil and pb.bets[5] == acked and pb.balance == -2000, "ACK stores the parlay")
+    local rows = Cache.MyBets(ps, "P-1")
+    local found
+    for _, r in ipairs(rows.open) do if r.id == 5 then found = r end end
+    check(found and found.legs and #found.legs == 2, "My Bets lists the parlay with its legs")
+
+    -- SYNC prune keeps markets any leg refers to, drops the rest.
+    Cache.ApplySync(ps, "P-1", { rev = 2, balance = 0, bets = { acked }, markets = {
+        mkt(1, "NBA", "LAL @ BOS", "moneyline", NOW - 5, "settled"), mkt(2, "NBA", "DEN @ PHX", "total", NOW + 100),
+        mkt(7, "NBA", "other", "moneyline", NOW - 5, "settled") } }, NOW)
+    check(pb.markets[1] and pb.markets[2] and not pb.markets[7], "SYNC keeps the markets of parlay legs, drops other closed ones")
+
+    -- Outcomes: delta comes from the bookie, or is graded from the legs.
+    local settledWin = { stake = 2000, odds = 500, status = "won", legs = { { odds = 150, status = "won" }, { odds = -110, status = "won" } } }
+    check(Cache.BetDelta(settledWin) == Odds_ParlayProfit(2000, { 150, -110 }), "won parlay delta graded from legs")
+    settledWin.delta = 4242
+    check(Cache.BetDelta(settledWin) == 4242, "bookie delta preferred for parlays too")
+    check(Cache.BetDelta({ stake = 2000, odds = 500, status = "lost", legs = { { odds = 150, status = "lost" }, { odds = -110, status = "pending" } } }) == -2000, "lost parlay delta")
+    check(Cache.BetDelta({ stake = 2000, odds = 500, status = "accepted", legs = {} }) == nil, "open parlay has no delta")
+    check(Cache.BetDelta({ stake = 2000, odds = 500, status = "void", voided = true, legs = { { odds = 150, status = "pending" } } }) == 0, "a parlay voided by hand with pending legs is 0")
+    check(Cache.BetDelta({ stake = 2000, odds = 500, status = "lost", legs = { { odds = 150, status = "pending" } } }) == -2000, "a lost parlay without a delta is the stake")
+
+    -- Rejections carry the leg index.
+    Cache.NewPending(ps, "P-1", { ref = "par3", stake = 100, legs = legs }, NOW)
+    local rj = Cache.ApplyBetReject(ps, "P-1", "par3", "odds_changed", -125, NOW, nil, 2)
+    check(rj and rj.legIndex == 2 and rj.currentOdds == -125 and rj.legs and #rj.legs == 2, "reject keeps legIndex, currentOdds and legs")
+    check(Cache.ReasonText("parlay_conflict"):find("parlay"), "parlay_conflict has text")
+end
+
+-- The odds board.
+do
+    local bs = Cache.NewStore()
+    local function two(id, sport, event, type_, line, labels, odds, closes)
+        return { id = id, sport = sport, event = event, type = type_, line = line, status = "open", closesAt = closes or NOW + 500,
+            selections = { { id = 1, label = labels[1], odds = odds[1] }, { id = 2, label = labels[2], odds = odds[2] } } }
+    end
+    Cache.ApplySync(bs, "B-1", { rev = 1, balance = 0, bets = {}, markets = {
+        two(1, "NBA", "LAL @ BOS", "spread", 5.5, { "LAL", "BOS" }, { -110, -110 }),
+        two(2, "NBA", "LAL @ BOS", "total", 228.5, { "Over", "Under" }, { -110, -110 }),
+        two(3, "NBA", "LAL @ BOS", "moneyline", nil, { "BOS", "LAL" }, { -195, 165 }),   -- listed in the other order
+        two(4, "NFL", "PHI @ DAL", "moneyline", nil, { "PHI", "DAL" }, { -150, 130 }),
+        two(5, "NBA", "OLD @ GAME", "moneyline", nil, { "OLD", "GAME" }, { -110, -110 }, NOW - 1),
+        two(6, "NBA", "LAL @ BOS", "spread", 6.5, { "LAL", "BOS" }, { -105, -115 }),   -- a second spread: not shown
+    } }, NOW)
+    local board = Cache.Board(bs, "B-1", NOW)
+    check(#board.sports == 2 and board.sports[1] == "NBA" and board.sports[2] == "NFL", "board lists the sports with open games")
+    check(#board.games == 2, "board has one block per open game (started games hidden)")
+    local g = board.games[1]
+    check(g.event == "LAL @ BOS" and g.spread.id == 1 and g.total.id == 2 and g.moneyline.id == 3, "game block holds its three markets (first spread wins)")
+    check(g.rows.spread[1] == 1 and g.rows.spread[2] == 2 and g.rows.total[1] == 1, "spread and total rows in selection order")
+    check(g.rows.moneyline[1] == 2 and g.rows.moneyline[2] == 1, "moneyline lined up with the spread by team label")
+    local nfl = board.games[2]
+    check(nfl.spread == nil and nfl.total == nil and nfl.moneyline.id == 4 and nfl.rows.moneyline[1] == 1, "a game with only a moneyline")
+    check(#Cache.Board(bs, "B-1", NOW, "NFL").games == 1 and #Cache.Board(bs, "B-1", NOW, "NFL").sports == 2, "sport filter keeps the chips")
+    check(#Cache.Board(bs, "B-1", NOW, "All").games == 2, "All shows everything")
+    check(#Cache.Board(bs, "B-1", NOW + 1000).games == 0, "no games once everything has started")
+    check(#Cache.Board(bs, "NOPE", NOW).games == 0, "unknown book")
 end
 
 -- Display helpers.

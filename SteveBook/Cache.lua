@@ -98,9 +98,20 @@ function Cache.IsClosed(market, now)
     return market.status ~= "open" or (now ~= nil and now >= market.closesAt)
 end
 
+-- Does this bet (single, or any leg of a parlay) refer to the market?
+local function betOnMarket(bet, marketId)
+    if bet.marketId == marketId then return true end
+    for _, leg in ipairs(bet.legs or {}) do
+        if leg.marketId == marketId then return true end
+    end
+    return false
+end
+
+Cache.BetOnMarket = betOnMarket
+
 local function holdsBet(b, marketId)
-    for _, bet in pairs(b.bets) do if bet.marketId == marketId then return true end end
-    for _, bet in pairs(b.pending) do if bet.marketId == marketId then return true end end
+    for _, bet in pairs(b.bets) do if betOnMarket(bet, marketId) then return true end end
+    for _, bet in pairs(b.pending) do if betOnMarket(bet, marketId) then return true end end
     return false
 end
 
@@ -144,10 +155,19 @@ end
 -- bookie echoes it back so a retried BET_PLACE can't double-book. Returns the pending bet.
 function Cache.NewPending(store, code, req, now)
     local b = Cache.Book(store, code, true)
-    local bet = {
-        ref = req.ref, marketId = req.marketId, selectionId = req.selectionId,
-        stake = req.stake, odds = req.odds, status = "pending", placedAt = now,
-    }
+    local bet = { ref = req.ref, stake = req.stake, status = "pending", placedAt = now }
+    if req.legs then
+        -- A parlay: legs = { {marketId, selectionId, odds}, ... }; odds is the combined price.
+        bet.legs, bet.odds = {}, nil
+        local list = {}
+        for i, leg in ipairs(req.legs) do
+            bet.legs[i] = { marketId = leg.marketId, selectionId = leg.selectionId, odds = leg.odds, line = leg.line, status = "pending" }
+            list[i] = leg.odds
+        end
+        bet.odds = ns.Odds.ParlayOdds(list)
+    else
+        bet.marketId, bet.selectionId, bet.odds, bet.line = req.marketId, req.selectionId, req.odds, req.line
+    end
     b.pending[req.ref] = bet
     return bet
 end
@@ -162,14 +182,17 @@ function Cache.ApplyBetAck(store, code, ref, bet, balance)
 end
 
 -- BET_REJECT: `ref` of my request, a short reason code, `currentOdds` (set for
--- "odds_changed") and `available` (copper, set for "credit_limit"). Returns the rejected bet,
+-- "odds_changed"), `available` (copper, set for "credit_limit") and `legIndex` (parlays: the leg
+-- the reason is about) and `currentLine` (odds_changed because a spread/total line moved).
+-- Returns the rejected bet,
 -- or nil if we weren't waiting for that ref.
-function Cache.ApplyBetReject(store, code, ref, reason, currentOdds, now, available)
+function Cache.ApplyBetReject(store, code, ref, reason, currentOdds, now, available, legIndex, currentLine)
     local b = Cache.Book(store, code, true)
     local bet = b.pending[ref]
     if not bet then return nil end
     b.pending[ref] = nil
     bet.status, bet.rejectReason, bet.currentOdds, bet.available, bet.settledAt = "rejected", reason, currentOdds, available, now
+    bet.legIndex, bet.currentLine = legIndex, currentLine
     b.rejected[#b.rejected + 1] = bet
     while #b.rejected > REJECTED_KEEP do table.remove(b.rejected, 1) end
     return bet
@@ -345,14 +368,16 @@ local function signed(n) return (("%+g"):format(n)) end
 
 -- "PHI -3.5" for a spread, "Over 47.5" for a total, plain label for a moneyline. For spreads
 -- the market line belongs to selection 1 and the other side gets the opposite sign.
-function Cache.SelectionText(market, selectionId)
+function Cache.SelectionText(market, selectionId, line)
     local label = Cache.SelectionLabel(market, selectionId)
-    if not market or market.line == nil then return label end
+    if not market then return label end
+    -- A bet remembers the line it was accepted on; lines move in place afterwards.
+    if line == nil then line = market.line end
+    if line == nil then return label end
     if market.type == "spread" then
-        local line = selectionId == 1 and market.line or -market.line
-        return label .. " " .. signed(line)
+        return label .. " " .. signed(selectionId == 1 and line or -line)
     elseif market.type == "total" then
-        return label .. " " .. num(market.line)
+        return label .. " " .. num(line)
     end
     return label
 end
@@ -360,6 +385,7 @@ end
 local REASONS = {
     not_member = "You are not an approved member of this book.",
     market_closed = "This game has started.",
+    parlay_conflict = "Those legs can't be combined in one parlay.",
     market_unknown = "That market no longer exists.",
     no_market = "That market no longer exists.",
     selection_unknown = "That selection no longer exists.",
@@ -383,9 +409,65 @@ function Cache.BetDelta(bet)
     if bet.delta then return bet.delta end
     local st = bet.status
     if st == "won" or st == "lost" or st == "push" or st == "void" then
+        if bet.legs then
+            -- A parlay can be lost (or voided by hand) while legs still read "pending", so the
+            -- bet's own status decides; only a win needs the legs, to price it.
+            if st == "lost" then return -bet.stake end
+            if st ~= "won" then return 0 end
+            local _, delta = ns.Odds.GradeParlay(bet.stake, bet.legs)
+            return delta
+        end
         return (ns.Odds.Delta(bet.stake, bet.odds, st))
     end
     return nil
+end
+
+-- One short description of a bet's selection(s) for lists and chat. `getMarket(id)` -> Market|nil.
+function Cache.BetTitle(b, bet)
+    if bet.legs then return ("Parlay (%d legs)"):format(#bet.legs) end
+    return Cache.SelectionText(b.markets[bet.marketId], bet.selectionId, bet.line)
+end
+
+------------------------------------------------------------------------------------------
+-- The odds board (Lines tab): one entry per game, with its spread / total / moneyline markets
+-- laid out in two rows (away, home / over, under).
+------------------------------------------------------------------------------------------
+
+-- Returns { sports = { "NBA", "NFL" }, games = { Game... } } for games still open at `now`.
+-- `filter` is a sport name or nil/"All". Game = { sport, event, closesAt,
+--   spread = Market|nil, total = Market|nil, moneyline = Market|nil,
+--   rows = { spread = {id1, id2}, total = {id1, id2}, moneyline = {id1, id2} } }
+-- where row 1 / row 2 give the selection id shown on the first / second line of the game block.
+-- Only the first market of each type is shown (lowest id). A moneyline is lined up with the
+-- spread by team label, so the same team is on the same line.
+function Cache.Board(store, code, now, filter)
+    local out = { sports = {}, games = {} }
+    for _, s in ipairs(Cache.Lines(store, code, now)) do
+        out.sports[#out.sports + 1] = s.sport
+        if not filter or filter == "All" or filter == s.sport then
+            for _, ev in ipairs(s.events) do
+                local g = { sport = s.sport, event = ev.event, closesAt = ev.closesAt, rows = {} }
+                for _, m in ipairs(ev.markets) do
+                    if not g[m.type] then g[m.type] = m end
+                end
+                for _, t in ipairs({ "spread", "total", "moneyline" }) do
+                    local m = g[t]
+                    if m and m.selections[1] and m.selections[2] then
+                        g.rows[t] = { m.selections[1].id, m.selections[2].id }
+                    end
+                end
+                local sp, ml = g.spread, g.moneyline
+                if sp and ml and g.rows.spread and g.rows.moneyline then
+                    local first = sp.selections[1].label
+                    if ml.selections[2].label == first then
+                        g.rows.moneyline = { ml.selections[2].id, ml.selections[1].id }
+                    end
+                end
+                if g.spread or g.total or g.moneyline then out.games[#out.games + 1] = g end
+            end
+        end
+    end
+    return out
 end
 
 return Cache

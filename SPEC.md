@@ -83,6 +83,9 @@ in §3 apply unchanged, and the stake is the amount at risk (credit limits count
   Within one game (same event and close time) a parlay may hold **one side bet (moneyline or spread)
   plus one total (over or under)**. Rejected: moneyline + spread, two spreads, over + under, and the
   same market twice.
+- **Lines:** BET_PLACE carries the spread/total line the bettor saw (per leg for parlays). If the
+  market's line moved, the bookie rejects with `odds_changed` plus `currentOdds` and `currentLine`,
+  and the slip re-confirms, exactly as for moved odds.
 - **Locked-in odds:** each leg keeps the odds at the moment the bookie accepted the parlay. If any
   leg's odds changed since the bettor saw them, the whole parlay is rejected (`odds_changed`, with
   `legIndex`), same as a single bet.
@@ -124,6 +127,8 @@ Bet {
   legs? = { { marketId, selectionId, odds, status = "pending"|"won"|"lost"|"push"|"void" }, ... },
   stake,                      -- copper
   odds,                       -- locked in at acceptance (a parlay: combined American odds)
+  line?,                      -- spread/total: the line at acceptance (a parlay leg carries its own `line`);
+                              -- a market's line can move later (import updates), bets keep theirs
   status = "pending"|"accepted"|"rejected"|"won"|"lost"|"push"|"void",
   placedAt, settledAt, rejectReason?
 }
@@ -186,7 +191,9 @@ Rules:
 - Bets can only be placed while the bookie is online (Place Bet disabled when no recent PONG).
 - **SYNC size:** the bettor's balance is absolute, so old history is not needed for correctness.
   A SYNC carries the bettor's open bets, their settled bets from the last 14 days, and the
-  markets those bets refer to (plus all open markets). Older settled bets drop out of My Bets.
+  markets those bets (and parlay legs) refer to, plus all open markets. Older settled bets drop out of My Bets.
+  Measured size: 10 settled 3-leg parlays is about 11.5 KB (roughly 17 s at the throttle rate); if that
+  hurts in play, cap the settled bets per SYNC or send settlement deltas instead.
 - **Trust model:** friends only. Clients can be modified. The bettor pins the first sender whose
   JOIN_OK names themself as the owner; after that, only that sender's bookie messages count.
   A third party who answers a pending join request before the real bookie could still be
@@ -204,20 +211,26 @@ Rules:
 Slash command `/book` opens the window; minimap button optional (LibDBIcon).
 
 **Bookie window** (after picking a book) — tabs:
-- **Markets**: list with status, close time, exposure; "New market" form (sport, event, type,
-  line, selections with odds, close time); actions: edit odds, lock, void, settle (pick result).
-- **Bets**: filterable list of all bets (by market, bettor, status).
+- **Markets**: a table (Game, Market, two inline odds boxes, Closes, Status, At risk, actions) plus
+  the Import panel on its right (paste box, live summary, Import N / Clear). Odds boxes save on
+  Enter or click-away and only affect new bets. Toolbar: "New market", "Lock all", and open stakes
+  (with the part that sits in parlays). Started games offer only Settle (winner prompt with Void).
+  "At risk" counts single-bet stakes only; parlays appear in the toolbar total and the Bets tab.
+- **Bets**: filterable list of all bets (by market, bettor, status). A parlay shows a headline
+  plus one line per leg with its own status; Void voids the whole parlay.
 - **Members**: pending requests (approve/deny), active members, credit limits, remove.
 - **Ledger**: balance per bettor (who owes whom), record payment, payment history.
-- **Import**: multi-line edit box to paste an import string; preview; confirm.
+- **Import**: the same panel with a line-by-line preview (NEW / UPDATE old->new / SKIP / ERROR).
 - Header shows book name and join code (click to copy).
 
 **Bettor window**:
 - **Join** screen: enter join code → "Request sent, waiting for approval".
 - Book picker if in multiple books.
-- **Lines**: open markets grouped by sport/event; click a selection → bet slip (stake,
-  shows potential profit) → Place Bet. Shows book online/offline.
-- **My Bets**: open and settled, with results.
+- **Lines**: an odds board. Sport chips (NBA / NFL / All); a header row Game / Spread / Total /
+  Moneyline; one block per game with two rows (away, home) of clickable odds cells; started games
+  are hidden. A slip panel on the right switches between **Single** and **Parlay (n)**: stake,
+  to-win, Place Bet / Place Parlay. Shows book online/offline.
+- **My Bets**: open and settled (last 14 days), with results; parlays list each leg and its status.
 - **Balance**: current balance with the book and recent changes.
 
 Chat output only for notable events (bet accepted/rejected, market settled, you were approved).
@@ -237,9 +250,16 @@ TOTAL|NFL|PHI @ DAL|2026-11-26T16:30-05:00|47.5|Over:-110|Under:-110
 
 - Spread line applies to the first selection (the other side is the opposite).
 - Lines starting with `#` are comments. Invalid lines are reported, not imported.
-- Close times need a UTC offset or `Z`. Markets whose close time has passed, and duplicates of
-  an existing market or an earlier line (same type, event, close time and line), are skipped
-  and reported. Market and side names cannot contain `|` (it is a WoW text escape).
+- Close times need a UTC offset or `Z`. Names cannot contain `|` (it is a WoW text escape).
+- **Importing again updates lines.** A line is matched to an existing market of the same type,
+  event and close time (sides matched by label). If exactly one spread (or total) exists for that
+  game, its line and odds are updated in place; if several exist (deliberate alternate lines) the
+  line is part of the match and an unmatched line becomes a new market. Moneylines match on
+  type, event and time. A matching **open** market with different odds is updated (existing bets
+  keep their locked line and odds, and bettors get the new market); identical lines are skipped as
+  duplicates; locked, settled, void or started markets are never touched. Games that have already
+  started are skipped, not errors. Same game but different side names is an error (not guessed).
+  The preview reports new / updated / skipped (started or closed) / duplicate / errors.
 - Optionally wrap the whole block with a `GB1:` prefix + base64 later, if pasting raw text proves
   fragile. Not supported yet: such a block is reported as unsupported.
 

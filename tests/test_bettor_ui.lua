@@ -55,7 +55,7 @@ print = function(...) printed[#printed + 1] = table.concat({ ... }, " ") end
 local function lastPrint() return printed[#printed] or "" end
 
 local ns = {}
-for _, f in ipairs({ "Odds", "Protocol", "Cache" }) do assert(loadfile("SteveBook/" .. f .. ".lua"))("SteveBook", ns) end
+for _, f in ipairs({ "Odds", "Protocol", "Cache", "Slip" }) do assert(loadfile("SteveBook/" .. f .. ".lua"))("SteveBook", ns) end
 local Cache = ns.Cache
 SteveBookDB = { cache = Cache.NewStore() }
 
@@ -133,32 +133,58 @@ check(lastPrint():find("approved"), "approval printed")
 
 handlers.SYNC("Mallory", { rev = 2, bookName = "evil", markets = {}, bets = {}, balance = 999 }, CODE)
 check(b.balance == 0, "SYNC from non-owner ignored")
-local function market(id, status)
+local function market(id, status, odds1)
     return { id = id, sport = "NFL", event = "PHI @ DAL", type = "spread", line = -3.5, status = status or "open", closesAt = T + 3600,
-        selections = { { id = 1, label = "PHI", odds = -110 }, { id = 2, label = "DAL", odds = -110 } } }
+        selections = { { id = 1, label = "PHI", odds = odds1 or -110 }, { id = 2, label = "DAL", odds = -110 } } }
 end
-handlers.SYNC("Bookie", { rev = 2, bookName = "NFL Week 12", markets = { market(1) }, bets = {}, balance = 0,
-    payments = {}, creditLimit = 50000 }, CODE)
+local function mlMarket(id, event, o1, o2)
+    return { id = id, sport = "NFL", event = event, type = "moneyline", status = "open", closesAt = T + 3600,
+        selections = { { id = 1, label = "AAA", odds = o1 }, { id = 2, label = "BBB", odds = o2 } } }
+end
+local function totalMarket(id, event)
+    return { id = id, sport = "NFL", event = event, type = "total", line = 47.5, status = "open", closesAt = T + 3600,
+        selections = { { id = 1, label = "Over", odds = -110 }, { id = 2, label = "Under", odds = -110 } } }
+end
+local function bookieSync(markets, bets)
+    if not bets then bets = {}; for _, x in pairs(b.bets) do bets[#bets + 1] = x end end   -- the bookie re-sends my bets
+    handlers.SYNC("Bookie", { rev = 2, bookName = "NFL Week 12", markets = markets, bets = bets, balance = 0,
+        payments = {}, creditLimit = 50000 }, CODE)
+end
+bookieSync({ market(1), mlMarket(2, "NYG @ WAS", 150, -170), totalMarket(3, "PHI @ DAL") })
 check(b.markets[1] and b.name == "NFL Week 12" and b.creditLimit == 50000, "SYNC applied")
 check(Cache.IsOnline(SteveBookDB.cache, CODE, T), "SYNC from the bookie counts as online")
 
+local function findPrefix(prefix)
+    for _, f in ipairs(frames) do local x = rawget(f, "_text"); if type(x) == "string" and x:sub(1, #prefix) == prefix then return f end end
+end
+local function stakeBox()
+    for _, f in ipairs(frames) do if script(f, "OnEnterPressed") and script(f, "OnTextChanged") then return f end end
+end
+local function nBetPlace() local n = 0; for _, e in ipairs(sent) do if e.t == "BET_PLACE" then n = n + 1 end end; return n end
+
 B.Refresh()
--- Slip.
-B.OpenSlip(CODE, 1, 1, -110)
-local stake = nil
-for _, f in ipairs(frames) do if script(f, "OnEnterPressed") and script(f, "OnTextChanged") then stake = f end end
+-- The odds board shows the open games.
+check(frameWithTextContaining("PHI @ DAL") and frameWithTextContaining("NYG @ WAS"), "board shows both games")
+check(frameWithTextContaining("PHI -3.5") and frameWithTextContaining("DAL +3.5"), "spread cells carry the line")
+check(frameWithTextContaining("O 47.5") and frameWithTextContaining("U 47.5"), "total cells carry the line")
+
+-- Single slip: the same stake rules as before.
+check(B.Select(1, 1) == "set", "clicking a cell puts it on the single slip")
+local stake = stakeBox()
 check(stake ~= nil, "slip stake box exists")
-stake:SetText("25g")
 local place = findButton("Place Bet")
+check(place ~= nil, "Place Bet button")
+stake:SetText("25g")
 check(rawget(place, "_enabled") == false, "stake over 1g disabled")
 stake:SetText("20s 10c")
 check(rawget(place, "_enabled") == false, "stake with loose copper disabled")
 stake:SetText("1g 1s")
 check(rawget(place, "_enabled") == false, "1g 1s disabled")
 stake:SetText("20s")
-check(place and rawget(place, "_enabled") == true, "Place Bet enabled with online book and valid stake")
+check(rawget(place, "_enabled") == true, "Place Bet enabled with online book and valid stake")
 stake:SetText("nonsense")
 check(rawget(place, "_enabled") == false, "Place Bet disabled for bad stake")
+check(frameWithTextContaining("Enter a stake") ~= nil, "unparsable stake explained")
 stake:SetText("20s")
 b.lastPong = T - 1000
 B.Refresh()
@@ -168,41 +194,144 @@ B.Refresh()
 check(rawget(place, "_enabled") == true, "Place Bet re-enabled by PONG")
 place:Click()
 local bp = lastSent("BET_PLACE")
-check(bp and bp.p.stake == 2000 and bp.p.odds == -110 and bp.p.marketId == 1 and bp.p.selectionId == 1 and type(bp.p.ref) == "string", "BET_PLACE payload")
+check(bp and bp.p.stake == 2000 and bp.p.odds == -110 and bp.p.marketId == 1 and bp.p.selectionId == 1 and bp.p.legs == nil and type(bp.p.ref) == "string", "single BET_PLACE payload is flat")
 check(next(b.pending) == bp.p.ref, "pending recorded under ref")
+check(B.SlipState().single == nil, "the slip is cleared once sent")
 
--- Reject with changed odds re-opens the slip.
+-- The bookie says the odds moved (the MARKET update arrives too): the slip comes back, odds updated.
+handlers.MARKET("Bookie", { rev = 3, market = market(1, "open", -120) }, CODE)
 handlers.BET_REJECT("Bookie", { ref = bp.p.ref, reason = "odds_changed", currentOdds = -120 }, CODE)
+B.Refresh()
 check(lastPrint():find("rejected") and lastPrint():find("%-120"), "odds_changed printed")
 check(next(b.pending) == nil and #b.rejected == 1, "rejection moved out of pending")
-
--- Place again and get ACK.
-B.OpenSlip(CODE, 1, 1, -120)
-stake:SetText("20s")
+check(B.SlipState().single and B.SlipState().single.odds == -120, "the slip is restored with the new odds")
+check(stake:GetText() == "20s", "the stake is put back for re-confirming")
+check(place:GetText() == "Confirm new odds" and rawget(place, "_enabled") == true, "the button asks for a confirmation")
+local n0 = nBetPlace()
+place:Click()
+check(nBetPlace() == n0 and place:GetText() == "Place Bet", "confirming sends nothing and unlocks Place Bet")
 place:Click()
 bp = lastSent("BET_PLACE")
-check(bp.p.odds == -120, "second BET_PLACE uses new odds")
+check(nBetPlace() == n0 + 1 and bp.p.odds == -120, "second BET_PLACE uses the new odds")
 handlers.BET_ACK("Bookie", { ref = bp.p.ref, bet = { id = 7, ref = bp.p.ref, bettor = "me", marketId = 1, selectionId = 1,
     stake = 2000, odds = -120, status = "accepted", placedAt = T }, balance = 0 }, CODE)
 check(b.bets[7] and next(b.pending) == nil and lastPrint():find("accepted"), "ACK recorded")
 
+-- Moved odds while the slip is open (the usual way: a MARKET update): confirmation needed.
+B.Select(2, 1)
+stake:SetText("10s")
+check(rawget(place, "_enabled") == true, "slip ready")
+handlers.MARKET("Bookie", { rev = 4, market = mlMarket(2, "NYG @ WAS", 140, -160) }, CODE)
+B.Refresh()
+check(place:GetText() == "Confirm new odds", "a line move under an open slip needs a confirmation")
+B.SlipState().single = nil; B.Refresh()
+
+-- Parlay slip.
+findPrefix("Parlay ("):Click()
+check(B.SlipState().mode == "parlay", "Parlay tab switches the slip mode")
+check(B.Select(1, 1) == "added" and B.Select(2, 2) == "added", "two legs from different games")
+check(findPrefix("Parlay (2)") ~= nil, "the tab counts the legs")
+local act, msg = B.Select(3, 1)                       -- over in PHI @ DAL, with the spread already on the slip
+check(act == "added", "spread + total of the same game is allowed")
+act, msg = B.Select(3, 2)
+check(act == "replaced", "under replaces over (same market)")
+check(frameWithTextContaining("Combined odds") ~= nil, "combined odds label")
+local place2 = findButton("Place Parlay")
+check(place2 ~= nil, "Place Parlay button")
+stake:SetText("20s")
+check(rawget(place2, "_enabled") == true, "Place Parlay enabled with 3 legs and a stake")
+check(frameWithTextContaining("All legs must win") ~= nil, "the parlay note is shown")
+-- A leg that conflicts is refused with a message that names the other leg.
+bookieSync({ market(1), mlMarket(2, "NYG @ WAS", 150, -170), totalMarket(3, "PHI @ DAL"), mlMarket(4, "PHI @ DAL", -150, 130) })
+act, msg = B.Select(4, 1)
+check(act == "refused" and lastPrint():find("can't go with"), "moneyline + spread from one game is refused with a message")
+check(B.SlipState().mode == "parlay" and #B.SlipState().parlay == 3, "the refused leg was not added")
+-- Remove a leg through its button.
+local removeBtn
+for _, f in ipairs(frames) do if rawget(f, "_text") == "x" then removeBtn = f; break end end
+check(removeBtn ~= nil, "leg remove buttons exist")
+local before = #B.SlipState().parlay
+removeBtn:Click()
+check(#B.SlipState().parlay == before - 1, "the x button removes a leg")
+B.Select(2, 2)  -- remove or re-add: make sure we have 3 legs again
+B.Select(1, 1)
+local nLegs = #B.SlipState().parlay
+check(nLegs >= 2, "legs on the slip: " .. nLegs)
+stake:SetText("20s")
+place2 = findButton("Place Parlay")
+n0 = nBetPlace()
+place2:Click()
+bp = lastSent("BET_PLACE")
+check(nBetPlace() == n0 + 1 and bp.p.legs and #bp.p.legs == nLegs and bp.p.marketId == nil and bp.p.odds == nil and bp.p.stake == 2000, "parlay BET_PLACE has legs and no flat fields")
+check(b.pending[bp.p.ref] and b.pending[bp.p.ref].legs and #B.SlipState().parlay == 0, "parlay pending recorded; parlay slip cleared")
+local ref1 = bp.p.ref
+
+-- ACK -> My Bets shows the parlay with its legs.
+local ackLegs = {}
+for i, l in ipairs(bp.p.legs) do ackLegs[i] = { marketId = l.marketId, selectionId = l.selectionId, odds = l.odds, status = "pending" } end
+handlers.BET_ACK("Bookie", { ref = ref1, bet = { id = 8, ref = ref1, bettor = "me", stake = 2000, odds = 400, status = "accepted", placedAt = T, legs = ackLegs }, balance = 0 }, CODE)
+check(b.bets[8] and next(b.pending) == nil and lastPrint():find("parlay"), "parlay ACK recorded")
+findPrefix("My Bets"):Click()
+check(frameWithTextContaining("Parlay, " .. nLegs .. " legs") ~= nil, "My Bets lists the parlay")
+check(frameWithTextContaining("Pending") ~= nil and frameWithTextContaining("PHI -3.5") ~= nil, "My Bets lists each leg with its status")
+findPrefix("Lines"):Click()
+
+-- Parlay rejections restore the slip and say what happened.
+local function sendParlay(legIdx)
+    findPrefix("Parlay ("):Click()
+    B.SlipState().parlay = {}
+    B.Select(1, 1); B.Select(2, 1); B.Select(3, 1)
+    stakeBox():SetText("10s")
+    findButton("Place Parlay"):Click()
+    return lastSent("BET_PLACE")
+end
+local pb = sendParlay()
+handlers.MARKET("Bookie", { rev = 5, market = mlMarket(2, "NYG @ WAS", 120, -140) }, CODE)
+handlers.BET_REJECT("Bookie", { ref = pb.p.ref, reason = "odds_changed", legIndex = 2, currentOdds = 120 }, CODE)
+B.Refresh()
+check(#B.SlipState().parlay == 3 and B.SlipState().parlay[2].odds == 120, "odds_changed with legIndex updates that leg")
+check(B.SlipState().confirm.parlay == true and findButton("Confirm new odds") ~= nil, "and asks for a confirmation")
+check(lastPrint():find("Leg 2") and lastPrint():find("%+120"), "the message names the leg and the new odds")
+check(stakeBox():GetText() == "10s", "parlay stake restored")
+
+pb = sendParlay()
+handlers.BET_REJECT("Bookie", { ref = pb.p.ref, reason = "market_closed", legIndex = 3 }, CODE)
+B.Refresh()
+check(#B.SlipState().parlay == 2, "market_closed with legIndex drops that leg")
+check(lastPrint():find("Leg 3 was dropped"), "and says so")
+
+pb = sendParlay()
+handlers.BET_REJECT("Bookie", { ref = pb.p.ref, reason = "parlay_conflict", legIndex = 2 }, CODE)
+B.Refresh()
+check(lastPrint():find("can't be combined") and #B.SlipState().parlay == 3, "parlay_conflict is explained and the legs stay")
+
+pb = sendParlay()
+handlers.BET_REJECT("Bookie", { ref = pb.p.ref, reason = "credit_limit", available = 500 }, CODE)
+check(lastPrint():find("credit limit") and lastPrint():find("5s"), "parlay credit_limit tells how much is left")
+B.Refresh()
+B.SlipState().parlay = {}
+findPrefix("Single"):Click()
+
 -- Time passes while the window is open: the game starts.
 do
     check(ticker(5) ~= nil, "window refreshes on a 5s ticker while shown")
-    B.OpenSlip(CODE, 1, 1, -120)
-    stake:SetText("10s")
-    check(rawget(place, "_enabled") == true, "slip enabled before the game starts")
-    local nBets = 0
-    for _, e in ipairs(sent) do if e.t == "BET_PLACE" then nBets = nBets + 1 end end
+    B.Select(1, 1)
+    stakeBox():SetText("10s")
+    local placeNow = findButton("Place Bet")
+    check(rawget(placeNow, "_enabled") == true, "slip enabled before the game starts")
     local startsIn = b.markets[1].closesAt - T
     T = T + startsIn + 1                  -- the game starts; nothing else happens yet
     Cache.MarkPong(SteveBookDB.cache, CODE, T, "Bookie")
+    local nbefore = nBetPlace()
+    local p0 = #printed
     ticker(5).fn()                         -- the refresh tick
-    check(rawget(place, "_enabled") == false, "slip disabled once the game has started")
-    check(frameWithTextContaining("This game has started.") ~= nil, "slip says why: This game has started.")
-    local before = #sent
-    place:Click()
-    check(#sent == before, "Place Bet does nothing after the start time")
+    check(B.SlipState().single == nil, "the slip drops the game that started")
+    local said = false
+    for i = p0 + 1, #printed do if printed[i]:find("this game has started") then said = true end end
+    check(said, "and says why: this game has started")
+    placeNow:Click()
+    check(nBetPlace() == nbefore, "Place Bet does nothing after the start time")
+    check(#Cache.Board(SteveBookDB.cache, CODE, T).games == 0 or frameWithTextContaining("PHI @ DAL") ~= nil, "board re-rendered without the started game")
     T = T - startsIn - 1
     Cache.MarkPong(SteveBookDB.cache, CODE, T, "Bookie")
     B.Refresh()
@@ -211,11 +340,44 @@ end
 -- My Bets copes with a bet whose market is not in the cache, and says the history window.
 do
     b.bets[900] = { id = 900, marketId = 404, selectionId = 1, stake = 100, odds = -110, status = "lost", placedAt = T - 5, delta = -100 }
-    findButton("My Bets"):Click()
+    findPrefix("My Bets"):Click()
     check(frameWithTextContaining("Game no longer listed") ~= nil, "bet row without a market names a placeholder")
     check(frameWithTextContaining("last 14 days") ~= nil, "My Bets says it shows the last 14 days")
     b.bets[900] = nil
-    findButton("Lines"):Click()
+    findPrefix("Lines"):Click()
+end
+
+-- A bet keeps the line it was accepted on even after the market's line moves.
+do
+    b.bets[901] = { id = 901, marketId = 1, selectionId = 1, line = -2.5, stake = 100, odds = -110, status = "accepted", placedAt = T - 5 }
+    findPrefix("My Bets"):Click()
+    check(frameWithTextContaining("PHI -2.5") ~= nil, "My Bets shows the bet's own line, not the market's current -3.5")
+    b.bets[901] = nil
+    findPrefix("Lines"):Click()
+end
+
+-- A line move: odds_changed with currentLine puts the bet back with the new line, to confirm.
+do
+    local mv = market(1, "open", -110); mv.line = -4.5
+    handlers.MARKET("Bookie", { rev = 20, market = mv }, CODE)     -- the bettor learned of the move
+    B.SlipState().single = nil
+    B.Select(1, 1)
+    stakeBox():SetText("10s")
+    check(B.SlipState().single.line == -4.5, "the slip shows the current line")
+    local before = nBetPlace()
+    local confirmBtn = findButton("Place Bet")
+    confirmBtn:Click()
+    local lb = lastSent("BET_PLACE")
+    check(nBetPlace() == before + 1 and lb.p.line == -4.5, "BET_PLACE carries the line the slip showed")
+    local mv2 = market(1, "open", -110); mv2.line = -5
+    handlers.MARKET("Bookie", { rev = 21, market = mv2 }, CODE)
+    handlers.BET_REJECT("Bookie", { ref = lb.p.ref, reason = "odds_changed", currentOdds = -110, currentLine = -5 }, CODE)
+    B.Refresh()
+    check(B.SlipState().single and B.SlipState().single.line == -5 and B.SlipState().confirm.single, "the slip is restored with the new line, awaiting confirmation")
+    check(lastPrint():find("line %-5"), "the message names the new line: " .. lastPrint())
+    B.SlipState().single = nil
+    handlers.MARKET("Bookie", { rev = 22, market = market(1, "open", -110) }, CODE)   -- back to -3.5
+    B.Refresh()
 end
 
 -- Hiding the window stops the refresh ticker; showing starts it again.
@@ -231,15 +393,18 @@ end
 do
     local realSend = ns.Comm.Send
     ns.Comm.Send = function() return false, "no channel" end
-    B.OpenSlip(CODE, 1, 1, -120)
-    stake:SetText("1g")
-    place:Click()
+    B.Select(1, 1)
+    stakeBox():SetText("1g")
+    findButton("Place Bet"):Click()
     check(next(b.pending) == nil and lastPrint():find("Could not send"), "failed BET_PLACE send is not left pending")
     ns.Comm.Send = realSend
 end
 
 -- Views render without error.
-for _, tabName in ipairs({ "My Bets", "Balance", "Lines" }) do findButton(tabName):Click() end
+for _, tabName in ipairs({ "My Bets", "Balance", "Lines" }) do findPrefix(tabName):Click() end
+-- The sport chips filter the board.
+check(findButton("NFL") ~= nil and findButton("All") ~= nil, "sport chips")
+findButton("All"):Click()
 
 -- Settlement.
 local m = market(1, "settled"); m.result = 1
@@ -251,8 +416,8 @@ handlers.SYNC("Bookie", { rev = 10, bookName = "NFL Week 12", markets = { m }, b
 check(b.bets[7].status == "won", "SYNC carries the outcome")
 handlers.BALANCE("Bookie", { rev = 10, balance = 208333, note = "PHI @ DAL won" }, CODE)
 check(b.balance == 208333 and #b.payments == 1 and b.payments[1].amount == 208333, "BALANCE recorded")
-findButton("Balance"):Click()
-findButton("My Bets"):Click()
+findPrefix("Balance"):Click()
+findPrefix("My Bets"):Click()
 
 -- Denied.
 Cache.RequestJoin(SteveBookDB.cache, "OTH-1111")

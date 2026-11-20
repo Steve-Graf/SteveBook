@@ -38,13 +38,15 @@ Protocol.Spec = {
         selectionId = "number?",--   odds; a parlay has `legs` instead (checked in Validate).
         stake = "number",       -- copper
         odds = "number?",       -- American odds the bettor saw
-        legs = "table?",        -- parlay: list of { marketId, selectionId, odds }, 2..8 long, in slip order
+        line = "number?",       -- spread/total only: the line the bettor saw (single bet; legs carry their own)
+        legs = "table?",        -- parlay: list of { marketId, selectionId, odds, line? }, 2..8 long, in slip order
     } },
     BET_ACK    = { dir = "bookie", fields = { ref = "string", bet = "table", balance = "number?" } },
     BET_REJECT = { dir = "bookie", fields = {
         ref = "string",
         reason = "string",      -- one of Protocol.REJECT_REASONS
         currentOdds = "number?",    -- set when reason == "odds_changed"
+        currentLine = "number?",    -- odds_changed because the spread/total line moved: the market's current line
         legIndex = "number?",       -- parlay only: 1-based leg the reason is about (odds_changed, market_closed,
                                     --   no_market, bad_selection) or the later leg of a parlay_conflict
         available = "number?",      -- copper still available, set when reason == "credit_limit"
@@ -88,6 +90,7 @@ function Protocol.Validate(msgType, payload)
     if msgType == "BET_PLACE" then
         local single = payload.marketId ~= nil or payload.selectionId ~= nil or payload.odds ~= nil
         if payload.legs ~= nil then
+            if payload.line ~= nil then return false, "a parlay's lines belong on its legs" end
             if single then return false, "a parlay has legs instead of marketId, selectionId and odds" end
             local n = #payload.legs
             local lo = ns.Odds and ns.Odds.MIN_PARLAY_LEGS or 2
@@ -98,6 +101,9 @@ function Protocol.Validate(msgType, payload)
                 if type(leg) ~= "table" or type(leg.marketId) ~= "number"
                     or type(leg.selectionId) ~= "number" or type(leg.odds) ~= "number" then
                     return false, "leg " .. i .. " needs numeric marketId, selectionId and odds"
+                end
+                if leg.line ~= nil and type(leg.line) ~= "number" then
+                    return false, "leg " .. i .. " line must be a number"
                 end
             end
         elseif payload.marketId == nil or payload.selectionId == nil or payload.odds == nil then

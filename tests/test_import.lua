@@ -104,7 +104,17 @@ bad("SPREAD|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-110|DAL:-110", "need 7", "sprea
 bad("ML|NFL||||2026-11-26T16:30Z|PHI:-150|DAL:+130", "event is empty", "empty event")
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30|PHI:-150|DAL:+130", "UTC offset", "time without an offset")
 bad("ML|NFL|PHI @ DAL|2026-02-30T16:30Z|PHI:-150|DAL:+130", "day out of range", "impossible date")
-bad("ML|NFL|PHI @ DAL|2026-11-19T16:30Z|PHI:-150|DAL:+130", "already passed", "already closed")
+-- a game that has already started is not an error: it comes back with its spec, flagged `started`
+do
+    local it = Import.Parse("ML|NFL|PHI @ DAL|2026-11-19T16:30Z|PHI:-150|DAL:+130", NOW)[1]
+    check(it.spec and it.err == nil and it.started == true, "past close time: spec kept, flagged started")
+    local live = Import.Parse("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-150|DAL:+130", NOW)[1]
+    check(live.spec and live.started == nil, "future close time: not flagged")
+    local edge = Import.Parse("ML|NFL|PHI @ DAL|2026-11-20T00:00Z|PHI:-150|DAL:+130", NOW)[1]
+    check(edge.started == true, "closing exactly now counts as started (the game is on)")
+    local junk = Import.Parse("ML|NFL|PHI @ DAL|2026-11-19T16:30Z|nope|DAL:+130", NOW)[1]
+    check(junk.spec == nil and junk.err and junk.started == nil, "a malformed line is an error, never `started`")
+end
 bad("SPREAD|NFL|PHI @ DAL|2026-11-26T16:30Z|big|PHI:-110|DAL:-110", 'line "big"', "junk line")
 bad("SPREAD|NFL|PHI @ DAL|2026-11-26T16:30Z|inf|PHI:-110|DAL:-110", 'line "inf"', "inf line")
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI -150|DAL:+130", 'side "PHI -150"', "side without a colon")
@@ -115,8 +125,8 @@ bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-150|PHI:+130", "different names", "
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-150|DAL:+130|", "need 6", "trailing separator")
 bad("GB1:abcdef", "not supported yet", "encoded string")
 bad("|||", "unknown market type", "separators only")
--- without a `now`, the past-close check is skipped (callers that don't know the time)
-check(Import.Parse("ML|NFL|PHI @ DAL|2026-11-19T16:30Z|PHI:-150|DAL:+130", nil)[1].spec ~= nil, "no `now`: no close check")
+-- without a `now`, nothing counts as started (callers that don't know the time)
+check(Import.Parse("ML|NFL|PHI @ DAL|2026-11-19T16:30Z|PHI:-150|DAL:+130", nil)[1].started == nil, "no `now`: nothing is started")
 
 -- a mixed paste keeps the good lines and reports the bad ones with their line numbers ----------------
 local mixed = Import.Parse("ML|NFL|A @ B|2026-11-26T16:30Z|A:-150|B:+130\nnonsense\nML|NFL|C @ D|2026-11-26T16:30Z|C:-150|D:+130", NOW)
@@ -147,6 +157,278 @@ local other = Import.Plan(pbook, "ML|NFL|phi @ dal|2026-11-26T16:30-05:00|PHI:-1
 eq(other.duplicate, 1, "duplicate check ignores event case")
 local later = Import.Plan(pbook, "ML|NFL|PHI @ DAL|2026-11-26T16:35-05:00|PHI:-150|DAL:+130", NOW)
 eq(later.ok, 1, "same game at a different time is not a duplicate")
+
+-- plan: updating lines. A line that matches an open market with different odds changes its odds ----------
+do
+    local ubook = Model.CreateBook(Model.NewDB(), "U", "Steve", NOW)
+    local function add(kind, event, closes, line, l1, o1, l2, o2)
+        return assert(Bookie.AddMarket(ubook, { sport = "NFL", event = event, type = kind, line = line, closesAt = closes,
+            selections = { { label = l1, odds = o1 }, { label = l2, odds = o2 } } }, NOW))
+    end
+    local T1 = P("2026-11-26T16:30-05:00")
+    local ml1 = add("moneyline", "PHI @ DAL", T1, nil, "PHI", -150, "DAL", 130)
+    local sp1 = add("spread", "PHI @ DAL", T1, -3.5, "PHI", -110, "DAL", -110)
+    local to1 = add("total", "PHI @ DAL", T1, 47.5, "Over", -110, "Under", -110)
+    local line = function(...) return table.concat({ ... }, "|") end
+    local when = "2026-11-26T16:30-05:00"
+
+    local plan = Import.Plan(ubook, table.concat({
+        line("ML", "NFL", "PHI @ DAL", when, "PHI:-160", "DAL:+140"),              -- both sides moved
+        line("SPREAD", "NFL", "PHI @ DAL", when, "-3.5", "PHI:-110", "DAL:-115"),   -- one side moved
+        line("TOTAL", "NFL", "PHI @ DAL", when, "47.5", "Over:-110", "Under:-110"), -- identical
+        line("ML", "NFL", "NYG @ WAS", when, "NYG:-120", "WAS:+100"),               -- new
+        line("ML", "NFL", "OLD @ GAME", "2026-11-19T16:30Z", "OLD:-120", "GAME:+100"), -- already started
+        "garbage",
+    }, "\n"), NOW)
+    eq(plan.ok, 1, "update plan: one new market")
+    eq(plan.updated, 2, "update plan: two updates")
+    eq(plan.duplicate, 1, "update plan: one identical line is a duplicate")
+    eq(plan.started, 1, "update plan: one started game skipped")
+    eq(plan.errors, 1, "update plan: one error")
+    local it = plan.items
+    eq(it[1].status, "update", "ML with new odds is an update")
+    eq(it[1].marketId, ml1.id, "...of the existing ML market")
+    check(it[1].changes[1] == -160 and it[1].changes[2] == 140, "...with both new prices")
+    check(it[1].before[1] == -150 and it[1].before[2] == 130, "...and remembers the old ones for the preview")
+    eq(it[2].status, "update", "spread with one side moved is an update")
+    check(it[2].changes[1] == nil and it[2].changes[2] == -115, "...changing only the side that moved")
+    eq(it[3].status, "duplicate", "an identical line is a duplicate")
+    eq(it[4].status, "ok", "an unknown game is new")
+    eq(it[5].status, "started", "an old game is skipped as started")
+    check(it[5].spec ~= nil and it[5].why:find("started"), "...with the reason")
+    eq(it[6].status, "error", "junk is an error")
+
+    -- the plan itself changes nothing
+    eq(ml1.selections[1].odds, -150, "planning does not touch the book")
+
+    -- never touches a market that is not open
+    Bookie.Lock(ubook, sp1.id)
+    plan = Import.Plan(ubook, line("SPREAD", "NFL", "PHI @ DAL", when, "-3.5", "PHI:-120", "DAL:-100"), NOW)
+    eq(plan.started, 1, "a locked market is skipped, not updated")
+    check(plan.items[1].status == "started" and plan.items[1].why:find("locked"), "...because it is locked: " .. tostring(plan.items[1].why))
+    plan = Import.Plan(ubook, line("SPREAD", "NFL", "PHI @ DAL", when, "-3.5", "PHI:-110", "DAL:-110"), NOW)
+    eq(plan.duplicate, 1, "an identical line for a locked market is a duplicate")
+    Bookie.Settle(ubook, to1.id, 1, NOW)
+    plan = Import.Plan(ubook, line("TOTAL", "NFL", "PHI @ DAL", when, "47.5", "Over:-120", "Under:+100"), NOW)
+    check(plan.started == 1 and plan.items[1].why:find("settled"), "a settled market is skipped: " .. tostring(plan.items[1].why))
+    -- ...and one whose game has started (stored status still open) is skipped too: the line has started
+    plan = Import.Plan(ubook, line("ML", "NFL", "PHI @ DAL", when, "PHI:-170", "DAL:+150"), T1 + 1)
+    check(plan.started == 1 and plan.updated == 0, "after the start nothing is updated")
+
+    -- sides may come in the other order for a moneyline (and a total), never for a spread
+    plan = Import.Plan(ubook, line("ML", "NFL", "PHI @ DAL", when, "DAL:+150", "PHI:-170"), NOW)
+    eq(plan.items[1].status, "update", "swapped order still matches an ML")
+    check(plan.items[1].changes[1] == -170 and plan.items[1].changes[2] == 150, "...and each price goes to the right side")
+    local ubook2 = Model.CreateBook(Model.NewDB(), "U2", "Steve", NOW)
+    assert(Bookie.AddMarket(ubook2, { sport = "NFL", event = "PHI @ DAL", type = "spread", line = -3.5, closesAt = T1,
+        selections = { { label = "PHI", odds = -110 }, { label = "DAL", odds = -110 } } }, NOW))
+    plan = Import.Plan(ubook2, line("SPREAD", "NFL", "PHI @ DAL", when, "-3.5", "DAL:-110", "PHI:-110"), NOW)
+    check(plan.items[1].status == "error" and plan.items[1].err:find("sides are PHI / DAL"), "a swapped spread is a different bet, not an update: " .. tostring(plan.items[1].err))
+    plan = Import.Plan(ubook2, line("SPREAD", "NFL", "PHI @ DAL", when, "-3.5", "Philadelphia:-110", "Dallas:-115"), NOW)
+    check(plan.items[1].status == "error" and plan.errors == 1, "same game and line with different side names: reported, not guessed")
+    plan = Import.Plan(ubook2, line("SPREAD", "NFL", "phi @ dal", when, "-3.5", "phi:-120", "dal:-100"), NOW)
+    eq(plan.items[1].status, "update", "event and side names are matched ignoring case")
+
+    -- a moved spread line updates the game's only spread in place (see the sole-market block below)
+    plan = Import.Plan(ubook2, line("SPREAD", "NFL", "PHI @ DAL", when, "-4", "PHI:-110", "DAL:-110"), NOW)
+    check(plan.items[1].status == "update" and plan.items[1].newLine == -4 and plan.items[1].beforeLine == -3.5,
+          "a different spread line for the game's only spread is an update of its line")
+
+    -- within one paste: the first line wins, later lines for the same market are duplicates
+    plan = Import.Plan(ubook2, table.concat({
+        line("SPREAD", "NFL", "PHI @ DAL", when, "-3.5", "PHI:-120", "DAL:-100"),
+        line("SPREAD", "NFL", "PHI @ DAL", when, "-3.5", "PHI:-130", "DAL:+110"),
+    }, "\n"), NOW)
+    check(plan.items[1].status == "update" and plan.items[2].status == "duplicate", "a repeated line in one paste is a duplicate")
+
+    -- every spec of an "ok" item is accepted by the real AddMarket, every update by the real EditMarket
+    for _, item in ipairs(Import.Plan(ubook, line("ML", "NFL", "NEW @ TEAM", when, "NEW:-120", "TEAM:+100"), NOW).items) do
+        check(item.status == "ok" and Bookie.AddMarket(ubook, item.spec, NOW), "ok item is addable")
+    end
+    plan = Import.Plan(ubook2, line("SPREAD", "NFL", "PHI @ DAL", when, "-3.5", "PHI:-120", "DAL:-100"), NOW)
+    local upd = plan.items[1]
+    check(Bookie.EditMarket(ubook2, upd.marketId, { odds = upd.changes }, NOW), "update item is editable")
+    eq(ubook2.markets[upd.marketId].selections[1].odds, -120, "...and the market now has the new price")
+    plan = Import.Plan(ubook2, line("SPREAD", "NFL", "PHI @ DAL", when, "-3.5", "PHI:-120", "DAL:-100"), NOW)
+    eq(plan.duplicate, 1, "re-importing the same lines afterwards is a duplicate")
+end
+
+-- plan: lines move all day. SPREAD/TOTAL lines match by type + event + close time when the game has
+-- exactly ONE market of that type; with two or more (alternate lines) the exact line is the key. ---------
+do
+    local when = "2026-11-26T16:30-05:00"
+    local T1 = P(when)
+    local line = function(...) return table.concat({ ... }, "|") end
+    local function fresh()
+        local b = Model.CreateBook(Model.NewDB(), "L", "Steve", NOW)
+        local function add(kind, event, closes, ln, l1, o1, l2, o2)
+            return assert(Bookie.AddMarket(b, { sport = "NFL", event = event, type = kind, line = ln, closesAt = closes,
+                selections = { { label = l1, odds = o1 }, { label = l2, odds = o2 } } }, NOW))
+        end
+        return b, add
+    end
+    local SP = function(ln, o1, o2, event) return line("SPREAD", "NFL", event or "PHI @ DAL", when, ln, "PHI:" .. o1, "DAL:" .. o2) end
+    local TO = function(ln, o1, o2, event) return line("TOTAL", "NFL", event or "PHI @ DAL", when, ln, "Over:" .. o1, "Under:" .. o2) end
+
+    -- moved spread: line AND odds updated in place, market identity kept
+    do
+        local b, add = fresh()
+        local sp = add("spread", "PHI @ DAL", T1, -3.5, "PHI", -110, "DAL", -110)
+        local plan = Import.Plan(b, SP("-4.5", "-105", "-115"), NOW)
+        local it = plan.items[1]
+        eq(it.status, "update", "moved spread: update")
+        eq(it.marketId, sp.id, "...of the existing spread")
+        check(it.newLine == -4.5 and it.beforeLine == -3.5, "...with the old and new line")
+        check(it.changes[1] == -105 and it.changes[2] == -115 and it.before[1] == -110, "...and the odds")
+        check(plan.updated == 1 and plan.ok == 0, "counted as updated, not new")
+        -- the update is accepted by the real EditMarket and the market then matches the line
+        assert(Bookie.EditMarket(b, it.marketId, { odds = it.changes, line = it.newLine }, NOW))
+        eq(sp.line, -4.5, "market has the new line")
+        eq(Import.Plan(b, SP("-4.5", "-105", "-115"), NOW).duplicate, 1, "re-importing it is a duplicate")
+        -- the same line with only new odds is an update without a line change
+        local only = Import.Plan(b, SP("-4.5", "-120", "+100"), NOW).items[1]
+        check(only.status == "update" and only.newLine == nil and only.beforeLine == nil, "odds-only move: no line change")
+        -- line moved but prices identical: still an update (line only)
+        local lineOnly = Import.Plan(b, SP("-5", "-105", "-115"), NOW).items[1]
+        check(lineOnly.status == "update" and next(lineOnly.changes) == nil and lineOnly.newLine == -5, "line-only move: update with empty odds changes")
+    end
+
+    -- moved total, and a total never matches a spread (or the other way round)
+    do
+        local b, add = fresh()
+        local to = add("total", "PHI @ DAL", T1, 47.5, "Over", -110, "Under", -110)
+        local sp = add("spread", "PHI @ DAL", T1, -3.5, "PHI", -110, "DAL", -110)
+        local it = Import.Plan(b, TO("49", "-115", "-105"), NOW).items[1]
+        check(it.status == "update" and it.marketId == to.id and it.newLine == 49 and it.beforeLine == 47.5, "moved total updates the total")
+        it = Import.Plan(b, SP("-6", "-110", "-110"), NOW).items[1]
+        check(it.status == "update" and it.marketId == sp.id, "moved spread updates the spread, not the total")
+        -- the game's identity is event + close time: another time, or another event, is another game
+        local other = Import.Plan(b, line("SPREAD", "NFL", "PHI @ DAL", "2026-11-26T20:30-05:00", "-6", "PHI:-110", "DAL:-110"), NOW).items[1]
+        eq(other.status, "ok", "same teams at another time: a new market")
+        other = Import.Plan(b, SP("-6", "-110", "-110", "NYG @ WAS"), NOW).items[1]
+        eq(other.status, "ok", "another event: a new market")
+        -- event matching ignores case and spacing
+        it = Import.Plan(b, SP("-6", "-110", "-110", "  phi @ dal "), NOW).items[1]
+        check(it.status == "update" and it.marketId == sp.id, "event matched ignoring case and spaces")
+    end
+
+    -- two or more markets of that type for the game (alternate lines): the exact line is the key
+    do
+        local b, add = fresh()
+        local main = add("spread", "PHI @ DAL", T1, -3.5, "PHI", -110, "DAL", -110)
+        local alt = add("spread", "PHI @ DAL", T1, -6.5, "PHI", 150, "DAL", -170)
+        local it = Import.Plan(b, SP("-4", "-110", "-110"), NOW).items[1]
+        eq(it.status, "ok", "two spreads: a line that matches neither is a new alternate line")
+        it = Import.Plan(b, SP("-3.5", "-120", "+100"), NOW).items[1]
+        check(it.status == "update" and it.marketId == main.id and it.newLine == nil, "an exact-line match is an odds update")
+        it = Import.Plan(b, SP("-6.5", "+150", "-170"), NOW).items[1]
+        eq(it.status, "duplicate", "an exact, identical line is a duplicate")
+        it = Import.Plan(b, SP("-6.5", "+160", "-180"), NOW).items[1]
+        check(it.status == "update" and it.marketId == alt.id, "the alternate line is updated by its own line")
+        -- a locked alternate line is untouched
+        Bookie.Lock(b, alt.id)
+        it = Import.Plan(b, SP("-6.5", "+160", "-180"), NOW).items[1]
+        check(it.status == "started" and it.why:find("locked"), "a locked alternate line is skipped")
+        -- and a settled market still counts toward "two or more": the other one is not moved
+        local b2, add2 = fresh()
+        local live = add2("total", "PHI @ DAL", T1, 47.5, "Over", -110, "Under", -110)
+        local done = add2("total", "PHI @ DAL", T1, 50.5, "Over", 120, "Under", -140)
+        Bookie.Settle(b2, done.id, 1, NOW)
+        it = Import.Plan(b2, TO("48", "-110", "-110"), NOW).items[1]
+        eq(it.status, "ok", "a settled sibling still counts: the line is a new market, nothing is moved")
+        eq(live.line, 47.5, "(planning moved nothing)")
+    end
+
+    -- a market that is not open is never touched, whatever its line
+    do
+        local b, add = fresh()
+        local sp = add("spread", "PHI @ DAL", T1, -3.5, "PHI", -110, "DAL", -110)
+        Bookie.Lock(b, sp.id)
+        local plan = Import.Plan(b, SP("-4.5", "-105", "-115"), NOW)
+        check(plan.items[1].status == "started" and plan.items[1].why:find("locked") and plan.started == 1 and plan.ok == 0 and plan.updated == 0,
+              "a moved line for a locked spread is skipped, not posted as a new market: " .. tostring(plan.items[1].why))
+        check(Import.Plan(b, SP("-3.5", "-110", "-110"), NOW).items[1].status == "duplicate", "...but an identical line is just a duplicate")
+        Bookie.Settle(b, sp.id, 1, NOW)
+        plan = Import.Plan(b, SP("-4.5", "-105", "-115"), NOW)
+        check(plan.items[1].status == "started" and plan.items[1].why:find("settled"), "settled: skipped")
+        local b3, add3 = fresh()
+        local v = add3("total", "PHI @ DAL", T1, 47.5, "Over", -110, "Under", -110)
+        Bookie.VoidMarket(b3, v.id, NOW)
+        plan = Import.Plan(b3, TO("48.5", "-110", "-110"), NOW)
+        check(plan.items[1].status == "started" and plan.items[1].why:find("void"), "void: skipped")
+        -- the game has started (stored status still open): skipped as started, line irrelevant
+        local b4, add4 = fresh()
+        add4("spread", "PHI @ DAL", T1, -3.5, "PHI", -110, "DAL", -110)
+        plan = Import.Plan(b4, SP("-4.5", "-105", "-115"), T1 + 1)
+        check(plan.items[1].status == "started" and plan.started == 1 and plan.updated == 0, "after the start, nothing moves")
+    end
+
+    -- a moneyline is unchanged: same type + event + time, odds only
+    do
+        local b, add = fresh()
+        local ml = add("moneyline", "PHI @ DAL", T1, nil, "PHI", -150, "DAL", 130)
+        local it = Import.Plan(b, line("ML", "NFL", "PHI @ DAL", when, "PHI:-160", "DAL:+140"), NOW).items[1]
+        check(it.status == "update" and it.marketId == ml.id and it.newLine == nil and it.beforeLine == nil, "ML odds update has no line change")
+        it = Import.Plan(b, line("ML", "NFL", "PHI @ DAL", when, "PHI:-150", "DAL:+130"), NOW).items[1]
+        eq(it.status, "duplicate", "identical ML is a duplicate")
+        Bookie.Lock(b, ml.id)
+        it = Import.Plan(b, line("ML", "NFL", "PHI @ DAL", when, "PHI:-160", "DAL:+140"), NOW).items[1]
+        eq(it.status, "started", "a locked ML is skipped")
+    end
+
+    -- side names must still match, even when the line moved
+    do
+        local b, add = fresh()
+        add("spread", "PHI @ DAL", T1, -3.5, "PHI", -110, "DAL", -110)
+        local it = Import.Plan(b, line("SPREAD", "NFL", "PHI @ DAL", when, "-4.5", "Philadelphia:-110", "Dallas:-110"), NOW).items[1]
+        check(it.status == "error" and it.err:find("sides are PHI / DAL"), "moved line with different side names: an error, not a guess")
+        it = Import.Plan(b, line("SPREAD", "NFL", "PHI @ DAL", when, "-4.5", "DAL:-110", "PHI:-110"), NOW).items[1]
+        eq(it.status, "error", "a swapped spread with a moved line is an error too")
+        local bt, addt = fresh()
+        addt("total", "PHI @ DAL", T1, 47.5, "Over", -110, "Under", -110)
+        it = Import.Plan(bt, line("TOTAL", "NFL", "PHI @ DAL", when, "48.5", "Under:-105", "Over:-115"), NOW).items[1]
+        check(it.status == "update" and it.changes[1] == -115 and it.changes[2] == -105 and it.newLine == 48.5,
+              "a total may list its sides in the other order: prices go to the right sides")
+    end
+
+    -- several lines for one game in one paste
+    do
+        local function paste(b, ...) return Import.Plan(b, table.concat({ ... }, "\n"), NOW).items end
+        local b, add = fresh()
+        local main = add("spread", "PHI @ DAL", T1, -3.5, "PHI", -110, "DAL", -110)
+        -- the main line (unchanged) and an alternate line: the existing line is the match, the other is new
+        local it = paste(b, SP("-3.5", "-115", "-105"), SP("-6.5", "+150", "-170"))
+        check(it[1].status == "update" and it[1].marketId == main.id and it[1].newLine == nil, "paste [main, alt]: main updates its odds")
+        eq(it[2].status, "ok", "paste [main, alt]: the alternate line is new")
+        it = paste(b, SP("-6.5", "+150", "-170"), SP("-3.5", "-115", "-105"))
+        check(it[1].status == "ok" and it[2].status == "update" and it[2].marketId == main.id, "paste [alt, main]: same result in the other order")
+        -- no line equal to the existing one: the first moved line is the update, the rest are new
+        it = paste(b, SP("-4", "-110", "-110"), SP("-6.5", "+150", "-170"))
+        check(it[1].status == "update" and it[1].newLine == -4 and it[1].marketId == main.id, "paste [moved, other]: the first moved line is the update")
+        eq(it[2].status, "ok", "paste [moved, other]: the second is a new market")
+        -- the same moved line twice: update, then duplicate
+        it = paste(b, SP("-4", "-110", "-110"), SP("-4", "-110", "-110"))
+        check(it[1].status == "update" and it[2].status == "duplicate", "a repeated moved line is a duplicate")
+        -- totals behave the same way
+        local bt, addt = fresh()
+        addt("total", "PHI @ DAL", T1, 47.5, "Over", -110, "Under", -110)
+        it = paste(bt, TO("48.5", "-110", "-110"), TO("51.5", "+130", "-150"))
+        check(it[1].status == "update" and it[1].newLine == 48.5 and it[2].status == "ok", "paste of two total lines: first moves, second is new")
+        -- every "ok" and "update" item is accepted by the real AddMarket / EditMarket
+        local bb, addb = fresh()
+        local mm = addb("spread", "PHI @ DAL", T1, -3.5, "PHI", -110, "DAL", -110)
+        for _, item in ipairs(paste(bb, SP("-4", "-105", "-115"), SP("-6.5", "+150", "-170"))) do
+            if item.status == "ok" then assert(Bookie.AddMarket(bb, item.spec, NOW))
+            elseif item.status == "update" then assert(Bookie.EditMarket(bb, item.marketId, { odds = next(item.changes) and item.changes or nil, line = item.newLine }, NOW)) end
+        end
+        eq(mm.line, -4, "applied: the existing market moved")
+        local spreads = 0
+        for _, m2 in pairs(bb.markets) do if m2.type == "spread" then spreads = spreads + 1 end end
+        eq(spreads, 2, "applied: plus the new alternate line")
+        -- and the game now has two spreads, so the next import uses exact lines
+        eq(Import.Plan(bb, SP("-5", "-110", "-110"), NOW).items[1].status, "ok", "afterwards (two spreads) a line matching neither is new")
+    end
+end
 
 -- WoW edit boxes double every "|" (so a pasted line arrives as ML||NFL||...)
 local dbl = Import.Parse("ML||NFL||PHI @ DAL||2026-11-26T16:30-05:00||PHI:-150||DAL:+130\nTOTAL||NFL||PHI @ DAL||2026-11-26T16:30-05:00||47.5||Over:-110||Under:-110", NOW)

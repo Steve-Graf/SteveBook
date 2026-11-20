@@ -6,6 +6,7 @@ assert(loadfile("SteveBook/Odds.lua"))("SteveBook", ns)
 assert(loadfile("SteveBook/Protocol.lua"))("SteveBook", ns)
 local Model = assert(loadfile("SteveBook/Model.lua"))("SteveBook", ns)
 local Bookie = assert(loadfile("SteveBook/Bookie.lua"))("SteveBook", ns)
+assert(loadfile("SteveBook/Import.lua"))("SteveBook", ns)
 local Protocol = ns.Protocol
 
 local realprint = print   -- print is stubbed below to capture chat; failures must still show
@@ -205,6 +206,158 @@ eq(#out, 0, "the book found by its bare code answers through Bookie.Handle (pend
 handlers.JOIN_REQ("Zed", {}, theirs.code)
 eq(theirs.members.Zed, nil, "a request for another character's book is still ignored")
 drain()
+
+-- parlays through the glue: ACK/REJECT with legs, chat, settle -> MARKET + SYNC for the bettor ----------------
+do
+    local function addMl(event, o1, o2)
+        return assert(Net.AddMarket(book, { sport = "NBA", event = event, type = "moneyline", closesAt = T + 3600,
+            selections = { { label = "H", odds = o1 }, { label = "A", odds = o2 } } }))
+    end
+    local pa, pb = addMl("AAA @ BBB", 150, -170), addMl("CCC @ DDD", -200, 170)
+    local spread = assert(Net.AddMarket(book, { sport = "NBA", event = "AAA @ BBB", type = "spread", line = -3.5, closesAt = pa.closesAt,
+        selections = { { label = "H", odds = -110 }, { label = "A", odds = -110 } } }))
+    drain(); chatText()
+    local function leg(m, sel, odds) return { marketId = m.id, selectionId = sel, odds = odds or m.selections[sel].odds } end
+
+    handlers.BET_PLACE("Alice", { ref = "par1", stake = 2000, legs = { leg(pa, 1), leg(pb, 1) } }, book.code)
+    s = drain()
+    check(#s == 1 and s[1].type == "BET_ACK" and s[1].to == "Alice" and s[1].payload.bet.legs and #s[1].payload.bet.legs == 2, "a parlay is acked with its legs")
+    local expectOdds = ns.Odds.ParlayOdds({ 150, -200 })
+    check(chatText():find("Alice bet 20s on a 2%-leg parlay %(%+" .. expectOdds .. "%)"), "chat announces the parlay")
+    local parlayBet = s[1].payload.bet
+
+    handlers.BET_PLACE("Alice", { ref = "par2", stake = 2000, legs = { leg(pa, 1), leg(pb, 1, -210) } }, book.code)
+    s = drain()
+    check(#s == 1 and s[1].type == "BET_REJECT" and s[1].payload.reason == "odds_changed" and s[1].payload.currentOdds == -200
+          and s[1].payload.legIndex == 2, "stale leg odds: BET_REJECT with currentOdds and legIndex 2")
+    handlers.BET_PLACE("Alice", { ref = "par3", stake = 2000, legs = { leg(pa, 1), leg(spread, 1) } }, book.code)
+    s = drain()
+    check(#s == 1 and s[1].payload.reason == "parlay_conflict" and s[1].payload.legIndex == 2, "ML + spread of one game: parlay_conflict, legIndex 2")
+    eq(chatText(), "", "rejected parlays are not announced")
+
+    -- settling one leg: MARKET to everyone, and a SYNC to Alice carrying the updated leg status
+    Net.Settle(book, pa.id, 1)
+    s = drain()
+    check(#s == 2 and s[1].type == "MARKET" and s[1].to == nil and s[2].type == "SYNC" and s[2].to == "Alice", "settling a leg: MARKET then Alice's SYNC")
+    local synced
+    for _, b in ipairs(s[2].payload.bets) do if b.legs then synced = b end end
+    check(synced and synced.status == "accepted" and synced.legs[1].status == "won" and synced.legs[2].status == "pending", "the SYNC shows leg 1 won, parlay still open")
+    local balBefore = s[2].payload.balance
+    -- the other leg loses: the parlay is lost, balance moves by the stake
+    Net.Settle(book, pb.id, 2)
+    s = drain()
+    for _, b in ipairs(s[2].payload.bets) do if b.legs then synced = b end end
+    check(synced.status == "lost" and s[2].payload.balance == balBefore - 2000, "a lost leg: SYNC shows the lost parlay and the new balance")
+    -- the SYNC carries every leg's market even though both are settled
+    local have = {}
+    for _, mk2 in ipairs(s[2].payload.markets) do have[mk2.id] = true end
+    check(have[pa.id] and have[pb.id], "the SYNC includes the parlay's leg markets")
+    -- correcting leg 2 re-grades the parlay and re-syncs
+    Net.Settle(book, pb.id, 1)
+    s = drain()
+    for _, b in ipairs(s[2].payload.bets) do if b.legs then synced = b end end
+    check(synced.status == "won" and s[2].payload.balance == balBefore + ns.Odds.ParlayProfit(2000, { 150, -200 }), "correcting the result re-grades the parlay")
+    local vb2 = Net.VoidBet(book, parlayBet.id)
+    s = drain()
+    check(vb2 and #s == 1 and s[1].type == "SYNC" and s[1].payload.balance == balBefore, "VoidBet on a parlay re-syncs the bettor, win reversed")
+end
+
+-- import through the glue: new markets are added, matching open ones updated, the rest skipped ------------------
+do
+    local ML = function(event, when, a, b) return ("ML|NBA|%s|%s|%s|%s"):format(event, when, a, b) end
+    local when = "2026-11-26T16:30-05:00"
+    drain(); chatText()
+    local r = Net.ApplyImport(book, ML("IMP @ ORT", when, "IMP:-120", "ORT:+100"))
+    check(r.added == 1 and r.updated == 0 and #r.failed == 0, "import: one new market")
+    s = drain()
+    check(#s == 1 and s[1].type == "MARKET" and s[1].to == nil, "...broadcast as a MARKET")
+    local imported
+    for _, mk2 in pairs(book.markets) do if mk2.event == "IMP @ ORT" then imported = mk2 end end
+    check(imported and imported.selections[1].odds == -120, "...with the imported odds")
+
+    -- a bet at the old price, then the line moves through an import
+    handlers.BET_PLACE("Alice", { ref = "imp1", marketId = imported.id, selectionId = 1, stake = 1000, odds = -120 }, book.code)
+    drain()
+    local text = table.concat({
+        ML("IMP @ ORT", when, "IMP:-135", "ORT:+115"),                   -- update
+        ML("NEW @ GAM", when, "NEW:-110", "GAM:-110"),                    -- new
+        ML("OLD @ GAM", "1970-01-01T00:00Z", "OLD:-110", "GAM:-110"),    -- already started
+    }, "\n")
+    r = Net.ApplyImport(book, text)
+    check(r.added == 1 and r.updated == 1 and #r.failed == 0, "import: one new, one updated")
+    eq(r.plan.started, 1, "...and one skipped as started")
+    eq(imported.selections[1].odds, -135, "the open market's odds were updated")
+    eq(imported.selections[2].odds, 115, "...both sides")
+    eq(book.bets[#book.bets] and book.bets[#book.bets].odds or -120, -120, "(the existing bet keeps its odds)")
+    local bobBet
+    for _, b in pairs(book.bets) do if b.ref == "imp1" then bobBet = b end end
+    eq(bobBet and bobBet.odds, -120, "an existing bet keeps the odds it was accepted at")
+    s = drain()
+    local types = {}
+    for _, x in ipairs(s) do types[#types + 1] = x.type .. ">" .. tostring(x.payload.market and x.payload.market.event) end
+    eq(#s, 2, "two MARKET broadcasts (the update and the new market): " .. table.concat(types, ","))
+    check(s[1].payload.market.selections[1].odds == -135, "the update is broadcast with the new odds")
+
+    -- a stale preview cannot double-post: the same text now has nothing left to do
+    r = Net.ApplyImport(book, text)
+    check(r.added == 0 and r.updated == 0 and r.plan.duplicate == 2, "importing the same text again changes nothing")
+    eq(#drain(), 0, "...and broadcasts nothing")
+
+    -- a market that was locked meanwhile is not touched
+    Net.LockMarket(book, imported.id); drain()
+    r = Net.ApplyImport(book, ML("IMP @ ORT", when, "IMP:-150", "ORT:+130"))
+    check(r.updated == 0 and r.plan.started == 1 and imported.selections[1].odds == -135, "a locked market is never updated by an import")
+
+    -- a moved spread line: the line AND odds change in place, broadcast whole; bets keep their line
+    local SPL = function(ln, a, b) return ("SPREAD|NBA|SPR @ EAD|%s|%s|SPR:%s|EAD:%s"):format(when, ln, a, b) end
+    r = Net.ApplyImport(book, SPL("-3.5", "-110", "-110")); drain()
+    check(r.added == 1, "setup: the spread is posted")
+    local spr
+    for _, mk2 in pairs(book.markets) do if mk2.event == "SPR @ EAD" then spr = mk2 end end
+    handlers.BET_PLACE("Alice", { ref = "sl1", marketId = spr.id, selectionId = 1, stake = 1000, odds = -110 }, book.code)
+    local sbet
+    for _, b in pairs(book.bets) do if b.ref == "sl1" then sbet = b end end
+    check(sbet and sbet.line == -3.5 and sbet.odds == -110, "setup: the bet was taken at -3.5 (-110)")
+    drain(); chatText()
+    r = Net.ApplyImport(book, SPL("-5", "-105", "-115"))
+    check(r.added == 0 and r.updated == 1 and #r.failed == 0, "a moved spread line is an update, not a new market")
+    eq(spr.line, -5, "the market's line moved")
+    check(spr.selections[1].odds == -105 and spr.selections[2].odds == -115, "...with the new odds")
+    s = drain()
+    check(#s == 1 and s[1].type == "MARKET" and s[1].to == nil and s[1].payload.market.id == spr.id and s[1].payload.market.line == -5,
+          "the move is broadcast as a MARKET carrying the new line")
+    check(sbet.line == -3.5 and sbet.odds == -110, "the existing bet keeps the line and odds it was accepted at")
+    -- a line-only move (same prices) applies too
+    r = Net.ApplyImport(book, SPL("-6", "-105", "-115"))
+    check(r.updated == 1 and spr.line == -6 and spr.selections[1].odds == -105, "a line-only move applies")
+    drain()
+    -- with a deliberate alternate line the game has two spreads: a line matching neither is a new market,
+    -- an exact line is an update of that one
+    local alt = assert(Net.AddMarket(book, { sport = "NBA", event = "SPR @ EAD", type = "spread", line = -9, closesAt = spr.closesAt,
+        selections = { { label = "SPR", odds = 120 }, { label = "EAD", odds = -140 } } })); drain()
+    r = Net.ApplyImport(book, SPL("-12", "+200", "-240"))
+    check(r.added == 1 and r.updated == 0 and spr.line == -6 and alt.line == -9, "a line matching neither of two spreads is a new market; nothing moves")
+    s = drain()
+    check(#s == 1 and s[1].payload.market.id ~= spr.id and s[1].payload.market.id ~= alt.id and s[1].payload.market.line == -12, "...and it is broadcast")
+    r = Net.ApplyImport(book, SPL("-9", "+125", "-145"))
+    check(r.updated == 1 and r.added == 0 and alt.selections[1].odds == 125 and alt.line == -9, "an exact line is an update of that market")
+    drain()
+    -- a bet placed on the line the bettor saw before the move is rejected with the current terms
+    handlers.BET_PLACE("Alice", { ref = "stale-line", marketId = spr.id, selectionId = 1, stake = 1000, odds = -105, line = -5 }, book.code)
+    s = drain()
+    check(#s == 1 and s[1].type == "BET_REJECT" and s[1].to == "Alice" and s[1].payload.reason == "odds_changed"
+          and s[1].payload.currentLine == -6 and s[1].payload.currentOdds == -105, "a stale line is rejected via the handler with currentOdds and currentLine")
+    handlers.BET_PLACE("Alice", { ref = "fresh-line", marketId = spr.id, selectionId = 1, stake = 1000, odds = -105, line = -6 }, book.code)
+    s = drain()
+    check(#s == 1 and s[1].type == "BET_ACK" and s[1].payload.bet.line == -6, "re-confirmed at the current line: accepted, bet.line recorded")
+    chatText()
+
+    -- a locked spread is not moved
+    Net.LockMarket(book, spr.id); drain()
+    r = Net.ApplyImport(book, SPL("-6", "-120", "+100"))
+    check(r.updated == 0 and r.added == 0 and r.plan.started == 1 and spr.selections[1].odds == -105, "a locked spread is left alone")
+    eq(#drain(), 0, "...and nothing is broadcast")
+end
 
 -- a failed Comm.Send is surfaced, not swallowed
 local realSend = ns.Comm.Send

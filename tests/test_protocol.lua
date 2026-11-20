@@ -62,4 +62,14 @@ do
     check(P.Wrap("BET_REJECT", "X", { ref = "p", reason = "odds_changed", currentOdds = -120, legIndex = 1 }), "odds_changed reject names the leg")
 end
 
+-- lines (spread/total) travel with the bet so a moved line is caught
+do
+    check(P.Wrap("BET_PLACE", "X", { ref = "l1", stake = 2000, marketId = 1, selectionId = 1, odds = -110, line = -3.5 }), "single bet with a line")
+    check(not P.Wrap("BET_PLACE", "X", { ref = "l1", stake = 2000, marketId = 1, selectionId = 1, odds = -110, line = "-3.5" }), "line must be a number")
+    check(P.Wrap("BET_PLACE", "X", { ref = "l2", stake = 2000, legs = { { marketId = 1, selectionId = 1, odds = -110, line = 5.5 }, { marketId = 2, selectionId = 2, odds = 130 } } }), "parlay legs may carry a line")
+    check(not P.Wrap("BET_PLACE", "X", { ref = "l2", stake = 2000, legs = { { marketId = 1, selectionId = 1, odds = -110, line = "x" }, { marketId = 2, selectionId = 2, odds = 130 } } }), "a non-numeric leg line is rejected")
+    check(not P.Wrap("BET_PLACE", "X", { ref = "l2", stake = 2000, line = 1.5, legs = { { marketId = 1, selectionId = 1, odds = -110 }, { marketId = 2, selectionId = 2, odds = 130 } } }), "a parlay's line is on its legs")
+    check(P.Wrap("BET_REJECT", "X", { ref = "l1", reason = "odds_changed", currentOdds = -110, currentLine = -4.5 }), "odds_changed can carry currentLine")
+end
+
 if fails == 0 then print("protocol: all tests passed") else os.exit(1) end

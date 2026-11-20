@@ -242,15 +242,95 @@ function Bookie.Credit(book, player)
     return owed, openRisk
 end
 
--- req = { marketId, selectionId, stake, odds (as the bettor saw them), ref (client nonce) }
--- Returns bet on success. On failure returns nil, reason, extra where:
+-- The bettor saw a spread/total line and the market's line is different now. Only compared when the
+-- request carries a line (older clients send none) and the market has one (a moneyline has none).
+local function lineMoved(seen, market)
+    return seen ~= nil and market.line ~= nil and seen ~= market.line
+end
+
+-- Credit limit check shared by singles and parlays: the stake is the amount at risk.
+-- Returns nil when the stake fits, else "credit_limit", copper still available.
+local function creditShortfall(book, member, bettor, stake)
+    if not member.creditLimit then return nil end
+    local owed, openRisk = Bookie.Credit(book, bettor)
+    local available = member.creditLimit - owed - openRisk
+    if stake > available then return "credit_limit", math.max(0, available) end
+end
+
+-- A parlay (SPEC §3a): req.legs = { { marketId, selectionId, odds }, ... } and no marketId,
+-- selectionId or odds of its own. Checked in this order: leg count, then each leg in turn (market
+-- exists, market takes bets, selection exists, odds still current), then which legs may share a
+-- parlay, then the stake rule, then the credit limit.
+local function placeParlay(book, bettor, member, req, now)
+    local legs = req.legs
+    if type(legs) ~= "table" or req.marketId ~= nil or req.selectionId ~= nil or req.odds ~= nil or req.line ~= nil then
+        return nil, "bad_request"                -- a parlay's odds and lines belong on its legs
+    end
+    local okLegs, legReason = Odds.ParlayLegCheck(#legs)
+    if not okLegs then return nil, legReason end
+
+    local picked, oddsList = {}, {}
+    for i = 1, #legs do
+        local leg = legs[i]
+        if type(leg) ~= "table" then return nil, "bad_request", nil, i end
+        local m = book.markets[leg.marketId]
+        if not m then return nil, "no_market", nil, i end
+        if not Bookie.IsBettable(m, now) then return nil, "market_closed", nil, i end
+        local sel = m.selections[leg.selectionId]
+        if not sel then return nil, "bad_selection", nil, i end
+        if leg.odds ~= sel.odds or lineMoved(leg.line, m) then return nil, "odds_changed", sel.odds, i, m.line end
+        picked[i] = { market = m, sel = sel }
+        oddsList[i] = sel.odds
+    end
+
+    local shapes = {}
+    for i, p in ipairs(picked) do
+        shapes[i] = { id = p.market.id, event = p.market.event, closesAt = p.market.closesAt, type = p.market.type }
+    end
+    local okMix, why, _, j = Odds.ParlayConflict(shapes)
+    if not okMix then return nil, "parlay_conflict", why, j end    -- extra = "duplicate_market" | "same_game_conflict"
+
+    if not Odds.StakeCheck(req.stake) then return nil, "bad_stake" end
+    local short, available = creditShortfall(book, member, bettor, req.stake)
+    if short then return nil, short, available end
+
+    local bookLegs = {}
+    for i, p in ipairs(picked) do
+        bookLegs[i] = { marketId = p.market.id, selectionId = p.sel.id, odds = p.sel.odds, status = "pending",
+                        line = p.market.type ~= "moneyline" and p.market.line or nil }
+    end
+    local bet = {
+        id = nextId(book, "nextBetId"),
+        bettor = bettor,
+        stake = req.stake,
+        odds = Odds.ParlayOdds(oddsList),
+        legs = bookLegs,
+        status = "accepted",
+        placedAt = now,
+        ref = req.ref,
+    }
+    book.bets[bet.id] = bet
+    touch(book)
+    return bet
+end
+
+-- req = { marketId, selectionId, stake, odds (as the bettor saw them), line (spread/total: the line
+--         the bettor saw), ref (client nonce) }
+--    or { legs = { {marketId, selectionId, odds, line}, ... }, stake, ref }   (a parlay, SPEC §3a)
+-- Returns bet on success. On failure returns nil, reason, extra, legIndex, currentLine where:
 --   "not_member"      not an active member
+--   "bad_request"     malformed request (a parlay with too few or too many legs, say)
 --   "no_market"       unknown market id
 --   "market_closed"   not open, or past closesAt
 --   "bad_selection"   unknown selection id
 --   "bad_stake"       fails Odds.StakeCheck (whole silver, at most Odds.MAX_STAKE)
---   "odds_changed"    extra = current odds (UI should re-confirm)
+--   "odds_changed"    extra = current odds, currentLine = the market's current line (nil for a moneyline)
+--                     (UI should re-confirm). Also returned when the odds are unchanged but the line the
+--                     bettor saw is not the market's line any more; a request without a line is not checked.
 --   "credit_limit"    extra = copper still available under the member's limit
+--   "parlay_conflict" two legs may not share a parlay; extra = "duplicate_market" or
+--                     "same_game_conflict" (local detail, not sent), legIndex = the later leg of the pair
+-- legIndex (parlays only) is the 1-based leg the reason is about.
 -- A repeated `ref` from the same bettor returns the original bet plus a third value `true`
 -- (idempotent re-ack: the caller re-sends BET_ACK but must not treat it as a new bet), so a
 -- retried BET_PLACE never double-books.
@@ -265,25 +345,25 @@ function Bookie.PlaceBet(book, bettor, req, now)
         end
     end
 
+    if req.legs ~= nil then return placeParlay(book, bettor, member, req, now) end
+
     local m = book.markets[req.marketId]
     if not m then return nil, "no_market" end
     if m.status ~= "open" or now >= m.closesAt then return nil, "market_closed" end
     local sel = m.selections[req.selectionId]
     if not sel then return nil, "bad_selection" end
     if not Odds.StakeCheck(req.stake) then return nil, "bad_stake" end   -- shared rule: whole silver, max 1g
-    if req.odds ~= sel.odds then return nil, "odds_changed", sel.odds end
+    if req.odds ~= sel.odds or lineMoved(req.line, m) then return nil, "odds_changed", sel.odds, nil, m.line end
 
-    if member.creditLimit then
-        local owed, openRisk = Bookie.Credit(book, bettor)
-        local available = member.creditLimit - owed - openRisk
-        if req.stake > available then return nil, "credit_limit", math.max(0, available) end
-    end
+    local short, available = creditShortfall(book, member, bettor, req.stake)
+    if short then return nil, short, available end
 
     local bet = {
         id = nextId(book, "nextBetId"),
         bettor = bettor,
         marketId = m.id,
         selectionId = sel.id,
+        line = m.type ~= "moneyline" and m.line or nil,   -- the line it was accepted at (a later edit moves the market's)
         stake = req.stake,
         odds = sel.odds,
         status = "accepted",
@@ -320,12 +400,33 @@ local function resolve(book, bet, outcome, now)
     return delta
 end
 
+-- Market ids a bet refers to: its own, or one per parlay leg (in leg order).
+function Bookie.BetMarketIds(bet)
+    if bet.legs then
+        local ids = {}
+        for i, leg in ipairs(bet.legs) do ids[i] = leg.marketId end
+        return ids
+    end
+    return { bet.marketId }
+end
+
+local function touchesMarket(bet, marketId)
+    if bet.legs then
+        for _, leg in ipairs(bet.legs) do
+            if leg.marketId == marketId then return true end
+        end
+        return false
+    end
+    return bet.marketId == marketId
+end
+
+-- Every bet a settlement of this market affects: singles on it and parlays with a leg on it.
 local function marketBets(book, marketId)
     local list = {}
     for _, b in pairs(book.bets) do
         -- A bet the bookie voided on its own (bet.voided) stays void when its market is settled
         -- or voided later; only a market-level void is undone by re-settling.
-        if b.marketId == marketId and b.status ~= "rejected" and not b.voided then list[#list + 1] = b end
+        if b.status ~= "rejected" and not b.voided and touchesMarket(b, marketId) then list[#list + 1] = b end
     end
     table.sort(list, function(a, c) return a.id < c.id end)
     return list
@@ -333,23 +434,71 @@ end
 
 local FINAL = { won = true, lost = true, push = true, void = true }
 
--- result = winning selection id, or "push". Works on open, locked, or already-settled/void
--- markets: a wrong result can be corrected by settling again (old effects are reversed first).
--- Returns a list of { bet = bet, delta = copper } so the caller can send BALANCE/chat.
-function Bookie.Settle(book, marketId, result, now)
-    local m = book.markets[marketId]
-    if not m then return nil, "no_market" end
-    if result ~= "push" and not m.selections[result] then return nil, "bad_result" end
+-- Combined American odds of every leg, as quoted when the parlay was accepted.
+local function quotedOdds(bet)
+    local list = {}
+    for i, leg in ipairs(bet.legs) do list[i] = leg.odds end
+    return Odds.ParlayOdds(list)
+end
 
+-- Re-grade a parlay from its legs and apply the ledger effect. Any earlier effect must already
+-- be reversed (status "accepted", no delta). A lost leg loses the parlay at once; otherwise it
+-- stays "accepted" (no ledger effect) until every leg is resolved. A won parlay's `odds` become
+-- the price it actually paid (push and void legs drop out); in every other state it shows the
+-- quoted price. Returns the ledger delta.
+local function regrade(book, bet, now)
+    local state, delta, effective = Odds.GradeParlay(bet.stake, bet.legs)
+    if not state or state == "pending" then
+        bet.status, bet.delta, bet.settledAt = "accepted", nil, nil
+        bet.odds = quotedOdds(bet)
+        return 0
+    end
+    bet.status = state
+    bet.delta = delta
+    bet.settledAt = now
+    bet.odds = state == "won" and effective or quotedOdds(bet)
+    if delta ~= 0 then
+        ledgerOf(book, bet.bettor).balance = ledgerOf(book, bet.bettor).balance + delta
+    end
+    return delta
+end
+
+-- Settle every affected bet for one market. `legOutcome(leg)` gives a parlay leg's new status;
+-- `outcome(bet)` gives a single bet's.
+local function applyToMarketBets(book, marketId, now, outcome, legOutcome)
     local bets = marketBets(book, marketId)
     for _, b in ipairs(bets) do
         if FINAL[b.status] then reverse(book, b) end
     end
     local out = {}
     for _, b in ipairs(bets) do
-        local outcome = (result == "push") and "push" or (b.selectionId == result and "won" or "lost")
-        out[#out + 1] = { bet = b, delta = resolve(book, b, outcome, now) }
+        local delta
+        if b.legs then
+            for _, leg in ipairs(b.legs) do
+                if leg.marketId == marketId then leg.status = legOutcome(leg) end
+            end
+            delta = regrade(book, b, now)
+        else
+            delta = resolve(book, b, outcome(b), now)
+        end
+        out[#out + 1] = { bet = b, delta = delta }
     end
+    return out
+end
+
+-- result = winning selection id, or "push". Works on open, locked, or already-settled/void
+-- markets: a wrong result can be corrected by settling again (old effects are reversed first, and
+-- every parlay with a leg on the market is re-graded).
+-- Returns a list of { bet = bet, delta = copper } so the caller can send BALANCE/chat. A parlay
+-- that is still waiting on other legs is in the list with delta 0 (its leg status changed).
+function Bookie.Settle(book, marketId, result, now)
+    local m = book.markets[marketId]
+    if not m then return nil, "no_market" end
+    if result ~= "push" and not m.selections[result] then return nil, "bad_result" end
+
+    local out = applyToMarketBets(book, marketId, now,
+        function(b) return (result == "push") and "push" or (b.selectionId == result and "won" or "lost") end,
+        function(leg) return (result == "push") and "push" or (leg.selectionId == result and "won" or "lost") end)
     m.status = "settled"
     m.result = result
     m.settledAt = now
@@ -357,18 +506,13 @@ function Bookie.Settle(book, marketId, result, now)
     return out
 end
 
--- Void a whole market: every bet on it is refunded (delta 0). Also reverses a prior settlement.
+-- Void a whole market: every bet on it is refunded (delta 0); a parlay leg on it drops out and
+-- the rest are re-priced. Also reverses a prior settlement.
 function Bookie.VoidMarket(book, marketId, now)
     local m = book.markets[marketId]
     if not m then return nil, "no_market" end
-    local bets = marketBets(book, marketId)
-    for _, b in ipairs(bets) do
-        if FINAL[b.status] then reverse(book, b) end
-    end
-    local out = {}
-    for _, b in ipairs(bets) do
-        out[#out + 1] = { bet = b, delta = resolve(book, b, "void", now) }
-    end
+    local out = applyToMarketBets(book, marketId, now,
+        function() return "void" end, function() return "void" end)
     m.status = "void"
     m.result = nil
     m.settledAt = now
@@ -376,12 +520,13 @@ function Bookie.VoidMarket(book, marketId, now)
     return out
 end
 
--- Void a single bet (reverses its settlement if it had one).
+-- Void a single bet, or a whole parlay (reverses its settlement if it had one).
 function Bookie.VoidBet(book, betId, now)
     local b = book.bets[betId]
     if not b then return nil, "no_bet" end
     if FINAL[b.status] then reverse(book, b) end
     if b.status ~= "accepted" then return nil, "bad_status" end
+    if b.legs then b.odds = quotedOdds(b) end     -- a won parlay's odds were its repriced ones
     resolve(book, b, "void", now)
     b.voided = true      -- sticky: later Settle/VoidMarket on its market leave it alone
     touch(book)
@@ -416,7 +561,7 @@ end
 -- Reporting and sync
 ------------------------------------------------------------------------------------------
 
--- The bookie's net result per outcome of a market, over accepted bets:
+-- The bookie's net result per outcome of a market, over accepted single bets (parlays excluded):
 -- { staked = total copper, net = { [selectionId] = copper, push = 0 } }
 -- net[i] > 0 means the book wins that much if selection i wins; < 0 means it pays out.
 function Bookie.MarketExposure(book, marketId)
@@ -425,7 +570,9 @@ function Bookie.MarketExposure(book, marketId)
     local staked, net = 0, { push = 0 }
     for i in ipairs(m.selections) do net[i] = 0 end
     for _, b in ipairs(marketBets(book, marketId)) do
-        if b.status == "accepted" then
+        -- A parlay's stake rides on several markets at once, so it is not attributed to any one of
+        -- them (it is counted once in OpenStakes and in the member's open risk).
+        if b.status == "accepted" and not b.legs then
             staked = staked + b.stake
             local profit = Odds.Profit(b.stake, b.odds)
             for i in ipairs(m.selections) do
@@ -441,7 +588,8 @@ end
 -- Bets: this player's open bets, always, plus settled/void bets from the last BET_HISTORY_KEEP
 -- (a bet settled exactly that long ago is kept). The balance is absolute, so dropping old history
 -- never changes it. Markets: those that still take bets (open and before closesAt), plus every
--- market one of the INCLUDED bets refers to, whatever its status (so My Bets can name the event).
+-- market one of the INCLUDED bets refers to (for a parlay, the market of each leg), whatever its
+-- status (so My Bets can name the event).
 -- Games that have started or finished are never presented to bettors who did not bet on them.
 -- Why the cap: a SYNC grows ~260 bytes per bet and ChatThrottleLib moves ~800 bytes/s.
 function Bookie.Snapshot(book, player, now)
@@ -449,7 +597,7 @@ function Bookie.Snapshot(book, player, now)
     for _, b in pairs(book.bets) do
         if b.bettor == player and (b.status == "accepted" or (b.settledAt or now) >= now - BET_HISTORY_KEEP) then
             bets[#bets + 1] = b
-            bettedOn[b.marketId] = true
+            for _, id in ipairs(Bookie.BetMarketIds(b)) do bettedOn[id] = true end   -- a parlay brings every leg's market
         end
     end
     table.sort(bets, function(a, c) return a.id < c.id end)
@@ -525,19 +673,21 @@ function Bookie.Handle(book, sender, msgType, payload, now)
         end
 
     elseif msgType == "BET_PLACE" then
-        local bet, reason, extra = Bookie.PlaceBet(book, sender, {
+        local bet, reason, extra, legIndex, currentLine = Bookie.PlaceBet(book, sender, {
             marketId = payload.marketId, selectionId = payload.selectionId,
-            stake = payload.stake, odds = payload.odds, ref = payload.ref,
+            stake = payload.stake, odds = payload.odds, line = payload.line, ref = payload.ref,
+            legs = payload.legs,      -- a parlay has these instead of the three before
         }, now)
         if bet then
             reply("BET_ACK", { ref = payload.ref, bet = bet, balance = Bookie.Balance(book, sender) })
             if not extra then events[#events + 1] = { kind = "bet", bet = bet } end   -- extra = repeat of an earlier ref
         else
             local r = { ref = payload.ref, reason = reason }
-            if reason == "odds_changed" then r.currentOdds = extra end
+            if reason == "odds_changed" then r.currentOdds = extra; r.currentLine = currentLine end
             if reason == "credit_limit" then r.available = extra end
+            r.legIndex = legIndex                  -- parlays: which leg the reason is about
             reply("BET_REJECT", r)
-            events[#events + 1] = { kind = "bet_rejected", name = sender, reason = reason }
+            events[#events + 1] = { kind = "bet_rejected", name = sender, reason = reason, legIndex = legIndex }
         end
 
     elseif msgType == "PING" then
@@ -735,14 +885,15 @@ end
 
 Bookie.BET_STATUSES = { "accepted", "won", "lost", "push", "void" }
 
--- Bets matching filter = { status, bettor, marketId } (each optional), newest first.
+-- Bets matching filter = { status, bettor, marketId } (each optional), newest first. A market
+-- filter also matches parlays with a leg on that market.
 function Bookie.ListBets(book, filter)
     filter = filter or {}
     local list = {}
     for _, b in pairs(book.bets) do
         if (not filter.status or b.status == filter.status)
            and (not filter.bettor or b.bettor == filter.bettor)
-           and (not filter.marketId or b.marketId == filter.marketId) then
+           and (not filter.marketId or touchesMarket(b, filter.marketId)) then
             list[#list + 1] = b
         end
     end
@@ -755,11 +906,91 @@ function Bookie.BetFilterChoices(book)
     local bettors, markets, seenB, seenM = {}, {}, {}, {}
     for _, b in pairs(book.bets) do
         if not seenB[b.bettor] then seenB[b.bettor] = true; bettors[#bettors + 1] = b.bettor end
-        if not seenM[b.marketId] then seenM[b.marketId] = true; markets[#markets + 1] = b.marketId end
+        for _, id in ipairs(Bookie.BetMarketIds(b)) do
+            if not seenM[id] then seenM[id] = true; markets[#markets + 1] = id end
+        end
     end
     table.sort(bettors)
     table.sort(markets)
     return { bettors = bettors, markets = markets }
+end
+
+local function signedLine(n)
+    if n == 0 then n = 0 end                       -- no "-0"
+    return (n > 0 and "+" or "") .. ("%g"):format(n)
+end
+
+-- What picking a selection means, for lists: "PHI ML", "PHI -3.5", "DAL +3.5", "Over 47.5".
+-- (A spread's line is for selection 1; selection 2 gets the opposite.) "?" if it does not exist.
+-- `line` (optional) is the line a bet was accepted at (bet.line, leg.line); the market's own line
+-- may have moved since.
+function Bookie.SelectionText(market, selectionId, line)
+    local sel = market and market.selections and market.selections[selectionId]
+    if not sel then return "?" end
+    line = line or market.line
+    if market.type == "spread" and line then
+        return ("%s %s"):format(sel.label, signedLine(selectionId == 1 and line or -line))
+    elseif market.type == "total" and line then
+        return ("%s %g"):format(sel.label, line)
+    end
+    return sel.label .. " ML"
+end
+
+-- A parlay's legs for display: { { index, event, pick, odds, status } ... } in leg order.
+-- Empty for a single bet. `status` is the leg's own: pending | won | lost | push | void.
+function Bookie.LegRows(book, bet)
+    local rows = {}
+    for i, leg in ipairs(bet.legs or {}) do
+        local m = book.markets[leg.marketId]
+        rows[i] = { index = i, event = m and m.event or "?", pick = Bookie.SelectionText(m, leg.selectionId, leg.line),
+                    odds = leg.odds, status = leg.status or "pending" }
+    end
+    return rows
+end
+
+-- Stakes on open bets: { singles, parlays, total, count } in copper (count = open bets).
+function Bookie.OpenStakes(book)
+    local r = { singles = 0, parlays = 0, count = 0 }
+    for _, b in pairs(book.bets) do
+        if b.status == "accepted" then
+            r.count = r.count + 1
+            if b.legs then r.parlays = r.parlays + b.stake else r.singles = r.singles + b.stake end
+        end
+    end
+    r.total = r.singles + r.parlays
+    return r
+end
+
+-- The Markets table: markets still live (open or locked) by close time, then the most recent
+-- finished ones (at most `finalsShown`, newest first). Row: { market, state, staked, exposure }
+-- where state is "open" | "locked" | "started" | "settled" | "void". "started" means the close
+-- time has passed (whatever the stored status says; the Sweep ticker may lag): only Settle and
+-- Void remain. `staked` and `exposure` count single bets only (see MarketExposure).
+-- Returns rows, liveCount.
+function Bookie.MarketRows(book, now, finalsShown)
+    local live, final = {}, {}
+    for _, m in pairs(book.markets) do
+        if m.status == "open" or m.status == "locked" then live[#live + 1] = m else final[#final + 1] = m end
+    end
+    table.sort(live, function(a, b)
+        if a.closesAt ~= b.closesAt then return a.closesAt < b.closesAt end
+        return a.id < b.id
+    end)
+    table.sort(final, function(a, b)
+        local x, y = a.settledAt or 0, b.settledAt or 0
+        if x ~= y then return x > y end
+        return a.id > b.id
+    end)
+    local rows = {}
+    local function add(m)
+        local state = m.status
+        if (m.status == "open" or m.status == "locked") and Bookie.HasStarted(m, now) then state = "started" end
+        local ex = Bookie.MarketExposure(book, m.id)
+        rows[#rows + 1] = { market = m, state = state, staked = ex and ex.staked or 0, exposure = ex }
+    end
+    for _, m in ipairs(live) do add(m) end
+    for i = 1, math.min(#final, finalsShown or #final) do add(final[i]) end
+    return rows, #live
 end
 
 -- Next value in a cycle: nil -> list[1] -> list[2] ... -> nil. A value no longer in the list
