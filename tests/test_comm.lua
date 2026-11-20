@@ -84,6 +84,21 @@ local function printed(pattern)
     return n
 end
 
+-- Describe a captured C_ChatInfo.SendAddonMessage call without ever throwing, so a malformed
+-- capture is reported with its fields instead of aborting the whole test.
+local function describeMsg(m)
+    if type(m) ~= "table" then return "a " .. type(m) .. " (" .. tostring(m):sub(1, 40) .. ")" end
+    return ("table{prefix=%s, text=%s, chatType=%s, target=%s}"):format(
+        tostring(m.prefix), m.text == nil and "nil" or ("string(" .. #tostring(m.text) .. ")"),
+        tostring(m.chatType), tostring(m.target))
+end
+-- The text of a captured message, or nil (after recording a failure) if it has none.
+local function textOf(m, i)
+    if type(m) == "table" and type(m.text) == "string" then return m.text end
+    check(false, "captured addon message " .. tostring(i) .. " has no text: " .. describeMsg(m))
+    return nil
+end
+
 -- Deliver one addon message to AceComm exactly as the client would (CHAT_MSG_ADDON).
 local function deliver(sender, msgType, code, payload, dist)
     local env = assert(Protocol.Wrap(msgType, code, payload))
@@ -156,8 +171,11 @@ do
     tick(90)
     local n, iAck = #stub.addonMessages, nil
     for i, m in ipairs(stub.addonMessages) do
-        check(#m.text <= 255, "chunk " .. i .. " is within 255 bytes")
-        if m.text:find("BET_ACK", 1, true) then iAck = i end
+        local text = textOf(m, i)
+        if text then
+            check(#text <= 255, "chunk " .. i .. " is within 255 bytes")
+            if text:find("BET_ACK", 1, true) then iAck = i end
+        end
     end
     check(n >= 25, "the SYNC was split into many parts: " .. n)
     check(iAck ~= nil, "the BET_ACK was sent")
@@ -268,7 +286,10 @@ do
     check(#parts > 10, "the SYNC went out in many parts: " .. #parts)
     drainSeen()
     -- feed them back as another client's whisper (this client does not own the code)
-    for _, m in ipairs(parts) do stub.fire("CHAT_MSG_ADDON", m.prefix, m.text, "WHISPER", "Real-Realm") end
+    for i, m in ipairs(parts) do
+        local text = textOf(m, i)
+        if text then stub.fire("CHAT_MSG_ADDON", m.prefix, text, "WHISPER", "Real-Realm") end
+    end
     local got = drainSeen()
     eq(#got, 1, "reassembled into exactly one delivery")
     local s = got[1]
