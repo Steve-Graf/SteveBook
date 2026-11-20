@@ -65,6 +65,7 @@ local MAX_JOIN_ATTEMPTS = 6         -- then give up, drop the queue and tell the
 local PRIORITY = {
     JOIN_OK = "ALERT", JOIN_DENY = "ALERT", BET_ACK = "ALERT", BET_REJECT = "ALERT",
     PING = "ALERT", PONG = "ALERT", SYNC = "BULK", BETS = "BULK",
+    TBL_JOIN_OK = "ALERT", TBL_JOIN_DENY = "ALERT", TBL_BET_OK = "ALERT", TBL_BET_REJECT = "ALERT",
 }
 
 local function say(msg) print("|cffffd100SteveBook:|r " .. msg) end
@@ -102,10 +103,14 @@ local function normalize(name)
 end
 Comm.NormalizeName = normalize
 
+-- Do I run this code? True for a sportsbook I own and for a casino table I host.
 local function isOwner(code)
     local db = SteveBookDB
-    local book = db and Model.FindByCode(db, code)
-    return book ~= nil and book.ownerName == myName()
+    if not db then return false end
+    local book = Model.FindByCode(db, code)
+    if book ~= nil and book.ownerName == myName() then return true end
+    local t = db.casino and db.casino.tables and db.casino.tables[code]
+    return t ~= nil and t.hostName == myName()
 end
 
 -- ---------------------------------------------------------------------------------------
@@ -190,12 +195,15 @@ end
 -- member LOOPBACK_NAME, so approve that member.
 local LOOPBACK_NAME = "Loopback"
 Comm.LOOPBACK_NAME = LOOPBACK_NAME
-local BETTOR_ORIGIN = { JOIN_REQ = true, SYNC_REQ = true, BET_PLACE = true, BETS_REQ = true, PING = true }
+local BETTOR_ORIGIN = { JOIN_REQ = true, SYNC_REQ = true, BET_PLACE = true, BETS_REQ = true, PING = true,
+    TBL_JOIN = true, TBL_LEAVE = true, TBL_SYNC_REQ = true, TBL_BET = true, TBL_BET_CLEAR = true }
 
 function Comm.LoopbackActive(code)
     local db = SteveBookDB
-    local cached = db and db.cache and db.cache.books
-    return db ~= nil and db.loopback == true and isOwner(code) and cached ~= nil and cached[code] ~= nil
+    if not (db and db.loopback == true and isOwner(code)) then return false end
+    local books = db.cache and db.cache.books
+    local tables = db.casinoCache and db.casinoCache.tables
+    return (books ~= nil and books[code] ~= nil) or (tables ~= nil and tables[code] ~= nil)
 end
 
 local function loopback(text, msgType, code, to)
@@ -330,6 +338,13 @@ local function joinAll()
     local cache = db.cache and db.cache.books
     for code, bc in pairs(cache or {}) do
         if bc.status ~= "denied" and bc.status ~= "removed" then Comm.JoinBook(code) end
+    end
+    -- casino tables: the ones I host and the ones I sit at
+    for code, t in pairs(db.casino and db.casino.tables or {}) do
+        if t.hostName == myName() and t.status ~= "closed" then Comm.JoinBook(code) end
+    end
+    for code, tc in pairs(db.casinoCache and db.casinoCache.tables or {}) do
+        if tc.status == "requested" or tc.status == "seated" then Comm.JoinBook(code) end
     end
 end
 

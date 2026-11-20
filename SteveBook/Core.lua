@@ -15,6 +15,7 @@ local function help()
     say("/book bookie (or /bookie)  open the bookie window")
     say("/book bet (or /bet)        open the bettor window")
     say("/book loopback     test alone: let this character be bookie and bettor of its own book")
+    say("/casino            open the casino (roulette tables)")
     say("/book icon         show or hide the minimap icon")
     say("/book ratio        toggle odds between American (-110) and ratio (0.91x) display")
     say("/book debug        print every message sent and received (for troubleshooting)")
@@ -55,6 +56,9 @@ local function handle(msg)
         db.debug = not db.debug
         say(db.debug and "Debug ON: every message in and out is printed here. Run /book debug again to stop."
             or "Debug OFF.")
+    elseif cmd == "casino" then
+        local ui = ns.UI and ns.UI.Casino
+        if ui and ui.Toggle then ui.Toggle() else say("The casino is not available.") end
     elseif cmd == "icon" then
         local m = ns.UI and ns.UI.Minimap
         if not (m and m.Toggle) then return say("The minimap icon is not available.") end
@@ -88,6 +92,7 @@ f:SetScript("OnEvent", function(_, _, name)
     SteveBookDB = SteveBookDB or Model.NewDB()
     SteveBookDB.cache = SteveBookDB.cache or ns.Cache.NewStore()   -- bettor-side cache (Cache.lua)
     ns.Odds.SetView(SteveBookDB.ratio and "ratio" or "american")
+    if ns.CasinoNet then ns.CasinoNet.Init() end
     if ns.UI and ns.UI.Minimap then ns.UI.Minimap.Apply() end
     math.randomseed(GetServerTime() + floor(GetTime() * 1000))
     f:UnregisterEvent("ADDON_LOADED")
@@ -101,3 +106,6 @@ SLASH_STEVEBOOKIE1 = "/bookie"
 SlashCmdList["STEVEBOOKIE"] = function() handle("bookie") end
 SLASH_STEVEBET1 = "/bet"
 SlashCmdList["STEVEBET"] = function() handle("bet") end
+
+SLASH_STEVECASINO1 = "/casino"
+SlashCmdList["STEVECASINO"] = function() handle("casino") end

@@ -914,6 +914,14 @@ local function build()
     ui.book:SetPoint("TOPLEFT", PAD, -30)
     ui.join = button(frame, "+ Join", 60, function() showJoin = true; Bettor.Refresh() end)
     ui.join:SetPoint("LEFT", ui.book, "RIGHT", 6, 0)
+    -- Swap to the casino window. ns.UI.Casino loads after this file, so look it up at click time.
+    ui.casino = button(frame, "Casino", 70, function()
+        local C = ns.UI and ns.UI.Casino
+        if not (C and C.Show) then return end
+        frame:Hide()
+        C.Show()
+    end)
+    ui.casino:SetPoint("LEFT", ui.join, "RIGHT", 6, 0)
     ui.status = label(frame, "GameFontNormal", "RIGHT")
     ui.status:SetPoint("TOPRIGHT", -PAD, -34)
 

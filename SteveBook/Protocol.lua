@@ -58,6 +58,44 @@ Protocol.Spec = {
     BETS_REQ   = { dir = "bettor", fields = {} },
     BETS       = { dir = "bookie", fields = { rev = "number", bets = "table" } },
 
+    -- Casino tables (SPEC §11). The envelope's book code is the TABLE code ("RLT-K7Q2"). "bettor"
+    -- = player -> host, "bookie" = host -> players, exactly as for books. Chips are the table's own
+    -- credit balance in copper, allotted by the host; they are not the sportsbook balance.
+    TBL_JOIN       = { dir = "bettor", fields = {} },                   -- ask for a seat
+    TBL_LEAVE      = { dir = "bettor", fields = {} },
+    TBL_SYNC_REQ   = { dir = "bettor", fields = { rev = "number" } },   -- last table rev the player holds (0 if none)
+    TBL_BET        = { dir = "bettor", fields = {
+        ref = "string",         -- client nonce, echoed in TBL_BET_OK / TBL_BET_REJECT
+        round = "number",       -- the round the player saw; the host rejects a bet for any other round
+        bet = "table",          -- game specific; roulette: { kind, numbers?, pick?, amount } (Roulette.lua)
+    } },
+    TBL_BET_CLEAR  = { dir = "bettor", fields = { round = "number" } }, -- take back all my bets this round
+
+    TBL_JOIN_OK    = { dir = "bookie", fields = { game = "string", name = "string", ownerName = "string", rev = "number" } },
+    TBL_JOIN_DENY  = { dir = "bookie", fields = { ownerName = "string", reason = "string?" } },
+    TBL_STATE      = { dir = "bookie", fields = {      -- public table state, broadcast (join, chips, spin, result)
+        rev = "number", game = "string", name = "string",
+        status = "string",      -- "betting" | "spinning" | "closed"
+        round = "number",
+        minBet = "number", maxBet = "number",           -- copper per bet
+        zero = "string?",       -- roulette wheel: "single" | "double" | "none"
+        seats = "table",        -- list of { name, balance }
+        history = "table",      -- last results, newest first (roulette: pocket numbers)
+    } },
+    TBL_PLAYER     = { dir = "bookie", fields = {      -- addressed: my chips and my bets in this round
+        rev = "number", balance = "number", bets = "table",   -- bets: list of { id, ...the bet }
+    } },
+    TBL_BET_OK     = { dir = "bookie", fields = { ref = "string", betId = "number", balance = "number" } },
+    TBL_BET_REJECT = { dir = "bookie", fields = {
+        ref = "string", reason = "string",              -- one of Protocol.TBL_REJECT_REASONS
+        balance = "number?", min = "number?", max = "number?",
+    } },
+    TBL_RESULT     = { dir = "bookie", fields = {      -- broadcast after a spin
+        rev = "number", round = "number",
+        number = "number",      -- roulette: the pocket (37 = 00)
+        results = "table",      -- list of { name, net, balance, bets = list of { ..bet, win } }
+    } },
+
     BALANCE    = { dir = "bookie", fields = { rev = "number", balance = "number", note = "string?" } },
 
     PING       = { dir = "any", fields = {} },
@@ -69,6 +107,20 @@ Protocol.REJECT_REASONS = {
     "bad_stake", "odds_changed", "credit_limit", "bad_request", "book_error",
     "parlay_conflict",      -- two legs that may not share a parlay (Odds.ParlayConflict)
 }
+
+Protocol.TBL_REJECT_REASONS = {
+    "not_seated",       -- not admitted to this table
+    "round_closed",     -- the table is spinning or closed, or the round number is stale
+    "bad_bet",          -- the bet is not a valid bet for this game
+    "min_bet", "max_bet",   -- amount outside the table limits (min / max in the reply)
+    "no_balance",       -- the chips on hand do not cover it (balance in the reply)
+    "table_error",
+}
+
+local function isTblReason(r)
+    for _, v in ipairs(Protocol.TBL_REJECT_REASONS) do if v == r then return true end end
+    return false
+end
 
 local function isReason(r)
     for _, v in ipairs(Protocol.REJECT_REASONS) do if v == r then return true end end
@@ -92,6 +144,27 @@ function Protocol.Validate(msgType, payload)
     end
     if msgType == "BET_REJECT" and not isReason(payload.reason) then
         return false, "unknown reject reason"
+    end
+    if msgType == "TBL_BET_REJECT" and not isTblReason(payload.reason) then
+        return false, "unknown table reject reason"
+    end
+    if msgType == "TBL_BET" then
+        local b = payload.bet
+        if type(b.kind) ~= "string" or type(b.amount) ~= "number" then return false, "bet needs kind and amount" end
+    end
+    if msgType == "TBL_STATE" then
+        for i, seat in ipairs(payload.seats) do
+            if type(seat) ~= "table" or type(seat.name) ~= "string" or type(seat.balance) ~= "number" then
+                return false, "seat " .. i .. " needs name and balance"
+            end
+        end
+    end
+    if msgType == "TBL_RESULT" then
+        for i, r in ipairs(payload.results) do
+            if type(r) ~= "table" or type(r.name) ~= "string" or type(r.net) ~= "number" or type(r.balance) ~= "number" then
+                return false, "result " .. i .. " needs name, net and balance"
+            end
+        end
     end
     if msgType == "BETS" then
         for i, e in ipairs(payload.bets) do

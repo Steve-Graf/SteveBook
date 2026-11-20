@@ -34,6 +34,15 @@ ratios (profit per 1 staked: -500 is 0.2x, +150 is 1.5x). The bookie window alwa
 A coin button on the minimap: left-click opens the bet window, right-click the bookie window, drag
 to move it. `/book icon` hides or shows it.
 
+## Casino (roulette)
+
+`/casino` opens the casino (also the Casino button in the bet window). **Host a table** to get a code
+like `RLT-K7Q2`; friends choose **Join a table** and enter it. Players sit down only when you let them
+in, and they have no chips until you add some (for example after they pay you in gold). Chips are the
+table's own credit, separate from the sportsbook. Players bet on the board; press **Spin the wheel**
+when you are ready. Choose a single zero, double zero or no-zero wheel when you create the table.
+To try it alone, turn on `/book loopback`, host a table and join your own code.
+
 ## Tests
 
 Pure-logic modules are tested outside the game with plain Lua:
@@ -57,6 +66,7 @@ Run these on the Windows machine and report anything that prints `nil` or `false
     /run local e=CreateFrame("EditBox",nil,UIParent) print(e.HasFocus~=nil, e.SetJustifyH~=nil, GameTooltip~=nil and GameTooltip.SetOwner~=nil, GameFontNormalSmall~=nil) e:Hide()
     /run print(GetGameTime(), date("!%H:%M", GetServerTime()))   -- realm hour, minute, then the UTC time; the All Bets "Placed" column uses the difference
     /run print(Minimap and Minimap:GetWidth(), GetCursorPosition ~= nil, math.atan2 ~= nil)   -- the minimap icon needs all three
+    /run print(GameFontNormalHuge~=nil, GameFontHighlightLarge~=nil, GameFontNormalLarge~=nil, GameFontNormalSmall~=nil, GameFontHighlightSmall~=nil, UIParent:CreateFontString().SetJustifyV~=nil)   -- the casino windows use these fonts
 
 Test messaging in a city or the open world only (addon messages are restricted in instances).
 Saved data is per character (`SavedVariablesPerCharacter`), so each character has its own books and

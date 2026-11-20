@@ -82,4 +82,32 @@ do
     check(P.ShouldDeliver("BETS", false) and not P.ShouldDeliver("BETS", true), "BETS goes to bettors")
 end
 
+-- casino tables
+do
+    local W = function(t, p) return P.Wrap(t, "RLT-K7Q2", p) end
+    check(W("TBL_JOIN", {}), "TBL_JOIN"); check(W("TBL_LEAVE", {}), "TBL_LEAVE")
+    check(W("TBL_SYNC_REQ", { rev = 0 }), "TBL_SYNC_REQ")
+    check(W("TBL_BET", { ref = "r1", round = 3, bet = { kind = "red", amount = 100 } }), "TBL_BET")
+    check(not W("TBL_BET", { ref = "r1", round = 3, bet = { kind = "red" } }), "TBL_BET needs an amount")
+    check(not W("TBL_BET", { ref = "r1", round = 3 }), "TBL_BET needs a bet")
+    check(W("TBL_BET_CLEAR", { round = 3 }), "TBL_BET_CLEAR")
+    check(W("TBL_JOIN_OK", { game = "roulette", name = "Friday", ownerName = "Steve", rev = 1 }), "TBL_JOIN_OK")
+    check(W("TBL_JOIN_DENY", { ownerName = "Steve", reason = "full" }), "TBL_JOIN_DENY")
+    check(W("TBL_STATE", { rev = 2, game = "roulette", name = "Friday", status = "betting", round = 1, minBet = 100, maxBet = 10000,
+        zero = "single", seats = { { name = "Bob", balance = 5000 } }, history = { 17, 0 } }), "TBL_STATE")
+    check(not W("TBL_STATE", { rev = 2, game = "roulette", name = "F", status = "betting", round = 1, minBet = 100, maxBet = 10000,
+        seats = { { name = "Bob" } }, history = {} }), "a seat needs a balance")
+    check(W("TBL_PLAYER", { rev = 2, balance = 5000, bets = { { id = 1, kind = "red", amount = 100 } } }), "TBL_PLAYER")
+    check(W("TBL_BET_OK", { ref = "r1", betId = 1, balance = 4900 }), "TBL_BET_OK")
+    for _, r in ipairs(P.TBL_REJECT_REASONS) do check(W("TBL_BET_REJECT", { ref = "r1", reason = r }), "reject reason " .. r) end
+    check(not W("TBL_BET_REJECT", { ref = "r1", reason = "because" }), "unknown table reject reason")
+    check(W("TBL_BET_REJECT", { ref = "r1", reason = "no_balance", balance = 50 }), "reject carries balance")
+    check(W("TBL_RESULT", { rev = 3, round = 1, number = 17, results = { { name = "Bob", net = 3500, balance = 8500, bets = {} } } }), "TBL_RESULT")
+    check(not W("TBL_RESULT", { rev = 3, round = 1, number = 17, results = { { name = "Bob" } } }), "a result needs net and balance")
+    check(P.ShouldDeliver("TBL_BET", true) and not P.ShouldDeliver("TBL_BET", false), "player messages go to the host")
+    check(P.ShouldDeliver("TBL_RESULT", false) and not P.ShouldDeliver("TBL_RESULT", true), "host messages go to players")
+    check(P.CanonicalCode("rltk7q2") == "RLT-K7Q2", "table codes canonicalise like book codes")
+    check(P.ChannelName("RLT-K7Q2") == "SBRLTK7Q2", "table channel name")
+end
+
 if fails == 0 then print("protocol: all tests passed") else os.exit(1) end

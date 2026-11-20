@@ -320,3 +320,41 @@ TOTAL|NFL|PHI @ DAL|2026-11-26T16:30-05:00|47.5|Over:-110|Under:-110
 - Keep stakes modest: Forever runs aggressive anti-RMT monitoring ("Temporary Economy Holds"),
   and large unexplained gold flows between characters could draw attention.
 - If a friend stiffs the book, Blizzard won't recover it. Credit limits exist for a reason.
+
+---
+
+## 11. Casino tables
+
+A second feature next to the sportsbook, opened with `/casino` (or the Casino button in the bettor
+window). One player **hosts** a table of a game; friends **join** with its code and sit at the same
+table. Roulette is the first game; blackjack is listed as "coming soon".
+
+- **Separate balance.** A table has its own chips, in copper, and they are not the sportsbook
+  balance. Joining gives no chips: the host lets a player in, then adds chips (for example after
+  the player pays them in gold by trade). Chips are only a record; no gold moves through the addon.
+  A bet takes its amount out of the chips at once (it sits on the table) and a win pays back the
+  stake plus winnings. The host can add or take chips at any time, remove a player (open bets are
+  returned) or close the table (open bets are returned; chips stay on the books for the host to pay
+  out). The host sees each player's chips, what they were given (`bought`) and the result.
+- **Codes and channels.** A table code looks like `RLT-K7Q2` (prefix per game). It maps to a hidden
+  channel exactly like a book code, so the same `Comm` carries it. A table is hosted by the
+  character that created it (`SteveBookDB.casino.tables`); players keep a cache
+  (`SteveBookDB.casinoCache`). A host cannot sit at their own table (except with `/book loopback`).
+- **Authority.** The host's client runs every round and draws the numbers; players only ask
+  (`TBL_JOIN`, `TBL_BET`, ...). Messages are in `Protocol.lua`. Public state (seats and chips,
+  limits, round, history) is broadcast as `TBL_STATE`; a player's own bets as `TBL_PLAYER`;
+  results as `TBL_RESULT`. Everything addressed to one player uses the `to` field (see §5), so
+  other clients can read it on the wire. Roulette has no hidden information, which is why it was
+  chosen first.
+- **Rounds (roulette).** Betting is open from the moment the table opens. The host presses
+  **Spin**: betting stops, the wheel "turns" for 3 seconds, the host's client draws the pocket,
+  everyone is paid, the result is broadcast and the next round opens. A bet names the round it is
+  for; a stale round is refused. A host who reloads mid-spin gets the bets returned.
+- **Bets** (`Roulette.lua`): straight (35:1), split (17:1), street (11:1), corner (8:1), six line
+  (5:1), dozens and columns (2:1), red, black, odd, even, 1-18, 19-36 (1:1). A zero loses every
+  outside bet. Bets are whole silver between the table's minimum and maximum (default 1s to 1g,
+  the host may set up to 10g).
+- **Wheel.** The host picks single zero (house edge 2.7%), double zero (5.3%) or no zero (a fair
+  wheel for a friendly table).
+- **Not in v1:** the host playing at their own table, blackjack, a spin timer, commit-and-reveal
+  proof of fairness (players trust the host's client, as they trust the bookie's).

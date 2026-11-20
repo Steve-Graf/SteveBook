@@ -532,5 +532,27 @@ handlers.JOIN_DENY("Bookie", { ownerName = "Bookie", reason = "removed" }, CODE)
 check(Cache.Book(SteveBookDB.cache, CODE).status == "denied", "genuine removal from the pinned owner accepted")
 B.Toggle(); B.Toggle()
 
+-- Casino button: hides this window and opens the casino window (looked up at click time).
+do
+    local casino = findButton("Casino")
+    check(casino ~= nil, "Casino button exists")
+    B.Show()
+    local shown = 0
+    casino:Click()   -- ns.UI.Casino not loaded: nothing happens, no error
+    ns.UI.Casino = { Show = function() shown = shown + 1 end }
+    local f
+    for _, fr in ipairs(frames) do
+        local sc = rawget(fr, "_scripts")
+        if sc and sc.OnShow and sc.OnHide then f = fr end   -- the main window
+    end
+    check(f ~= nil, "found the bettor window frame")
+    B.Show()
+    check(f:IsShown(), "bettor window is open before the click")
+    casino:Click()
+    check(shown == 1, "Casino click calls ns.UI.Casino.Show")
+    check(not f:IsShown(), "Casino click hides the bettor window")
+    ns.UI.Casino = nil
+end
+
 print = print_real
 if fails == 0 then print("test_bettor_ui: all passed") else print(fails .. " FAILED"); os.exit(1) end

@@ -8,16 +8,21 @@
 
 Libs\embeds.xml
 Odds.lua
+Roulette.lua
 Protocol.lua
 Clock.lua
 Model.lua
+Casino.lua
 Bookie.lua
 Import.lua
 Cache.lua
 Slip.lua
+CasinoClient.lua
 Comm.lua
 BookieNet.lua
+CasinoNet.lua
 UI\Bookie.lua
 UI\Bettor.lua
 UI\Minimap.lua
+UI\Casino.lua
 Core.lua
