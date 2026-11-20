@@ -142,7 +142,7 @@ SlashCmdList.STEVEBOOK("loopback")                           -- off
 UI.Show()
 local joinButtons = allByText("Join a table")
 click(joinButtons[1])                                        -- Roulette
-check(textOf("Open roulette tables") ~= nil, "the join page lists roulette tables")
+check(textOf("Open tables") ~= nil, "the join page lists open tables")
 check(textOf("You are in the lobby.") ~= nil or textOf("Connecting to the lobby") ~= nil, "and says whether the lobby is connected")
 check(textOf("No open tables yet") ~= nil, "and says when there are none")
 local entry = { code = "RLT-ZZZZ", game = "roulette", name = "Friday Night", host = "Dealer", status = "betting", seats = 3, minBet = 100, maxBet = 10000, zero = "single" }
@@ -166,7 +166,17 @@ check(_G.SteveBookCasinoTableFrame and _G.SteveBookCasinoTableFrame:IsShown(), "
 -- a blackjack listing only shows under blackjack
 UI.Show()
 click(allByText("Join a table")[2])
-check(textOf("Open blackjack tables") ~= nil, "the blackjack page lists blackjack tables")
+check(textOf("(blackjack first)") ~= nil, "the blackjack page puts blackjack tables first")
+-- a blackjack table is listed on the roulette page too, tagged with its game
+do
+    local bentry = { code = "BJK-QQQQ", game = "blackjack", name = "Cards", host = "Dealer", status = "betting", seats = 1, minBet = 100, maxBet = 10000, maxSeats = 5 }
+    local benv = assert(P.Wrap("LOBBY_TABLE", P.LOBBY_CODE, { tables = { bentry }, ver = "9.9.9" }))
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(benv), "CHANNEL", "Dealer lol")
+    UI.Show(); click(allByText("Join a table")[1])           -- the roulette page
+    local line = textOf("Cards")
+    check(line ~= nil and line:find("Blackjack", 1, true) ~= nil, "a blackjack table shows on the roulette page, tagged Blackjack")
+    check(line ~= nil and line:find("1/5 seated", 1, true) ~= nil, "with its seats")
+end
 
 eq(#stub.errors, 0, "no errors: " .. table.concat(stub.errors, "; "))
 if fails == 0 then out_("test_casino_ui_bj: all passed") else out_(fails .. " FAILED"); os.exit(1) end

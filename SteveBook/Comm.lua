@@ -86,6 +86,15 @@ local function clock() return GetTime and GetTime() or 0 end
 
 function Comm.Me() return myName() end
 
+-- The addon's version from the .toc ("0.7.1"), or nil if the game will not say. Sent in the lobby so
+-- /book lobby can show who runs an old version.
+function Comm.Version()
+    local get = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+    if not get then return nil end
+    local ok, v = pcall(get, ADDON, "Version")
+    return ok and type(v) == "string" and v or nil
+end
+
 local function baseName(name) return type(name) == "string" and name:match("^([^%-]+)") or name end
 
 -- One spelling per player. In Forever the sender of an addon message arrives as "Tuesday lol" or

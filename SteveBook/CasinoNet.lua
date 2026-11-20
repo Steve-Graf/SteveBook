@@ -303,7 +303,7 @@ function CasinoNet.Announce(closed)
     if #list == 0 then return end
     lastAnnounce = now()
     ns.Comm.JoinBook(ns.Protocol.LOBBY_CODE)
-    ns.Comm.Send("LOBBY_TABLE", { tables = list }, ns.Protocol.LOBBY_CODE)
+    ns.Comm.Send("LOBBY_TABLE", { tables = list, ver = ns.Comm.Version() }, ns.Protocol.LOBBY_CODE)
 end
 
 -- Tell the players at my open tables that the table is alive (and repair any state they missed). The
@@ -322,7 +322,7 @@ end
 function CasinoNet.AskLobby()
     if db() then db().lobbyJoined = true end            -- from now on stay in the lobby, so the list is already warm next time
     ns.Comm.JoinBook(ns.Protocol.LOBBY_CODE)
-    ns.Comm.Send("LOBBY_ASK", {}, ns.Protocol.LOBBY_CODE)
+    ns.Comm.Send("LOBBY_ASK", { ver = ns.Comm.Version() }, ns.Protocol.LOBBY_CODE)
 end
 
 -- For the window: am I in the lobby channel, and when did a host last come through?
@@ -382,33 +382,50 @@ function CasinoNet.LobbyReport()
         lines[1] = "Not in the lobby channel (" .. name .. ") yet. Open /casino to join it."
     end
     local list = {}
-    for who, at in pairs(peers) do list[#list + 1] = { who = who, ago = now() - at } end
+    for who, p in pairs(peers) do list[#list + 1] = { who = who, ago = now() - p.at, ver = p.ver } end
     table.sort(list, function(a, b) return a.ago < b.ago end)
     if #list == 0 then
         lines[2] = "Nobody else has been heard in the lobby yet. When a friend opens the casino's join page, or hosts a table, they should appear here."
     else
         local parts = {}
-        for i, e in ipairs(list) do if i <= 8 then parts[#parts + 1] = ("%s (%d s ago)"):format(e.who, e.ago) end end
+        for i, e in ipairs(list) do
+            if i <= 8 then parts[#parts + 1] = ("%s (%s%d s ago)"):format(e.who, e.ver and ("v" .. e.ver .. ", ") or "", e.ago) end
+        end
         lines[2] = "Heard in the lobby: " .. table.concat(parts, ", ") .. "."
     end
     return lines
 end
 
-function lobbyHandlers.LOBBY_ASK(sender)
-    if sender then peers[sender] = now() end
+local function hear(sender, p)
+    if sender then peers[sender] = { at = now(), ver = p and p.ver } end
+end
+
+local function dbg(msg)
+    if db() and db().debug then say("|cff9d9d9d[debug]|r " .. msg) end
+end
+
+function lobbyHandlers.LOBBY_ASK(sender, p)
+    hear(sender, p)
+    dbg(("lobby: %s is asking who is hosting%s"):format(tostring(sender), p and p.ver and (" (v" .. p.ver .. ")") or ""))
     if now() - lastAnnounce >= 2 then CasinoNet.Announce() end
 end
 
-function lobbyHandlers.LOBBY_BOOKS(sender) lastHeard = now(); if sender then peers[sender] = now() end end     -- also: the lobby is alive
+function lobbyHandlers.LOBBY_BOOKS(sender, p)                    -- only to know the lobby is alive
+    lastHeard = now()
+    hear(sender, p)
+end
 
 function lobbyHandlers.LOBBY_TABLE(sender, p)
     lastHeard = now()
-    if sender then peers[sender] = now() end
+    hear(sender, p)
     for _, e in ipairs(p.tables) do
         -- a listing counts only when the host announces their own table
         if baseName(sender) == baseName(e.host) then
             if e.status == "closed" then rooms[e.code] = nil
             else rooms[e.code] = { entry = e, seen = now() } end
+            dbg(("lobby: listing %s (%s) from %s"):format(e.code, e.game, tostring(sender)))
+        else
+            dbg(("lobby: ignored the listing %s from %s because it names %s as the host"):format(e.code, tostring(sender), tostring(e.host)))
         end
     end
 end

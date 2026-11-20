@@ -52,13 +52,13 @@ function BL.Announce()
     if #list == 0 then return end
     lastAnnounce = now()
     ns.Comm.JoinBook(Protocol.LOBBY_CODE)
-    ns.Comm.Send("LOBBY_BOOKS", { books = list }, Protocol.LOBBY_CODE)
+    ns.Comm.Send("LOBBY_BOOKS", { books = list, ver = ns.Comm.Version() }, Protocol.LOBBY_CODE)
 end
 
 function BL.Ask()
     if db() then db().lobbyJoined = true end          -- stay in the lobby from now on
     ns.Comm.JoinBook(Protocol.LOBBY_CODE)
-    ns.Comm.Send("LOBBY_ASK", {}, Protocol.LOBBY_CODE)
+    ns.Comm.Send("LOBBY_ASK", { ver = ns.Comm.Version() }, Protocol.LOBBY_CODE)
 end
 
 -- Listed books I am not already in (or waiting on). With /book loopback my own books are listed

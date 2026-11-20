@@ -208,10 +208,14 @@ end
 
 -- /book lobby
 do
+    GetAddOnMetadata = function(addon, field) return "0.7.1" end
+    eq(ns.Comm.Version(), "0.7.1", "the addon can tell its own version")
     local lines = CN.LobbyReport()
     check(lines[1]:find("In the lobby channel SBLBYCSNO as /", 1, true) ~= nil, "the report says the channel and the player's own number")
     check(lines[1]:find("just your own slot", 1, true) ~= nil, "and explains that numbers differ between players")
     check(lines[2]:find("Dealer", 1, true) ~= nil, "it lists the players heard in the lobby")
+    fromWire("Oldie lol", "LOBBY_ASK", P.LOBBY_CODE, { ver = "0.4.2" })
+    check(table.concat(CN.LobbyReport(), "\n"):find("Oldie (v0.4.2, ", 1, true) ~= nil, "and the version each one runs, so an old client stands out")
     fromWire("Newcomer lol", "LOBBY_ASK", P.LOBBY_CODE, {})
     local joined = table.concat(CN.LobbyReport(), "\n")
     check(joined:find("Newcomer", 1, true) ~= nil, "a player who only asks is heard too")

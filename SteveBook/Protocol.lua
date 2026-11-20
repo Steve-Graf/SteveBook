@@ -78,9 +78,9 @@ Protocol.Spec = {
 
     -- The casino lobby (SPEC §11): everyone with the casino open sits in one shared hidden channel
     -- (envelope code Protocol.LOBBY_CODE). Hosts announce their open tables there; anyone may ask.
-    LOBBY_ASK      = { dir = "any", fields = {} },                      -- "who is hosting?"; hosts answer with LOBBY_TABLE
-    LOBBY_TABLE    = { dir = "any", fields = { tables = "table" } },    -- list of { code, game, name, host, seats, status, minBet, maxBet, zero? }
-    LOBBY_BOOKS    = { dir = "any", fields = { books = "table" } },     -- sportsbooks: list of { code, name, owner, members?, markets? }
+    LOBBY_ASK      = { dir = "any", fields = { ver = "string?" } },                      -- "who is hosting?"; hosts answer with LOBBY_TABLE
+    LOBBY_TABLE    = { dir = "any", fields = { tables = "table", ver = "string?" } },    -- list of { code, game, name, host, seats, status, minBet, maxBet, zero? }
+    LOBBY_BOOKS    = { dir = "any", fields = { books = "table", ver = "string?" } },     -- sportsbooks: list of { code, name, owner, members?, markets? }
 
     TBL_JOIN_OK    = { dir = "bookie", fields = { game = "string", name = "string", ownerName = "string", rev = "number" } },
     TBL_JOIN_DENY  = { dir = "bookie", fields = { ownerName = "string", reason = "string?" } },

@@ -375,7 +375,7 @@ local function setMode(m, game)
         local roulette = hostGame == "roulette"
         L.wheelLabel:SetShown(roulette); L.wheelBtn:SetShown(roulette); L.wheelNote:SetShown(roulette)
     elseif m == "join" then
-        L.joinTitle:SetText("Open " .. gameTitle(joinGame):lower() .. " tables")
+        L.joinTitle:SetText("Open tables  " .. MUTED .. "(" .. gameTitle(joinGame):lower() .. " first)|r")
         CN.AskLobby()
         UI.KeepAsking()
     end
@@ -406,7 +406,7 @@ local function tableRows()
 end
 
 local function roomText(r)
-    local bits = { r.name, GREY .. "host " .. r.host .. "|r", r.maxSeats and ("%d/%d seated"):format(r.seats or 0, r.maxSeats) or ("%d seated"):format(r.seats or 0),
+    local bits = { (r.game == joinGame and "" or (GOLD .. gameTitle(r.game) .. "|r  ")) .. r.name, GREY .. "host " .. r.host .. "|r", r.maxSeats and ("%d/%d seated"):format(r.seats or 0, r.maxSeats) or ("%d seated"):format(r.seats or 0),
         GREY .. "bets " .. shortRange(r) .. "|r" }
     if r.zero then bits[#bits + 1] = GREY .. ({ single = "single zero", double = "double zero", none = "no zero" })[r.zero] .. "|r" end
     return table.concat(bits, "   ")
@@ -561,7 +561,12 @@ local function refreshLauncher()
         end
     end
     if mode == "join" then
-        local rooms = CN.Rooms(joinGame)
+        local rooms = CN.Rooms()                              -- every game: a table is never hidden by the page you opened
+        table.sort(rooms, function(a, b)
+            if (a.game == joinGame) ~= (b.game == joinGame) then return a.game == joinGame end
+            if a.name ~= b.name then return a.name < b.name end
+            return a.code < b.code
+        end)
         L.noRooms:SetShown(#rooms == 0)
         local ls = CN.LobbyStatus()
         if not ls.joined then L.lobbyNote:SetText(GOLD .. "Connecting to the lobby...|r")

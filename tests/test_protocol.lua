@@ -135,4 +135,12 @@ do
     check(P.ShouldDeliver("LOBBY_BOOKS", true) and P.ShouldDeliver("LOBBY_BOOKS", false), "book listings go to everyone")
 end
 
+-- lobby messages carry the sender's version
+do
+    check(P.Wrap("LOBBY_ASK", P.LOBBY_CODE, { ver = "0.7.1" }), "LOBBY_ASK with a version")
+    check(P.Wrap("LOBBY_TABLE", P.LOBBY_CODE, { tables = {}, ver = "0.7.1" }), "LOBBY_TABLE with a version")
+    check(P.Wrap("LOBBY_BOOKS", P.LOBBY_CODE, { books = {}, ver = "0.7.1" }), "LOBBY_BOOKS with a version")
+    check(not P.Wrap("LOBBY_ASK", P.LOBBY_CODE, { ver = 7 }), "the version must be a string")
+end
+
 if fails == 0 then print("protocol: all tests passed") else os.exit(1) end

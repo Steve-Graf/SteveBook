@@ -45,7 +45,7 @@ still join with the code). Typing a code still works.
 Everyone with the casino open sits in one hidden "lobby" channel. The number you see in a debug line
 (for example `channel #7`) is only your own slot; a friend's number can differ and it is still the
 same channel. Run `/book lobby` on both sides: it says whether you are in the channel and who has been
-heard there (a friend who opens `/casino` and presses Join a table should show up on your list). If
+heard there, with the version each of them runs (a friend who opens `/casino` and presses Join a table should show up on your list). If
 you never hear each other, make sure you both run the latest version (from v0.4.0 on), and that you
 are on the same realm group and faction; custom channels do not cross realms.
 
