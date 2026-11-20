@@ -160,5 +160,28 @@ local askBefore = #stub.addonMessages
 CN.AskLobby(); settle()
 check(#stub.addonMessages > askBefore, "AskLobby sends a request")
 
+-- staying in the lobby, and knowing whether it works
+do
+    eq(db.lobbyJoined, true, "opening the list marks me as a lobby member")
+    fromWire("Dealer lol", "LOBBY_TABLE", P.LOBBY_CODE, { tables = { entry } })
+    local ls = CN.LobbyStatus()
+    check(ls.joined, "the status says I am in the lobby channel"); check(ls.heard ~= nil and ls.heard <= 1, "and how long ago a host was heard")
+    stub.advance(40)
+    check(CN.LobbyStatus().heard >= 40, "the time since the last announcement grows")
+    -- after a login the lobby is joined again without opening any window
+    stub.channels = {}
+    stub.advance(6)
+    stub.fire("PLAYER_ENTERING_WORLD", true)
+    stub.advance(0); for _ = 1, 3 do stub.runAfters() end
+    check(stub.channels[P.ChannelName(P.LOBBY_CODE)] ~= nil, "login rejoins the lobby for a player who used it before")
+    -- hosts answer an ask unless they announced a moment ago
+    local ht = assert(CN.Create({ game = "roulette", name = "Answering" })); settle()
+    check(CN.LastAnnounce() ~= nil, "a host knows when it last announced")
+    stub.advance(3); stub.addonMessages = {}
+    fromWire("Someone lol", "LOBBY_ASK", P.LOBBY_CODE, {}); settle()
+    check(#stub.addonMessages > 0, "an ask three seconds after the last announcement is answered")
+    CN.CloseTable(ht)
+end
+
 eq(#stub.errors, 0, "no errors: " .. table.concat(stub.errors, "; "))
 if fails == 0 then out_("test_casino_lobby: all passed") else out_(fails .. " FAILED"); os.exit(1) end

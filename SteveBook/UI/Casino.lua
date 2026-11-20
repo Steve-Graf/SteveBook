@@ -108,6 +108,183 @@ local function shortRange(r) return money(r.minBet or 0) .. "-" .. money(r.maxBe
 local function myName(tc) return tc and tc.me or UnitName("player") end
 
 ------------------------------------------------------------------------------------------
+-- The look of the two player windows: dark brown panels with gold edges (the sportsbook's colours)
+------------------------------------------------------------------------------------------
+
+local COL = {
+    ground = { 0.09, 0.07, 0.05 }, panel = { 0.106, 0.082, 0.055 }, raised = { 0.165, 0.13, 0.085 },
+    edge = { 0.48, 0.39, 0.19 }, line = { 0.23, 0.18, 0.11 }, sel = { 0.29, 0.23, 0.11 }, gold = { 1, 0.82, 0 },
+}
+local MUTED = "|cffb9ab8c"
+
+local function fill(tex, c, a) paint(tex, c[1], c[2], c[3], a or 1) end
+
+-- A flat box with a one-pixel edge; its children draw above it.
+local function panel(parent, x, y, w, h, fillColor, edgeColor)
+    local f = CreateFrame("Frame", nil, parent)
+    f:SetSize(w, h)
+    f:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
+    f.edge = f:CreateTexture(nil, "BACKGROUND"); f.edge:SetAllPoints(); fill(f.edge, edgeColor or COL.line)
+    f.fill = f:CreateTexture(nil, "BORDER")
+    f.fill:SetPoint("TOPLEFT", 1, -1); f.fill:SetPoint("BOTTOMRIGHT", -1, 1)
+    fill(f.fill, fillColor or COL.panel)
+    return f
+end
+
+-- A flat button: text in the middle, an optional tag (like "2:1") at the right. State: "normal",
+-- "selected" (gold edge) or "off".
+local function flat(parent, text, w, h, onClick)
+    local b = CreateFrame("Button", nil, parent)
+    b:SetSize(w, h)
+    b.edge = b:CreateTexture(nil, "BACKGROUND"); b.edge:SetAllPoints()
+    b.fill = b:CreateTexture(nil, "BORDER"); b.fill:SetPoint("TOPLEFT", 1, -1); b.fill:SetPoint("BOTTOMRIGHT", -1, 1)
+    b.text = label(b, "GameFontHighlightSmall", "CENTER"); b.text:SetPoint("CENTER"); b.text:SetText(text)
+    b.tag = label(b, "GameFontNormalSmall", "RIGHT"); b.tag:SetPoint("RIGHT", -6, 0)
+    b.state = "normal"
+    function b:Paint(state)
+        self.state = state or self.state
+        local f, e = COL.raised, COL.edge
+        if self.state == "selected" then f, e = COL.sel, COL.gold
+        elseif self.state == "off" then f, e = COL.panel, COL.line end
+        if self.hover then f = { f[1] + 0.07, f[2] + 0.06, f[3] + 0.04 } end
+        fill(self.edge, e); fill(self.fill, f)
+    end
+    b:SetScript("OnEnter", function(self) self.hover = true; self:Paint() end)
+    b:SetScript("OnLeave", function(self) self.hover = false; self:Paint() end)
+    b:SetScript("OnClick", onClick)
+    b:Paint("normal")
+    return b
+end
+
+-- A window with the dark body panel already in it. Returns the frame and the body.
+local function playerWindow(name, w, h, title, anchor)
+    local f = newWindow(name, w, h, title, anchor)
+    casinoButton(f)
+    local body = panel(f, 6, 28, w - 12, h - 34, COL.ground, COL.edge)
+    return f, body
+end
+
+-- A button that glows (a gold rim that pulses) when it is the next thing to press. Safe to call every
+-- refresh: it only changes when `on` changes. If the game has no animation groups it just stays lit.
+local glowState = setmetatable({}, { __mode = "k" })        -- button -> { on, frame, anim }
+
+function UI.IsGlowing(btn) local st = glowState[btn]; return st ~= nil and st.on == true end
+
+local function glow(btn, on)
+    on = on and true or false
+    local st = glowState[btn]
+    if not st then
+        if not on then return end
+        st = { on = false }
+        glowState[btn] = st
+        local g = CreateFrame("Frame", nil, btn:GetParent() or UIParent)
+        g:SetPoint("TOPLEFT", btn, "TOPLEFT", -3, 3)
+        g:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 3, -3)
+        g:SetFrameLevel(math.max(0, (btn:GetFrameLevel() or 1) - 1))        -- behind the button: only the rim shows
+        local tex = g:CreateTexture(nil, "BACKGROUND"); tex:SetAllPoints(); paint(tex, 1, 0.82, 0, 0.9)
+        st.frame = g
+        pcall(function()
+            local group = g:CreateAnimationGroup()
+            local a = group:CreateAnimation("Alpha")
+            a:SetFromAlpha(1); a:SetToAlpha(0.2); a:SetDuration(0.7)
+            if a.SetSmoothing then a:SetSmoothing("IN_OUT") end
+            group:SetLooping("BOUNCE")
+            st.anim = group
+        end)
+    end
+    if st.on == on then return end
+    st.on = on
+    if on then
+        st.frame:Show()
+        if st.anim then pcall(st.anim.Play, st.anim) end
+    else
+        if st.anim then pcall(st.anim.Stop, st.anim) end
+        st.frame:Hide()
+    end
+end
+
+local STAKE_BUTTONS = { 100, 500, 1000, 5000, 10000 }
+local amount = Odds.STAKE_STEP                 -- the stake a new pick or bet starts with
+
+-- Parse a stake box. Returns copper, or nil (after saying why through `complain`).
+local function parseStake(text, complain)
+    local c = Odds.ParseMoney(text or "")
+    if not c or c <= 0 then complain("Enter a stake like 5s."); return nil end
+    return c
+end
+
+local function shortMoney(c)
+    if c >= Odds.MAX_STAKE and c % Odds.MAX_STAKE == 0 then return (c / Odds.MAX_STAKE) .. "g" end
+    if c % 100 == 0 then return (c / 100) .. "s" end
+    return money(c)
+end
+
+------------------------------------------------------------------------------------------
+-- Cards (the host window uses these helpers too)
+------------------------------------------------------------------------------------------
+
+local SUIT_COLOR = { S = "|cffdddddd", H = "|cffff5050", D = "|cff55aaff", C = "|cff55dd77" }
+
+-- "10h", "As": the rank, then the suit in its own colour (four-colour deck; plain letters, so no
+-- special glyphs are needed from the font).
+function UI.CardText(card)
+    local suit = card:sub(2, 2)
+    return Blackjack.RankLabel(card) .. (SUIT_COLOR[suit] or "") .. suit:lower() .. "|r"
+end
+
+function UI.CardsText(cards)
+    local parts = {}
+    for i, c in ipairs(cards) do parts[i] = UI.CardText(c) end
+    return table.concat(parts, " ")
+end
+
+local HAND_STATE = { stand = "stands", bust = RED .. "BUST|r", blackjack = GREEN .. "BLACKJACK|r", bet = GREY .. "bet placed|r" }
+
+-- One player's hands as a line of text: cards, total, bet, state (two hands after a split).
+function UI.HandsText(hands)
+    local parts = {}
+    for i, h in ipairs(hands) do
+        local bits = {}
+        if #h.cards > 0 then
+            bits[#bits + 1] = UI.CardsText(h.cards)
+            if h.value then bits[#bits + 1] = "= " .. (h.soft and h.value <= 21 and "soft " or "") .. h.value end
+        end
+        bits[#bits + 1] = GREY .. "bet " .. money(h.bet or 0) .. "|r"
+        if HAND_STATE[h.state] then bits[#bits + 1] = HAND_STATE[h.state] end
+        parts[i] = table.concat(bits, "  ")
+    end
+    return table.concat(parts, "   |   ")
+end
+
+-- A playing card: a white rectangle with the rank on top and the suit letter below (red for hearts
+-- and diamonds), or a dark back with a gold edge when it is face down.
+local function newCard(parent, w, h)
+    local c = CreateFrame("Frame", nil, parent)
+    c:SetSize(w, h)
+    c.edge = c:CreateTexture(nil, "BACKGROUND"); c.edge:SetAllPoints(); fill(c.edge, { 0.55, 0.52, 0.46 })
+    c.face = c:CreateTexture(nil, "BORDER"); c.face:SetPoint("TOPLEFT", 1, -1); c.face:SetPoint("BOTTOMRIGHT", -1, 1)
+    local big = h >= 48                          -- the small cards of the dealer's overview use smaller type
+    c.rank = label(c, big and "GameFontNormalLarge" or "GameFontNormal", "CENTER"); c.rank:SetPoint("CENTER", 0, big and 7 or 5)
+    c.suit = label(c, "GameFontNormalSmall", "CENTER"); c.suit:SetPoint("BOTTOM", 0, big and 4 or 2)
+    return c
+end
+
+local function showCard(c, card, down, x, y, parent)
+    c:ClearAllPoints()
+    c:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
+    if down then
+        fill(c.edge, COL.gold); fill(c.face, { 0.27, 0.18, 0.08 })
+        c.rank:SetText(GOLD .. "?|r"); c.suit:SetText("")
+    elseif card then
+        fill(c.edge, { 0.55, 0.52, 0.46 }); fill(c.face, { 0.96, 0.95, 0.92 })
+        local suit = card:sub(2, 2)
+        local ink = (suit == "H" or suit == "D") and "|cffb3201f" or "|cff111111"
+        c.rank:SetText(ink .. Blackjack.RankLabel(card) .. "|r"); c.suit:SetText(ink .. suit .. "|r")
+    end
+    c:Show()
+end
+
+------------------------------------------------------------------------------------------
 -- Launcher
 ------------------------------------------------------------------------------------------
 
@@ -153,6 +330,7 @@ local function setMode(m, game)
     elseif m == "join" then
         L.joinTitle:SetText("Open " .. gameTitle(joinGame):lower() .. " tables")
         CN.AskLobby()
+        UI.KeepAsking()
     end
     UI.Refresh()
 end
@@ -285,7 +463,8 @@ local function buildLauncher()
     end
     L.noRooms = label(jf, "GameFontHighlightSmall"); at(L.noRooms, jf, 0, 36); L.noRooms:SetWidth(500); L.noRooms:SetWordWrap(true)
     L.noRooms:SetText(GREY .. "No open tables yet. Tables show up here when a host opens one. Press Refresh to ask again.|r")
-    local cy = 30 + ROOM_ROWS * 32 + 12
+    L.lobbyNote = label(jf, "GameFontHighlightSmall"); at(L.lobbyNote, jf, 0, 30 + ROOM_ROWS * 32 + 6); L.lobbyNote:SetWidth(520)
+    local cy = 30 + ROOM_ROWS * 32 + 40
     local j2 = label(jf, "GameFontHighlightSmall"); at(j2, jf, 0, cy); j2:SetText("Have a table code? Type it here:")
     L.codeBox = editBox(jf, 120, "", 12); at(L.codeBox, jf, 190, cy - 6)
     L.request = button(jf, "Ask for a seat", 110, function()
@@ -337,6 +516,10 @@ local function refreshLauncher()
     if mode == "join" then
         local rooms = CN.Rooms(joinGame)
         L.noRooms:SetShown(#rooms == 0)
+        local ls = CN.LobbyStatus()
+        if not ls.joined then L.lobbyNote:SetText(GOLD .. "Connecting to the lobby...|r")
+        elseif not ls.heard then L.lobbyNote:SetText(MUTED .. "You are in the lobby. No host has been heard yet. If a friend says they are hosting, ask them for the table code and type it below.|r")
+        else L.lobbyNote:SetText(MUTED .. ("You are in the lobby. A host was last heard %d s ago."):format(ls.heard) .. "|r") end
         for i, r in ipairs(L.room) do
             local room = rooms[i]
             r.text:SetShown(room ~= nil); r.join:SetShown(room ~= nil)
@@ -356,11 +539,13 @@ local function refreshLauncher()
 end
 
 ------------------------------------------------------------------------------------------
--- Host window
+-- Host window (the dealer's view)
 ------------------------------------------------------------------------------------------
 
 local host = {}
 local hostCode
+local HOST_ROWS, PENDING_ROWS = 7, 4
+local HOST_CARDS = 8
 
 local function hostTable()
     return hostCode and db() and Casino.Find(db(), hostCode)
@@ -372,68 +557,166 @@ local function chipsAmount()
     return c
 end
 
+-- What the host should do next, in words, plus which control to light up:
+-- text, target ("admit" | "chips" | "go" | nil), name.
+local function hostHint(t)
+    if t.status == "closed" then
+        return "This table is closed. Settle up with your players in gold, then delete it from /casino.", nil
+    end
+    local pending = Casino.Pending(t)
+    if #pending > 0 then
+        return GOLD .. "Next: let " .. pending[1] .. " in, and give them some chips.|r", "admit", pending[1]
+    end
+    local seated = Casino.Seated(t)
+    if #seated == 0 then
+        return "Waiting for players. Your table is on the list of open tables, or give them the code " .. t.code .. ".", nil
+    end
+    for _, name in ipairs(seated) do
+        local m = t.members[name]
+        if m.balance + Casino.Staked(m) == 0 then
+            return GOLD .. "Next: " .. name .. " has no chips yet. Add some with the + button.|r", "chips", name
+        end
+    end
+    local bettors = 0
+    for _, name in ipairs(seated) do
+        if #t.members[name].bets > 0 then bettors = bettors + 1 end
+    end
+    if t.game == "blackjack" then
+        if t.status == "betting" then
+            if bettors > 0 then
+                return GOLD .. ("Next: %d of %d players have bet. Press Deal when everyone is ready.|r"):format(bettors, #seated), "go"
+            end
+            return "Players are placing their bets.", nil
+        elseif t.status == "playing" then
+            local turn = t.bj.turn
+            return "Waiting for " .. (turn and turn.name or "a player") .. " to play. They are stood after " .. ns.BlackjackTable.TURN_SECONDS .. " seconds, or press Skip.", nil
+        end
+        return "The dealer is playing.", nil
+    end
+    if t.status == "betting" then
+        if bettors > 0 then
+            return GOLD .. ("Next: %d of %d players have bet. Press Spin when everyone is ready.|r"):format(bettors, #seated), "go"
+        end
+        return "Players are placing their bets.", nil
+    end
+    return "The wheel is spinning...", nil
+end
+
+local function miniHandsBadge(hands)
+    local one = #hands == 1 and hands[1] or nil
+    if one and one.state == "bust" then return RED .. "BUST|r" end
+    if one and one.state == "blackjack" then return GREEN .. "BLACKJACK|r" end
+    local values = {}
+    for _, h in ipairs(hands) do if h.value then values[#values + 1] = (h.soft and h.value <= 21 and "soft " or "") .. h.value end end
+    return #values > 0 and table.concat(values, " | ") or (MUTED .. "bet|r")
+end
+
 local function buildHost()
     local H = host
-    local f = newWindow("SteveBookCasinoHostFrame", 720, 560, "SteveBook Casino: Host", { "TOPLEFT", 40, -70 })
-    H.frame = f
-    casinoButton(f)
-    H.head = label(f, "GameFontNormalLarge"); at(H.head, f, 16, 34)
-    H.status = label(f, "GameFontHighlight"); at(H.status, f, 16, 58)
-    local cl = label(f, "GameFontHighlightSmall"); at(cl, f, 16, 84); cl:SetText("Table code (share it):")
-    H.codeBox = editBox(f, 110, "", 12); at(H.codeBox, f, 140, 80)
-    H.codeBox:SetScript("OnChar", function(self) self:SetText(hostCode or "") end)   -- read only: you can still copy it
+    local f, body = playerWindow("SteveBookCasinoHostFrame", 780, 600, "SteveBook Casino: Host", { "TOPLEFT", 40, -70 })
+    H.frame, H.body = f, body
 
-    local pl = label(f, "GameFontNormal"); at(pl, f, 16, 114); pl:SetText("Players")
-    local cb = label(f, "GameFontHighlightSmall", "RIGHT"); at(cb, f, 130, 118); cb:SetWidth(180); cb:SetText("Chips to add or take:")
-    H.chips = editBox(f, 80, "10s", 12); at(H.chips, f, 318, 110)
+    H.head = label(body, "GameFontNormalLarge"); at(H.head, body, 14, 8); H.head:SetWidth(400)
+    H.status = label(body, "GameFontHighlight"); at(H.status, body, 14, 32); H.status:SetWidth(500)
+    H.listed = label(body, "GameFontHighlightSmall", "RIGHT"); at(H.listed, body, 400, 12); H.listed:SetWidth(352)
+    local cl = label(body, "GameFontHighlightSmall"); at(cl, body, 14, 58); cl:SetText(MUTED .. "Table code (to share)|r")
+    H.codeBox = editBox(body, 100, "", 12); at(H.codeBox, body, 150, 52)
+    H.codeBox:SetScript("OnChar", function(self) self:SetText(hostCode or "") end)       -- read only: you can still copy it
 
-    -- the players: column headings, then one row each
-    local hdrs = { { 126, 80, "Chips", "RIGHT" }, { 210, 70, "Result", "RIGHT" } }
-    for _, h in ipairs(hdrs) do
-        local fs = label(f, "GameFontNormalSmall", h[4]); at(fs, f, h[1], 142); fs:SetWidth(h[2]); fs:SetText(h[3])
+    -- the "what next" strip
+    H.hintBox = panel(body, 14, 80, 752, 30, COL.panel, COL.line)
+    H.hint = label(H.hintBox, "GameFontHighlight"); at(H.hint, H.hintBox, 10, 8); H.hint:SetWidth(732); H.hint:SetWordWrap(false)
+
+    -- players
+    local pp = panel(body, 14, 118, 420, 262, COL.panel, COL.line)
+    H.playersBox = pp
+    local pl = label(pp, "GameFontNormal"); at(pl, pp, 10, 8); pl:SetText("Players")
+    local cb = label(pp, "GameFontHighlightSmall", "RIGHT"); at(cb, pp, 100, 12); cb:SetWidth(210); cb:SetText(MUTED .. "Chips to add or take|r")
+    H.chips = editBox(pp, 80, "10s", 12); at(H.chips, pp, 316, 6)
+    for _, h in ipairs({ { 120, 80, "Chips" }, { 204, 74, "Result" } }) do
+        local fs = label(pp, "GameFontNormalSmall", "RIGHT"); at(fs, pp, h[1], 36); fs:SetWidth(h[2]); fs:SetText(h[3])
     end
-    local py = 160
     H.rows = {}
     for i = 1, HOST_ROWS do
         local r = {}
-        local y = py + (i - 1) * 26
-        r.name = label(f, "GameFontHighlight"); at(r.name, f, 16, y + 4); r.name:SetWidth(110); r.name:SetWordWrap(false)
-        r.chips = label(f, "GameFontHighlight", "RIGHT"); at(r.chips, f, 126, y + 4); r.chips:SetWidth(80)
-        r.net = label(f, "GameFontHighlightSmall", "RIGHT"); at(r.net, f, 210, y + 5); r.net:SetWidth(70)
-        r.add = button(f, "+", 26, function() end, 20); at(r.add, f, 288, y)
-        r.take = button(f, "-", 26, function() end, 20); at(r.take, f, 318, y)
-        r.kick = button(f, "Remove", 64, function() end, 20); at(r.kick, f, 350, y)
+        local y = 52 + (i - 1) * 28
+        r.name = label(pp, "GameFontHighlight"); at(r.name, pp, 10, y + 4); r.name:SetWidth(104); r.name:SetWordWrap(false)
+        r.chips = label(pp, "GameFontHighlight", "RIGHT"); at(r.chips, pp, 120, y + 4); r.chips:SetWidth(80)
+        r.net = label(pp, "GameFontHighlightSmall", "RIGHT"); at(r.net, pp, 204, y + 5); r.net:SetWidth(74)
+        r.add = button(pp, "+", 26, function() end, 20); at(r.add, pp, 288, y)
+        r.take = button(pp, "-", 26, function() end, 20); at(r.take, pp, 318, y)
+        r.kick = button(pp, "Remove", 64, function() end, 20); at(r.kick, pp, 348, y)
         H.rows[i] = r
     end
-    H.empty = label(f, "GameFontHighlightSmall"); at(H.empty, f, 16, py + 4)
-    H.more = label(f, "GameFontHighlightSmall"); at(H.more, f, 16, py + HOST_ROWS * 26 + 2)
+    H.empty = label(pp, "GameFontHighlightSmall"); at(H.empty, pp, 10, 56)
+    H.more = label(pp, "GameFontHighlightSmall"); at(H.more, pp, 10, 52 + HOST_ROWS * 28)
 
-    -- players waiting for a seat
-    local qy = py + HOST_ROWS * 26 + 22
-    H.pendTitle = label(f, "GameFontNormal"); at(H.pendTitle, f, 16, qy)
+    -- waiting for a seat
+    local qp = panel(body, 14, 390, 420, 130, COL.panel, COL.line)
+    H.pendBox = qp
+    H.pendTitle = label(qp, "GameFontNormal"); at(H.pendTitle, qp, 10, 8)
     H.pending = {}
     for i = 1, PENDING_ROWS do
         local r = {}
-        local y = qy + 24 + (i - 1) * 26
-        r.name = label(f, "GameFontHighlight"); at(r.name, f, 16, y + 4)
-        r.admit = button(f, "Let in with chips", 130, function() end, 20); at(r.admit, f, 160, y)
-        r.deny = button(f, "Turn down", 80, function() end, 20); at(r.deny, f, 296, y)
+        local y = 30 + (i - 1) * 24
+        r.name = label(qp, "GameFontHighlight"); at(r.name, qp, 10, y + 4); r.name:SetWidth(150)
+        r.admit = button(qp, "Let in with chips", 130, function() end, 20); at(r.admit, qp, 176, y)
+        r.deny = button(qp, "Turn down", 80, function() end, 20); at(r.deny, qp, 312, y)
         H.pending[i] = r
     end
 
-    -- right column
-    local rx = 440
-    H.rightTitle = label(f, "GameFontNormal"); at(H.rightTitle, f, rx, 114); H.rightTitle:SetText("Wheel")
-    H.number = label(f, "GameFontNormalHuge", "CENTER"); at(H.number, f, rx, 138); H.number:SetWidth(264)
-    H.history = label(f, "GameFontHighlightSmall"); at(H.history, f, rx, 188); H.history:SetWidth(264); H.history:SetWordWrap(true)
-    H.betsTitle = label(f, "GameFontNormal"); at(H.betsTitle, f, rx, 224); H.betsTitle:SetText("Bets this round")
-    H.bets = label(f, "GameFontHighlightSmall"); at(H.bets, f, rx, 246); H.bets:SetWidth(264); H.bets:SetWordWrap(true)
-    H.bets:SetJustifyV("TOP"); H.bets:SetHeight(150)
-    local ll = label(f, "GameFontNormal"); at(ll, f, rx, 404); ll:SetText("Bet limits")
-    H.minBox = editBox(f, 70, "", 12); at(H.minBox, f, rx, 426)
-    local dash = label(f, "GameFontHighlight"); at(dash, f, rx + 78, 430); dash:SetText("to")
-    H.maxBox = editBox(f, 70, "", 12); at(H.maxBox, f, rx + 100, 426)
-    H.setLimits = button(f, "Set", 50, function()
+    -- the game
+    local gp = panel(body, 446, 118, 320, 402, COL.panel, COL.line)
+    H.gameBox = gp
+    H.rightTitle = label(gp, "GameFontNormal"); at(H.rightTitle, gp, 10, 8)
+    -- roulette
+    H.roulette = CreateFrame("Frame", nil, gp)
+    H.roulette:SetPoint("TOPLEFT", gp, "TOPLEFT", 0, 0); H.roulette:SetSize(320, 402)
+    H.number = label(H.roulette, "GameFontNormalHuge", "LEFT"); at(H.number, H.roulette, 10, 30)
+    H.numberNote = label(H.roulette, "GameFontHighlightSmall"); at(H.numberNote, H.roulette, 90, 42); H.numberNote:SetWidth(220)
+    H.history = label(H.roulette, "GameFontHighlightSmall"); at(H.history, H.roulette, 10, 84); H.history:SetWidth(300); H.history:SetWordWrap(true)
+    local bt = label(H.roulette, "GameFontNormal"); at(bt, H.roulette, 10, 134); bt:SetText("Bets this round")
+    H.bets = label(H.roulette, "GameFontHighlightSmall"); at(H.bets, H.roulette, 10, 156); H.bets:SetWidth(300)
+    H.bets:SetWordWrap(true); H.bets:SetJustifyV("TOP"); H.bets:SetHeight(236)
+    -- blackjack
+    H.blackjack = CreateFrame("Frame", nil, gp)
+    H.blackjack:SetPoint("TOPLEFT", gp, "TOPLEFT", 0, 0); H.blackjack:SetSize(320, 402)
+    H.dealerCards = {}
+    for i = 1, 6 do H.dealerCards[i] = newCard(H.blackjack, 44, 62) end
+    H.dealerNote = label(H.blackjack, "GameFontHighlightSmall"); at(H.dealerNote, H.blackjack, 10, 98); H.dealerNote:SetWidth(300)
+    local ht = label(H.blackjack, "GameFontNormal"); at(ht, H.blackjack, 10, 124); ht:SetText("Hands")
+    H.bjRows = {}
+    for i = 1, 5 do
+        local r = {}
+        local y = 148 + (i - 1) * 50
+        r.name = label(H.blackjack, "GameFontHighlight"); at(r.name, H.blackjack, 10, y); r.name:SetWidth(100); r.name:SetWordWrap(false)
+        r.info = label(H.blackjack, "GameFontHighlightSmall"); at(r.info, H.blackjack, 10, y + 18); r.info:SetWidth(100); r.info:SetWordWrap(false)
+        r.cards = {}
+        for k = 1, HOST_CARDS do r.cards[k] = newCard(H.blackjack, 22, 32) end
+        r.badge = label(H.blackjack, "GameFontNormalSmall", "RIGHT"); at(r.badge, H.blackjack, 232, y + 8); r.badge:SetWidth(78)
+        H.bjRows[i] = r
+    end
+    H.bjMore = label(H.blackjack, "GameFontHighlightSmall"); at(H.bjMore, H.blackjack, 10, 148 + 5 * 50)
+
+    -- the bottom bar
+    H.spin = button(body, "Spin the wheel", 190, function()
+        local t = hostTable(); if not t then return end
+        local ok, err
+        if t.game == "blackjack" then ok, err = CN.Deal(t) else ok, err = CN.Spin(t) end
+        if not ok then say(err) end
+    end, 32)
+    at(H.spin, body, 14, 528)
+    H.skip = button(body, "Skip this player", 130, function()
+        local t = hostTable(); if not t then return end
+        local ok, err = CN.Skip(t)
+        if not ok then say(err) end
+    end, 22)
+    at(H.skip, body, 214, 533)
+    local ll = label(body, "GameFontHighlightSmall"); at(ll, body, 446, 538); ll:SetText(MUTED .. "Bet limits|r")
+    H.minBox = editBox(body, 62, "", 12); at(H.minBox, body, 516, 532)
+    local dash = label(body, "GameFontHighlightSmall"); at(dash, body, 584, 538); dash:SetText(MUTED .. "to|r")
+    H.maxBox = editBox(body, 62, "", 12); at(H.maxBox, body, 600, 532)
+    H.setLimits = button(body, "Set", 40, function()
         local t = hostTable(); if not t then return end
         local lo, hi = Odds.ParseMoney(H.minBox:GetText()), Odds.ParseMoney(H.maxBox:GetText())
         if not (lo and hi) then return say("Enter bet sizes like 1s or 1g.") end
@@ -441,22 +724,8 @@ local function buildHost()
         if not ok then say(err) end
         UI.Refresh()
     end, 22)
-    at(H.setLimits, f, rx + 178, 426)
-
-    H.spin = button(f, "Spin the wheel", 180, function()
-        local t = hostTable(); if not t then return end
-        local ok, err
-        if t.game == "blackjack" then ok, err = CN.Deal(t) else ok, err = CN.Spin(t) end
-        if not ok then say(err) end
-    end, 32)
-    at(H.spin, f, 16, 500)
-    H.skip = button(f, "Skip this player", 140, function()
-        local t = hostTable(); if not t then return end
-        local ok, err = CN.Skip(t)
-        if not ok then say(err) end
-    end, 22)
-    at(H.skip, f, 210, 505)
-    H.close = button(f, "Close table", 120, function()
+    at(H.setLimits, body, 668, 532)
+    H.close = button(body, "Close table", 78, function()
         local t = hostTable(); if not t then return end
         if not confirmClose then
             confirmClose = true
@@ -469,7 +738,7 @@ local function buildHost()
         CN.CloseTable(t)
         say("Table closed. Settle up with your players in gold, then delete it from /casino.")
     end, 22)
-    at(H.close, f, 580, 504)
+    at(H.close, body, 688, 566 - 32)
     f:SetScript("OnShow", function() UI.Refresh() end)
 end
 
@@ -478,26 +747,32 @@ local function refreshHost()
     if not (H.frame and H.frame:IsShown()) then return end
     local t = hostTable()
     if not t then H.frame:Hide(); return end
-    H.head:SetText(t.name)
     local bjGame = t.game == "blackjack"
+    H.head:SetText(t.name)
     local statusText = ({ betting = GREEN .. "Taking bets|r", spinning = GOLD .. "Spinning...|r", closed = RED .. "Closed|r",
         playing = GOLD .. "Players are deciding|r", dealer = GOLD .. "Dealer's turn|r" })[t.status]
-    H.status:SetText(("%s   Round %d   Bets %s to %s   %s"):format(statusText or t.status, t.round, money(t.minBet), money(t.maxBet),
-        GREY .. (bjGame and "blackjack pays 3:2" or ({ single = "single zero", double = "double zero", none = "no zero" })[t.zero]) .. "|r"))
-    H.rightTitle:SetText(bjGame and "Dealer" or "Wheel")
-    H.betsTitle:SetText(bjGame and "Hands" or "Bets this round")
-    H.skip:SetShown(bjGame)
+    H.status:SetText(("%s   %sRound %d   Bets %s to %s   %s|r"):format(statusText or t.status, MUTED, t.round, money(t.minBet), money(t.maxBet),
+        bjGame and "blackjack pays 3:2" or ({ single = "single zero", double = "double zero", none = "no zero" })[t.zero]))
+    local ago = CN.LastAnnounce()
+    H.listed:SetText(t.status == "closed" and "" or (ago and (MUTED .. ("On the list of open tables (announced %d s ago)"):format(ago) .. "|r")
+        or (GOLD .. "Not on the list yet...|r")))
     H.codeBox:SetText(t.code)
     if not H.minBox:HasFocus() then H.minBox:SetText(money(t.minBet)) end
     if not H.maxBox:HasFocus() then H.maxBox:SetText(money(t.maxBet)) end
 
+    local hint, target, who = hostHint(t)
+    H.hint:SetText(hint)
+    fill(H.hintBox.edge, target and COL.gold or COL.line)
+
+    -- waiting for a seat
     local pending = Casino.Pending(t)
+    H.pendTitle:SetText(#pending > 0 and (GOLD .. "Asking for a seat|r") or (MUTED .. "Nobody is waiting for a seat.|r"))
     for i, r in ipairs(H.pending) do
         local name = pending[i]
         r.name:SetShown(name ~= nil); r.admit:SetShown(name ~= nil); r.deny:SetShown(name ~= nil)
+        glow(r.admit, name ~= nil and i == 1 and target == "admit")
         if name then
             r.name:SetText(GOLD .. name .. "|r asks for a seat")
-            r.name:SetWidth(150)
             r.admit:SetScript("OnClick", function()
                 local chips = Odds.ParseMoney(H.chips:GetText()) or 0
                 local ok, err = CN.Admit(t, name, chips)
@@ -508,11 +783,13 @@ local function refreshHost()
         end
     end
 
+    -- players
     local ledger = {}
     for _, e in ipairs(Casino.Ledger(t)) do if e.status == "seated" then ledger[#ledger + 1] = e end end
     for i, r in ipairs(H.rows) do
         local e = ledger[i]
         for _, w in ipairs({ r.name, r.chips, r.net, r.add, r.take, r.kick }) do w:SetShown(e ~= nil) end
+        glow(r.add, e ~= nil and target == "chips" and e.name == who)
         if e then
             local m = t.members[e.name]
             r.name:SetText(e.name)
@@ -535,29 +812,60 @@ local function refreshHost()
     end
     H.more:SetText(#ledger > HOST_ROWS and (GREY .. ("+%d more seated"):format(#ledger - HOST_ROWS) .. "|r") or "")
     H.empty:SetText(#ledger == 0 and (GREY .. "Nobody is seated yet.|r") or "")
-    H.pendTitle:SetText(#pending > 0 and "Asking for a seat" or (GREY .. "Nobody is waiting for a seat.|r"))
 
+    -- the game
+    H.roulette:SetShown(not bjGame); H.blackjack:SetShown(bjGame)
+    H.rightTitle:SetText(bjGame and "Dealer" or "Last spin")
     local last = t.lastResult
-    local lines = {}
+    local goReady = target == "go"
     if bjGame then
         local pub = ns.BlackjackTable.Public(t)
-        local dealerText = #pub.dealer.cards == 0 and (GREY .. "no cards yet|r") or UI.CardsText(pub.dealer.cards) .. (pub.dealer.hidden and " ??" or "")
-        H.number:SetText(dealerText)
-        H.history:SetText(last and last.dealer and (GREY .. ("Last round: dealer %d%s"):format(last.dealer.total, last.dealer.bust and " (bust)" or "") .. "|r") or "")
-        for _, h in ipairs(pub.hands) do
-            lines[#lines + 1] = h.name .. ": " .. UI.HandsText(h.hands)
+        local dcards, hidden = pub.dealer.cards, pub.dealer.hidden
+        if #dcards == 0 and last and last.dealer then dcards = last.dealer.cards end
+        for i, c in ipairs(H.dealerCards) do
+            if dcards[i] then showCard(c, dcards[i], false, 10 + (i - 1) * 50, 30, H.blackjack)
+            elseif hidden and i == #dcards + 1 then showCard(c, nil, true, 10 + (i - 1) * 50, 30, H.blackjack)
+            else c:Hide() end
         end
-        H.bets:SetText(#lines > 0 and table.concat(lines, "\n") or (GREY .. "No bets yet.|r"))
+        H.dealerNote:SetText(#pub.dealer.cards == 0 and (last and last.dealer and (MUTED .. ("Last round: dealer %d%s"):format(last.dealer.total, last.dealer.bust and " (bust)" or "") .. "|r") or (MUTED .. "No cards yet.|r"))
+            or (pub.dealer.value and ("Dealer has " .. pub.dealer.value) or (MUTED .. "The hole card is face down.|r")))
+        for i, r in ipairs(H.bjRows) do
+            local h = pub.hands[i]
+            r.name:SetShown(h ~= nil); r.info:SetShown(h ~= nil); r.badge:SetShown(h ~= nil)
+            if h then
+                local m = t.members[h.name]
+                local bet = 0
+                for _, hand in ipairs(h.hands) do bet = bet + (hand.bet or 0) end
+                r.name:SetText((pub.turn == h.name and (GOLD .. "> |r") or "") .. h.name)
+                r.info:SetText(MUTED .. "bet " .. shortMoney(bet) .. (m and ("  chips " .. shortMoney(m.balance)) or "") .. "|r")
+                local k, x, y = 0, 116, 148 + (i - 1) * 50 + 2
+                for _, hand in ipairs(h.hands) do
+                    for _, card in ipairs(hand.cards) do
+                        k = k + 1
+                        if r.cards[k] then showCard(r.cards[k], card, false, x, y, H.blackjack); x = x + 25 end
+                    end
+                    x = x + 6
+                end
+                for j = k + 1, HOST_CARDS do r.cards[j]:Hide() end
+                r.badge:SetText(miniHandsBadge(h.hands))
+            else
+                for j = 1, HOST_CARDS do r.cards[j]:Hide() end
+            end
+        end
+        H.bjMore:SetText(#pub.hands > 5 and (GREY .. ("+%d more players"):format(#pub.hands - 5) .. "|r") or "")
+        H.spin:SetText("Deal")
         local anyWager = false
         for _, name in ipairs(Casino.Seated(t)) do
             for _, b in ipairs(t.members[name].bets) do if b.kind == "wager" then anyWager = true end end
         end
-        H.spin:SetText("Deal")
         if t.status == "betting" and anyWager then H.spin:Enable() else H.spin:Disable() end
+        H.skip:Show()
         if t.status == "playing" then H.skip:Enable() else H.skip:Disable() end
     else
-        H.number:SetText(last and colored(last.number) or GREY .. "-|r")
+        H.number:SetText(last and last.number and colored(last.number) or GREY .. "-|r")
+        H.numberNote:SetText(last and last.number and (MUTED .. Roulette.Color(last.number) .. "|r") or (MUTED .. "No spins yet.|r"))
         H.history:SetText(historyText(t.history))
+        local lines = {}
         for _, name in ipairs(Casino.Seated(t)) do
             local m = t.members[name]
             if #m.bets > 0 then
@@ -569,74 +877,9 @@ local function refreshHost()
         H.bets:SetText(#lines > 0 and table.concat(lines, "\n") or (GREY .. "No bets yet.|r"))
         H.spin:SetText("Spin the wheel")
         if t.status == "betting" then H.spin:Enable() else H.spin:Disable() end
+        H.skip:Hide()
     end
-end
-
-------------------------------------------------------------------------------------------
--- The look of the two player windows: dark brown panels with gold edges (the sportsbook's colours)
-------------------------------------------------------------------------------------------
-
-local COL = {
-    ground = { 0.09, 0.07, 0.05 }, panel = { 0.106, 0.082, 0.055 }, raised = { 0.165, 0.13, 0.085 },
-    edge = { 0.48, 0.39, 0.19 }, line = { 0.23, 0.18, 0.11 }, sel = { 0.29, 0.23, 0.11 }, gold = { 1, 0.82, 0 },
-}
-local MUTED = "|cffb9ab8c"
-
-local function fill(tex, c, a) paint(tex, c[1], c[2], c[3], a or 1) end
-
--- A flat box with a one-pixel edge; its children draw above it.
-local function panel(parent, x, y, w, h, fillColor, edgeColor)
-    local f = CreateFrame("Frame", nil, parent)
-    f:SetSize(w, h)
-    f:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
-    f.edge = f:CreateTexture(nil, "BACKGROUND"); f.edge:SetAllPoints(); fill(f.edge, edgeColor or COL.line)
-    f.fill = f:CreateTexture(nil, "BORDER")
-    f.fill:SetPoint("TOPLEFT", 1, -1); f.fill:SetPoint("BOTTOMRIGHT", -1, 1)
-    fill(f.fill, fillColor or COL.panel)
-    return f
-end
-
--- A flat button: text in the middle, an optional tag (like "2:1") at the right. State: "normal",
--- "selected" (gold edge) or "off".
-local function flat(parent, text, w, h, onClick)
-    local b = CreateFrame("Button", nil, parent)
-    b:SetSize(w, h)
-    b.edge = b:CreateTexture(nil, "BACKGROUND"); b.edge:SetAllPoints()
-    b.fill = b:CreateTexture(nil, "BORDER"); b.fill:SetPoint("TOPLEFT", 1, -1); b.fill:SetPoint("BOTTOMRIGHT", -1, 1)
-    b.text = label(b, "GameFontHighlightSmall", "CENTER"); b.text:SetPoint("CENTER"); b.text:SetText(text)
-    b.tag = label(b, "GameFontNormalSmall", "RIGHT"); b.tag:SetPoint("RIGHT", -6, 0)
-    b.state = "normal"
-    function b:Paint(state)
-        self.state = state or self.state
-        local f, e = COL.raised, COL.edge
-        if self.state == "selected" then f, e = COL.sel, COL.gold
-        elseif self.state == "off" then f, e = COL.panel, COL.line end
-        if self.hover then f = { f[1] + 0.07, f[2] + 0.06, f[3] + 0.04 } end
-        fill(self.edge, e); fill(self.fill, f)
-    end
-    b:SetScript("OnEnter", function(self) self.hover = true; self:Paint() end)
-    b:SetScript("OnLeave", function(self) self.hover = false; self:Paint() end)
-    b:SetScript("OnClick", onClick)
-    b:Paint("normal")
-    return b
-end
-
--- A window with the dark body panel already in it. Returns the frame and the body.
-local function playerWindow(name, w, h, title, anchor)
-    local f = newWindow(name, w, h, title, anchor)
-    casinoButton(f)
-    local body = panel(f, 6, 28, w - 12, h - 34, COL.ground, COL.edge)
-    return f, body
-end
-
-local STAKE_BUTTONS = { 100, 500, 1000, 5000, 10000 }
-local amount = Odds.STAKE_STEP                 -- the stake a new pick or bet starts with
-
--- Parse a stake box. Returns copper, or nil (after saying why through `complain`).
-local function parseStake(text, complain)
-    local c = Odds.ParseMoney(text or "")
-    if not c or c <= 0 then complain("Enter a stake like 5s."); return nil end
-    return c
+    glow(H.spin, goReady and H.spin:IsEnabled())
 end
 
 ------------------------------------------------------------------------------------------
@@ -956,12 +1199,6 @@ local function stakedOn(tc)
     return straight, outside
 end
 
-local function shortMoney(c)
-    if c >= Odds.MAX_STAKE and c % Odds.MAX_STAKE == 0 then return (c / Odds.MAX_STAKE) .. "g" end
-    if c % 100 == 0 then return (c / 100) .. "s" end
-    return money(c)
-end
-
 local function refreshTable()
     local P = play
     if not (P.frame and P.frame:IsShown()) then return end
@@ -1057,72 +1294,17 @@ local function refreshTable()
     if #slip > 0 then P.clearSlip:Enable() else P.clearSlip:Disable() end
     local nb = #tc.bets
     P.onTable:SetText(nb > 0 and (money(Client.Staked(tc)) .. " in " .. nb .. (nb == 1 and " bet" or " bets")) or (GREY .. "nothing yet|r"))
-    P.msg:SetText(message)
+    local staked = Client.Staked(tc)
+    local hint = ""
+    if tc.status == "seated" and st then
+        if (tc.balance or 0) + staked == 0 then hint = MUTED .. "You have no chips yet. Ask the host to add some, then you can bet.|r"
+        elseif can and #slip > 0 then hint = GOLD .. ("Ready? Press %s.|r"):format(#slip == 1 and "Place 1 bet" or ("Place " .. #slip .. " bets"))
+        elseif can and staked > 0 then hint = MUTED .. "Your bets are in. Add more, or wait for the host to spin.|r"
+        elseif can then hint = GOLD .. "Start by clicking a number or a bet on the board.|r" end
+    end
+    P.msg:SetText(message ~= "" and message or hint)
+    glow(P.place, can and #slip > 0)
     if tc.status == "seated" then P.leave:Enable() else P.leave:Disable() end
-end
-
-------------------------------------------------------------------------------------------
--- Cards (the host window uses these helpers too)
-------------------------------------------------------------------------------------------
-
-local SUIT_COLOR = { S = "|cffdddddd", H = "|cffff5050", D = "|cff55aaff", C = "|cff55dd77" }
-
--- "10h", "As": the rank, then the suit in its own colour (four-colour deck; plain letters, so no
--- special glyphs are needed from the font).
-function UI.CardText(card)
-    local suit = card:sub(2, 2)
-    return Blackjack.RankLabel(card) .. (SUIT_COLOR[suit] or "") .. suit:lower() .. "|r"
-end
-
-function UI.CardsText(cards)
-    local parts = {}
-    for i, c in ipairs(cards) do parts[i] = UI.CardText(c) end
-    return table.concat(parts, " ")
-end
-
-local HAND_STATE = { stand = "stands", bust = RED .. "BUST|r", blackjack = GREEN .. "BLACKJACK|r", bet = GREY .. "bet placed|r" }
-
--- One player's hands as a line of text: cards, total, bet, state (two hands after a split).
-function UI.HandsText(hands)
-    local parts = {}
-    for i, h in ipairs(hands) do
-        local bits = {}
-        if #h.cards > 0 then
-            bits[#bits + 1] = UI.CardsText(h.cards)
-            if h.value then bits[#bits + 1] = "= " .. (h.soft and h.value <= 21 and "soft " or "") .. h.value end
-        end
-        bits[#bits + 1] = GREY .. "bet " .. money(h.bet or 0) .. "|r"
-        if HAND_STATE[h.state] then bits[#bits + 1] = HAND_STATE[h.state] end
-        parts[i] = table.concat(bits, "  ")
-    end
-    return table.concat(parts, "   |   ")
-end
-
--- A playing card: a white rectangle with the rank on top and the suit letter below (red for hearts
--- and diamonds), or a dark back with a gold edge when it is face down.
-local function newCard(parent, w, h)
-    local c = CreateFrame("Frame", nil, parent)
-    c:SetSize(w, h)
-    c.edge = c:CreateTexture(nil, "BACKGROUND"); c.edge:SetAllPoints(); fill(c.edge, { 0.55, 0.52, 0.46 })
-    c.face = c:CreateTexture(nil, "BORDER"); c.face:SetPoint("TOPLEFT", 1, -1); c.face:SetPoint("BOTTOMRIGHT", -1, 1)
-    c.rank = label(c, "GameFontNormalLarge", "CENTER"); c.rank:SetPoint("CENTER", 0, 7)
-    c.suit = label(c, "GameFontNormalSmall", "CENTER"); c.suit:SetPoint("BOTTOM", 0, 4)
-    return c
-end
-
-local function showCard(c, card, down, x, y, parent)
-    c:ClearAllPoints()
-    c:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
-    if down then
-        fill(c.edge, COL.gold); fill(c.face, { 0.27, 0.18, 0.08 })
-        c.rank:SetText(GOLD .. "?|r"); c.suit:SetText("")
-    elseif card then
-        fill(c.edge, { 0.55, 0.52, 0.46 }); fill(c.face, { 0.96, 0.95, 0.92 })
-        local suit = card:sub(2, 2)
-        local ink = (suit == "H" or suit == "D") and "|cffb3201f" or "|cff111111"
-        c.rank:SetText(ink .. Blackjack.RankLabel(card) .. "|r"); c.suit:SetText(ink .. suit .. "|r")
-    end
-    c:Show()
 end
 
 ------------------------------------------------------------------------------------------
@@ -1335,6 +1517,7 @@ local function refreshBlackjack()
         local free = tc.balance or 0
         B.actTitle:SetText(GREEN .. "Your turn|r" .. (#mine > 1 and (MUTED .. ("   hand %d of %d"):format(myHand, #mine) .. "|r") or ""))
         B.hit:Show(); B.stand:Show(); B.double:Show(); B.split:Show(); B.waiting:SetText("")
+        glow(B.hit, true); glow(B.stand, true)
         if h then
             if h.aces and h.split then B.hit:Disable() else B.hit:Enable() end
             B.stand:Enable()
@@ -1348,11 +1531,14 @@ local function refreshBlackjack()
         B.barTrack:Show(); B.barFill:Show()
     else
         B.actTitle:SetText(MUTED .. "Your decision|r")
+        glow(B.hit, false); glow(B.stand, false)
         B.hit:Hide(); B.stand:Hide(); B.double:Hide(); B.split:Hide()
         B.timer:SetText(""); B.barTrack:Hide(); B.barFill:Hide()
         local mineBetting = Client.Staked(tc) > 0
-        B.waiting:SetText(canBet and (mineBetting and (MUTED .. "Your bet is in. The host deals when everyone is ready.|r") or (MUTED .. "Place a bet to be dealt in.|r"))
-            or (pub and pub.turn and (MUTED .. "Waiting for " .. pub.turn .. " to play...|r") or ""))
+        local noChips = tc.status == "seated" and (tc.balance or 0) + Client.Staked(tc) == 0
+        B.waiting:SetText(noChips and (MUTED .. "You have no chips yet. Ask the host to add some, then you can bet.|r")
+            or (canBet and (mineBetting and (MUTED .. "Your bet is in. The host deals when everyone is ready.|r") or (GOLD .. "Place a bet to be dealt in.|r"))
+            or (pub and pub.turn and (MUTED .. "Waiting for " .. pub.turn .. " to play...|r") or "")))
     end
 
     -- bet panel
@@ -1362,6 +1548,7 @@ local function refreshBlackjack()
     else
         B.place:Disable(); B.back:Disable()
     end
+    glow(B.place, canBet and Client.Staked(tc) == 0 and (tc.balance or 0) > 0)
     local mine = Client.MyResult(tc, me)
     if (B.message or "") ~= "" then B.msg:SetText(B.message)
     elseif mine and canBet then B.msg:SetText("Last round: " .. signed(mine.net))
@@ -1386,6 +1573,23 @@ end
 ------------------------------------------------------------------------------------------
 -- Public
 ------------------------------------------------------------------------------------------
+
+-- While the list of open tables is on screen, ask the lobby again every few seconds (for a minute), so a
+-- request or an announcement that got lost does not leave the list empty.
+local askTicker
+function UI.KeepAsking()
+    if askTicker or not (C_Timer and C_Timer.NewTicker) then return end
+    local n = 0
+    askTicker = C_Timer.NewTicker(6, function()
+        n = n + 1
+        if mode ~= "join" or not (launcher.frame and launcher.frame:IsShown()) or n > 10 then
+            askTicker:Cancel(); askTicker = nil
+            return
+        end
+        CN.AskLobby()
+        UI.Refresh()
+    end)
+end
 
 function UI.Refresh()
     refreshLauncher()

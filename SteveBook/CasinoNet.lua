@@ -265,8 +265,10 @@ end
 ------------------------------------------------------------------------------------------
 
 local ROOM_TTL = 100                     -- a listing disappears this long after the host's last announcement
+local ANNOUNCE_EVERY = 15                -- hosts repeat their listing this often (a missed message costs only 15 s)
 local rooms = {}                         -- code -> { entry, seen }
 local lastAnnounce = 0
+local lastHeard = nil                    -- when any host's listing (table or book) last reached me
 
 local function entryFor(t)
     return { code = t.code, game = t.game, name = t.name, host = t.hostName, seats = #Casino.Seated(t),
@@ -292,9 +294,18 @@ end
 
 -- Join the lobby and ask who is hosting. Called when the player opens the list of tables.
 function CasinoNet.AskLobby()
+    if db() then db().lobbyJoined = true end            -- from now on stay in the lobby, so the list is already warm next time
     ns.Comm.JoinBook(ns.Protocol.LOBBY_CODE)
     ns.Comm.Send("LOBBY_ASK", {}, ns.Protocol.LOBBY_CODE)
 end
+
+-- For the window: am I in the lobby channel, and when did a host last come through?
+function CasinoNet.LobbyStatus()
+    return { joined = ns.Comm.IsJoined(ns.Protocol.LOBBY_CODE), heard = lastHeard and (now() - lastHeard) or nil }
+end
+
+-- Seconds since my own tables were last announced, or nil if never.
+function CasinoNet.LastAnnounce() return lastAnnounce > 0 and (now() - lastAnnounce) or nil end
 
 -- Open tables of one game (or all) that I could join, newest announcement first, as entries
 -- { code, game, name, host, seats, status, minBet, maxBet, zero, age }. Tables I already sit at or
@@ -333,10 +344,13 @@ end
 local lobbyHandlers = {}
 
 function lobbyHandlers.LOBBY_ASK()
-    if now() - lastAnnounce >= 5 then CasinoNet.Announce() end
+    if now() - lastAnnounce >= 2 then CasinoNet.Announce() end
 end
 
+function lobbyHandlers.LOBBY_BOOKS() lastHeard = now() end       -- only to know the lobby is alive
+
 function lobbyHandlers.LOBBY_TABLE(sender, p)
+    lastHeard = now()
     for _, e in ipairs(p.tables) do
         -- a listing counts only when the host announces their own table
         if baseName(sender) == baseName(e.host) then
@@ -556,7 +570,6 @@ end
 local function tick()
     local d = db()
     if not (d and d.casinoCache) then return end
-    CasinoNet.Announce()                                  -- keeps my open tables on the list
     local t0 = now()
     for _, tc in ipairs(Client.List(d.casinoCache)) do
         if tc.status == "requested" then
@@ -589,6 +602,7 @@ local function register()
     if C_Timer and C_Timer.NewTicker then
         C_Timer.NewTicker(TICK_SECONDS, tick)
         C_Timer.NewTicker(1, blackjackTick)
+        C_Timer.NewTicker(ANNOUNCE_EVERY, function() CasinoNet.Announce() end)    -- keeps my open tables on the list
     end
 end
 

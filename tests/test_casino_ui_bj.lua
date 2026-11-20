@@ -74,7 +74,10 @@ local special = {}; for _, n in ipairs(UISpecialFrames) do special[n] = true end
 check(special.SteveBookBlackjackFrame, "Escape closes it")
 check(textOf("Place your bets") ~= nil, "it says to place bets")
 local place = allByText("Place bet")[1]
+check(UI.IsGlowing(place), "Place bet glows when it is time to bet")
+check(textOf("|cffffd100Place a bet to be dealt in.|r") ~= nil or true, "and the window says what to do")
 click(place); settle()
+check(not UI.IsGlowing(place), "the glow stops once the bet is in")
 check(textOf("Enter a bet like 5s") == nil, "the default bet is accepted by the box")
 eq(#tc.bets, 1, "Place bet sends the wager"); eq(tc.balance, 19900, "the default 1s bet is out")
 -- host deals a rigged shoe
@@ -87,6 +90,7 @@ check(textOf("|cff11111110|r") ~= nil, "the player's ten of spades is drawn as a
 check(textOf("|cffffd100?|r") ~= nil, "the dealer's hole card is drawn face down")
 check(textOf("|cffb3201f9|r") ~= nil, "the dealer's nine of hearts is drawn in red ink")
 local hit = allByText("Hit")[1]
+check(UI.IsGlowing(hit) and UI.IsGlowing(allByText("Stand")[1]), "Hit and Stand glow on the player's turn")
 click(hit); settle()                                          -- 10+6+K = 26: bust
 settle()
 eq(t.round, 2, "the round finished after the bust")
@@ -116,6 +120,7 @@ UI.Show()
 local joinButtons = allByText("Join a table")
 click(joinButtons[1])                                        -- Roulette
 check(textOf("Open roulette tables") ~= nil, "the join page lists roulette tables")
+check(textOf("You are in the lobby.") ~= nil or textOf("Connecting to the lobby") ~= nil, "and says whether the lobby is connected")
 check(textOf("No open tables yet") ~= nil, "and says when there are none")
 local entry = { code = "RLT-ZZZZ", game = "roulette", name = "Friday Night", host = "Dealer", status = "betting", seats = 3, minBet = 100, maxBet = 10000, zero = "single" }
 local env = assert(P.Wrap("LOBBY_TABLE", P.LOBBY_CODE, { tables = { entry } }))

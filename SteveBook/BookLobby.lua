@@ -15,7 +15,7 @@ local BL = {}
 ns.BookLobby = BL
 
 local ROOM_TTL = 100                 -- a listing disappears this long after the last announcement
-local ANNOUNCE_EVERY = 30
+local ANNOUNCE_EVERY = 15
 local rooms = {}                     -- code -> { entry, seen }
 local lastAnnounce = 0
 local listeners = {}
@@ -56,6 +56,7 @@ function BL.Announce()
 end
 
 function BL.Ask()
+    if db() then db().lobbyJoined = true end          -- stay in the lobby from now on
     ns.Comm.JoinBook(Protocol.LOBBY_CODE)
     ns.Comm.Send("LOBBY_ASK", {}, Protocol.LOBBY_CODE)
 end
@@ -88,7 +89,7 @@ end
 local handlers = {}
 
 function handlers.LOBBY_ASK()
-    if now() - lastAnnounce >= 5 then BL.Announce() end
+    if now() - lastAnnounce >= 2 then BL.Announce() end
 end
 
 function handlers.LOBBY_BOOKS(sender, p)

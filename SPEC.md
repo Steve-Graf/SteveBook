@@ -347,11 +347,19 @@ messages.
   out). The host sees each player's chips, what they were given (`bought`) and the result.
 - **Finding a table.** Everyone with the casino open sits in one shared hidden **lobby** channel
   (`Protocol.LOBBY_CODE`). Hosts announce their open tables there (`LOBBY_TABLE`: code, game, name,
-  host, seats, status, bet limits, wheel) when they create or change a table and every 30 s;
+  host, seats, status, bet limits, wheel) when they create or change a table and every 15 s;
   a player's list asks with `LOBBY_ASK`. A listing counts only when announced by the host it names,
   disappears 100 s after the last announcement, and is removed at once when the table closes. The
   player picks a table from the list and clicks Join; a code can still be typed for a table that
   is not listed.
+  Once a player has opened the casino or the book list they stay in the lobby channel at every login
+  (`SteveBookDB.lobbyJoined`), so the list is usually already filled when they look. While the list
+  is on screen it asks again every 6 s for a minute, and it says whether the lobby is connected and
+  when a host was last heard, so an empty list can be told apart from a broken connection.
+- **Guidance.** The windows say what to do next, and the control to press glows (a pulsing gold rim;
+  `UI.IsGlowing` in tests): the host sees it on "Let in with chips" when someone waits, on "+" for a
+  seated player with no chips, and on Spin/Deal once players have bet; players see it on "Place
+  bets"/"Place bet" when it is time to bet and on Hit and Stand on their turn.
 - **Codes and channels.** A table code looks like `RLT-K7Q2` or `BJK-K7Q2` (prefix per game). It maps to a hidden
   channel exactly like a book code, so the same `Comm` carries it. A table is hosted by the
   character that created it (`SteveBookDB.casino.tables`); players keep a cache

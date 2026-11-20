@@ -344,7 +344,7 @@ local function joinAll()
     for code, t in pairs(db.casino and db.casino.tables or {}) do
         if t.hostName == myName() and t.status ~= "closed" then Comm.JoinBook(code); hosting = true end
     end
-    if hosting then Comm.JoinBook(Protocol.LOBBY_CODE) end       -- the lobby, to announce my tables
+    if hosting or db.lobbyJoined then Comm.JoinBook(Protocol.LOBBY_CODE) end   -- the lobby: to announce my tables, or to hear others
     for code, tc in pairs(db.casinoCache and db.casinoCache.tables or {}) do
         if tc.status == "requested" or tc.status == "seated" then Comm.JoinBook(code) end
     end
