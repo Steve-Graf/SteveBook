@@ -113,7 +113,7 @@ local function runTickers(client)
     as(client, function() for _, t in ipairs(client.tickers) do t.fn(t) end end)
 end
 
-local COMMON = { "Odds.lua", "Protocol.lua", "Model.lua", "Bookie.lua", "Cache.lua", "Slip.lua" }
+local COMMON = { "Odds.lua", "Protocol.lua", "Clock.lua", "Model.lua", "Bookie.lua", "Cache.lua", "Slip.lua" }
 local function files(...)
     local list = {}
     for _, f in ipairs(COMMON) do list[#list + 1] = f end

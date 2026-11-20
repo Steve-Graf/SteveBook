@@ -9,6 +9,7 @@
 Libs\embeds.xml
 Odds.lua
 Protocol.lua
+Clock.lua
 Model.lua
 Bookie.lua
 Import.lua
@@ -18,4 +19,5 @@ Comm.lua
 BookieNet.lua
 UI\Bookie.lua
 UI\Bettor.lua
+UI\Minimap.lua
 Core.lua

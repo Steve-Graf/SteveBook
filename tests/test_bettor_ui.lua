@@ -56,7 +56,7 @@ print = function(...) printed[#printed + 1] = table.concat({ ... }, " ") end
 local function lastPrint() return printed[#printed] or "" end
 
 local ns = {}
-for _, f in ipairs({ "Odds", "Protocol", "Cache", "Slip" }) do assert(loadfile("SteveBook/" .. f .. ".lua"))("SteveBook", ns) end
+for _, f in ipairs({ "Odds", "Protocol", "Clock", "Cache", "Slip" }) do assert(loadfile("SteveBook/" .. f .. ".lua"))("SteveBook", ns) end
 local Cache = ns.Cache
 SteveBookDB = { cache = Cache.NewStore() }
 
@@ -387,7 +387,7 @@ do
     local entries = {
         { id = 1, who = "Me", text = "PHI -3.5 -110 · PHI @ DAL", stake = 2000, status = "accepted", at = T - 10, win = 1818 },
         { id = 2, who = "Ann", text = ("a very long parlay description "):rep(6), stake = 1000, status = "accepted", at = T - 5, win = 4000 },
-        { id = 3, who = "Bob", text = "NYG ML +150", stake = 500, status = "lost", at = T - 3600 },
+        { id = 3, who = "Bob", text = "NYG ML +150", stake = 500, status = "lost", at = T - 90000 },
     }
     -- Forged and misplaced BETS are ignored.
     local before = Cache.GroupBets(SteveBookDB.cache, CODE)
@@ -419,6 +419,18 @@ do
     check(frameWithTextContaining("Updated 0s ago") ~= nil, "Updated Ns ago")
     check(frameWithTextContaining("PHI -3.5 -110") ~= nil and frameWithTextContaining("NYG ML +150") ~= nil, "pick text rows")
     check(frameWithTextContaining("Ann") ~= nil and frameWithTextContaining("Bob") ~= nil, "who column")
+    -- Placed column: server/west-coast clock via Clock, never the machine's own time zone.
+    check(ns.Clock.Label() == "PT" and frameWithTextContaining("Placed (PT)") ~= nil, "header says Placed (PT) without a game clock")
+    for _, e in ipairs(entries) do
+        check(frameWithTextContaining(ns.Clock.Format(e.at)) ~= nil, "Placed cell shows Clock.Format for " .. e.who)
+    end
+    check(ns.Clock.Format(entries[3].at):find("%a%a%a %d+ ") ~= nil, "an older bet shows its date")
+    GetGameTime = function() return 23, 42 end          -- a realm clock: the label follows Clock.Label()
+    B.Refresh()
+    check(ns.Clock.Label() == "server" and frameWithTextContaining("Placed (server)") ~= nil, "header says Placed (server) when the game clock is available")
+    check(frameWithTextContaining(ns.Clock.Format(entries[1].at)) ~= nil, "cells follow the server clock too")
+    GetGameTime = nil
+    B.Refresh()
     local mine
     for _, f in ipairs(frames) do local x = rawget(f, "_text"); if type(x) == "string" and x:find("Me", 1, true) and x:find("|cffffd100", 1, true) and x:sub(-2) == "|r" then mine = f end end
     check(mine ~= nil, "the viewer's own rows are highlighted")

@@ -29,6 +29,11 @@ named **Loopback** in `/bookie`. Turn it off again (`/book loopback`) for real p
 `/book ratio` toggles the bettor window and chat between American odds (-110, +150, the default) and
 ratios (profit per 1 staked: -500 is 0.2x, +150 is 1.5x). The bookie window always uses American odds.
 
+## Minimap icon
+
+A coin button on the minimap: left-click opens the bet window, right-click the bookie window, drag
+to move it. `/book icon` hides or shows it.
+
 ## Tests
 
 Pure-logic modules are tested outside the game with plain Lua:
@@ -50,6 +55,8 @@ Run these on the Windows machine and report anything that prints `nil` or `false
     /dump securecallfunction, GetFramerate, table.wipe, Enum.SendAddonMessageResult, C_ChatInfo.SendAddonMessageLogged, issecretvalue
     /run print(Ambiguate("Bob-"..GetNormalizedRealmName(), "none"), Ambiguate("Bob-Other Realm", "none"))   -- expect: Bob  and  Bob-OtherRealm
     /run local e=CreateFrame("EditBox",nil,UIParent) print(e.HasFocus~=nil, e.SetJustifyH~=nil, GameTooltip~=nil and GameTooltip.SetOwner~=nil, GameFontNormalSmall~=nil) e:Hide()
+    /run print(GetGameTime(), date("!%H:%M", GetServerTime()))   -- realm hour, minute, then the UTC time; the All Bets "Placed" column uses the difference
+    /run print(Minimap and Minimap:GetWidth(), GetCursorPosition ~= nil, math.atan2 ~= nil)   -- the minimap icon needs all three
 
 Test messaging in a city or the open world only (addon messages are restricted in instances).
 Saved data is per character (`SavedVariablesPerCharacter`), so each character has its own books and

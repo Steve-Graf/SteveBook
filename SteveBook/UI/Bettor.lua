@@ -24,13 +24,15 @@ local CELL_GAP = 4
 local CELL_W = math.floor((BOARD_W - GAME_COL_W - 4 * CELL_GAP) / 3)
 local GROUP_W = WIN_W - 2 * PAD
 local GROUP_ROW_H = 22
--- All Bets columns: who, the pick (the bookie's text), stake, to win, status.
+-- All Bets columns: who, when placed (server time, see Clock.lua), the pick (the bookie's text),
+-- stake, to win, status. The Placed header gets its clock name at render time.
 local GROUP_COLS = {
-    { title = "Who",    x = 6,   w = 120, justify = "LEFT" },
-    { title = "Pick",   x = 130, w = 420, justify = "LEFT" },
-    { title = "Stake",  x = 556, w = 90,  justify = "RIGHT" },
-    { title = "To win", x = 652, w = 120, justify = "RIGHT" },
-    { title = "Status", x = 780, w = 84,  justify = "CENTER" },
+    { title = "Who",    x = 6,   w = 104, justify = "LEFT" },
+    { title = "Placed", x = 114, w = 108, justify = "LEFT", placed = true },
+    { title = "Pick",   x = 226, w = 330, justify = "LEFT" },
+    { title = "Stake",  x = 562, w = 84,  justify = "RIGHT" },
+    { title = "To win", x = 650, w = 116, justify = "RIGHT" },
+    { title = "Status", x = 774, w = 84,  justify = "CENTER" },
 }
 local BLOCK_H, CELL_H = 76, 30
 local LEG_H = 32
@@ -613,6 +615,9 @@ end
 
 local function renderGroup(b, t)
     local st = store()
+    local Clock = ns.Clock
+    -- "Placed (server)" or "Placed (PT)": never the player's own computer clock.
+    ui.groupPlacedHead:SetText("Placed (" .. (Clock and Clock.Label() or "?") .. ")")
     local g = Cache.GroupBets(st, b.code)
     local online = Cache.IsOnline(st, b.code, t)
     local entries = {}
@@ -642,11 +647,12 @@ local function renderGroup(b, t)
         elseif i % 2 == 0 then paint(r.bg, 0.12, 0.095, 0.06, 1)
         else paint(r.bg, 0.095, 0.075, 0.05, 1) end
         r.cols[1]:SetText((mine and GOLD or "") .. plain(e.who) .. (mine and "|r" or ""))
-        r.cols[2]:SetText(plain(e.text))
-        r.cols[3]:SetText(money(e.stake))
+        r.cols[2]:SetText(Clock and e.at and e.at > 0 and Clock.Format(e.at) or "")
+        r.cols[3]:SetText(plain(e.text))
+        r.cols[4]:SetText(money(e.stake))
         local open = e.status == "accepted" or e.status == "pending" or e.status == "open"
-        r.cols[4]:SetText(open and e.win and (GREEN .. money(e.win) .. "|r") or "")
-        r.cols[5]:SetText(GROUP_STATUS[e.status] or e.status)
+        r.cols[5]:SetText(open and e.win and (GREEN .. money(e.win) .. "|r") or "")
+        r.cols[6]:SetText(GROUP_STATUS[e.status] or e.status)
         r:Show()
         y = y + GROUP_ROW_H
     end
@@ -994,6 +1000,7 @@ local function build()
         fs:SetPoint("TOPLEFT", c.x, -44)
         fs:SetWidth(c.w)
         fs:SetText(c.title)
+        if c.placed then ui.groupPlacedHead = fs end
     end
     ui.groupScroll = CreateFrame("ScrollFrame", nil, g)
     ui.groupScroll:SetPoint("TOPLEFT", 0, -62)

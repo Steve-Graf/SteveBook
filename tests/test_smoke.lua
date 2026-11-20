@@ -10,6 +10,7 @@ local function check(cond, label)
 end
 
 local ADDON = "SteveBook"
+Minimap = stub.newFrame()        -- the game has one; the stub does not
 local DIR = "SteveBook/"
 local ns = {}
 
@@ -171,6 +172,27 @@ do
     local AceSer = LibStub("AceSerializer-3.0")
     local okd, env = AceSer:Deserialize(m.text)
     check(okd and env.to == "Friend", "JOIN_DENY is addressed to Friend")
+end
+
+-- Minimap icon: on by default, /book icon hides and shows it, clicks open the windows.
+do
+    local btn = _G.SteveBookMinimapButton
+    check(btn ~= nil and btn:IsShown(), "the minimap icon is created and shown by default")
+    check(SteveBookDB.minimap and SteveBookDB.minimap.hide ~= true, "the icon setting is saved")
+    run("icon")
+    check(not btn:IsShown() and SteveBookDB.minimap.hide == true, "/book icon hides it")
+    run("icon")
+    check(btn:IsShown() and not SteveBookDB.minimap.hide, "/book icon shows it again")
+    local bet, bookie = _G.SteveBookBettorFrame, _G.SteveBookBookieFrame
+    if bet then bet:Hide() end
+    if bookie then bookie:Hide() end
+    btn._scripts.OnClick(btn, "LeftButton")
+    check(_G.SteveBookBettorFrame and _G.SteveBookBettorFrame:IsShown(), "left-click opens the bet window")
+    btn._scripts.OnClick(btn, "RightButton")
+    check(_G.SteveBookBookieFrame and _G.SteveBookBookieFrame:IsShown(), "right-click opens the bookie window")
+    _G.SteveBookBettorFrame:Hide(); _G.SteveBookBookieFrame:Hide()
+    check(pcall(btn._scripts.OnEnter, btn) and pcall(btn._scripts.OnLeave, btn), "the tooltip handlers run")
+    check(pcall(btn._scripts.OnDragStart, btn) and pcall(btn._scripts.OnDragStop, btn), "dragging runs without error")
 end
 
 -- /book ratio toggles the odds view and remembers it.
