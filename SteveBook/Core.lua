@@ -16,7 +16,8 @@ local function help()
     say("/book bet (or /bet)        open the bettor window")
     say("/book loopback     test alone: let this character be bookie and bettor of its own book")
     say("/book debug        print every message sent and received (for troubleshooting)")
-    say("/book              show the active book")
+    say("/book              open the bettor window (same as /bet)")
+    say("/book status       show the active book")
 end
 
 local function handle(msg)
@@ -56,6 +57,8 @@ local function handle(msg)
         local ui = ns.UI and ns.UI[cmd == "bookie" and "Bookie" or "Bettor"]
         if ui and ui.Toggle then ui.Toggle() else say("That window is not available yet.") end
     elseif cmd == "" then
+        handle("bet")                       -- /book alone opens the bettor window
+    elseif cmd == "status" then
         local b = Model.ActiveBook(db)
         if b then say("Active book: " .. describe(b)) else help() end
     else

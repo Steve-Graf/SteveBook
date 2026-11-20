@@ -51,7 +51,7 @@ local function changed(book)
 end
 
 ------------------------------------------------------------------------------------------
--- Incoming: JOIN_REQ, SYNC_REQ, BET_PLACE, PING
+-- Incoming: JOIN_REQ, SYNC_REQ, BET_PLACE, BETS_REQ, PING
 ------------------------------------------------------------------------------------------
 
 local function announce(book, events)
@@ -85,11 +85,11 @@ local function onBettorMessage(msgType)
         local out, events = Bookie.Handle(book, sender, msgType, payload, now())
         send(book, out)
         announce(book, events)
-        changed(book)
+        if msgType ~= "BETS_REQ" then changed(book) end     -- a read-only request: nothing to redraw
     end
 end
 
-for _, t in ipairs({ "JOIN_REQ", "SYNC_REQ", "BET_PLACE", "PING" }) do
+for _, t in ipairs({ "JOIN_REQ", "SYNC_REQ", "BET_PLACE", "BETS_REQ", "PING" }) do
     ns.Comm.Register(t, onBettorMessage(t))
 end
 

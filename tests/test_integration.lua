@@ -700,6 +700,40 @@ as(bookie, BN.Settle, book, lnSp.id, 1)
 eq(Cache.OpenRisk(bettor.db.cache, CODE), 0, "the line-move bet is settled")
 
 ------------------------------------------------------------------------------------------
+-- All Bets: the group's bets, from the real bookie
+------------------------------------------------------------------------------------------
+
+do
+    -- A second member bets too, so the list has someone other than the viewer.
+    local ann = bookie.ns.Bookie
+    as(bookie, function() book.members.Ann = { status = "active", joinedAt = stub.time } end)
+    local gm = addMarket("UUU @ VVV", "moneyline", nil, "UUU", 110, "VVV", -130)
+    runTickers(bettor)
+    local annBet
+    as(bookie, function() annBet = ann.PlaceBet(book, "Ann", { marketId = gm.id, selectionId = 1, stake = 3000, odds = 110, ref = "ann1" }, stub.time) end)
+    place("20s", gm.id, 2, -130)
+    tabClick("All Bets")
+    local before = countLog("BETS_REQ", "Bettor")
+    tabClick("Lines"); tabClick("All Bets")
+    eq(countLog("BETS_REQ", "Bettor"), before + 1, "opening All Bets asks the bookie")
+    local reply = lastLog("BETS", "Bettor")
+    check(reply and #reply.delivered == 1 and reply.delivered[1] == "Bettor", "BETS went to the asker only")
+    local g = Cache.GroupBets(bettor.db.cache, CODE)
+    check(g ~= nil and #g.open >= 2, "the bettor stored the group's bets")
+    local whos = {}
+    for _, e in ipairs(g.open) do whos[e.who] = true end
+    check(whos.Ann and whos.Bettor, "both members' open bets are listed")
+    check(frameWithText("UUU ML") ~= nil or frameWithText("UUU") ~= nil, "the rows show the bookie's pick text")
+    check(frameWithText("open,") ~= nil, "the count header is drawn")
+    -- Another BETS_REQ right away is ignored by the bookie (rate limit), and nothing breaks.
+    as(bettor, function() bettor.ns.Comm.Send("BETS_REQ", {}, CODE) end)
+    tabClick("Lines")
+    as(bookie, BN.VoidBet, book, annBet.id)        -- keeps the ledger test below about the bettor only
+    as(bookie, BN.Settle, book, gm.id, 2)
+    eq(Cache.OpenRisk(bettor.db.cache, CODE), 0, "settled again")
+end
+
+------------------------------------------------------------------------------------------
 -- Forged removals are ignored
 ------------------------------------------------------------------------------------------
 

@@ -628,6 +628,90 @@ end
 
 
 ------------------------------------------------------------------------------------------
+-- Group bets (SPEC §3b): what every member may see of everyone's bets ("All Bets")
+------------------------------------------------------------------------------------------
+
+Bookie.GROUP_SETTLED_KEEP = 48 * 3600    -- settled bets stay in the group view this long after settling
+Bookie.GROUP_BETS_MAX = 60               -- entries per BETS message, newest first
+Bookie.GROUP_TEXT_MAX = 160              -- bytes per entry's text
+Bookie.BETS_MIN_INTERVAL = 5             -- seconds between answers to one member's BETS_REQ
+
+-- Cut text to at most `max` bytes, ending in "..." and never inside a multi-byte character
+-- (team names may carry accents; half a character would render as garbage).
+local function clip(text, max)
+    if #text <= max then return text end
+    local cut = max - 3
+    while cut > 0 do
+        local b = text:byte(cut + 1)
+        if b and b >= 0x80 and b < 0xC0 then cut = cut - 1 else break end    -- cut would split a character
+    end
+    return text:sub(1, cut) .. "..."
+end
+Bookie._clip = clip      -- test seam
+
+-- "LAL +5.5 -110, LAL @ BOS" for a single (the pick as it was taken: the bet's own line, odds, then
+-- the event); "3-leg parlay +738: LAL +5.5, Over 231.5, MIA ML" for a parlay (each leg's own line;
+-- legs that do not fit are replaced by "..."). ASCII only: this travels to every member's client.
+function Bookie.BetText(book, bet)
+    local max = Bookie.GROUP_TEXT_MAX
+    if bet.legs then
+        local picks = {}
+        for i, leg in ipairs(Bookie.LegRows(book, bet)) do picks[i] = leg.pick end
+        local head = ("%d-leg parlay %s: "):format(#picks, Odds.Format(bet.odds))
+        local text = head .. table.concat(picks, ", ")
+        if #text <= max then return text end
+        for n = #picks - 1, 1, -1 do
+            local t = head .. table.concat(picks, ", ", 1, n) .. ", ..."
+            if #t <= max then return t end
+        end
+        return clip(text, max)
+    end
+    local m = book.markets[bet.marketId]
+    return clip(("%s %s, %s"):format(Bookie.SelectionText(m, bet.selectionId, bet.line), Odds.Format(bet.odds),
+        m and m.event or "?"), max)
+end
+
+-- What an open bet pays if it wins: Odds.Profit for a single, Odds.ParlayProfit for a parlay (legs
+-- already pushed or voided drop out; a lost leg would have lost the parlay already).
+local function winIfOpen(bet)
+    if not bet.legs then return Odds.Profit(bet.stake, bet.odds) end
+    local live = {}
+    for _, leg in ipairs(bet.legs) do
+        if leg.status ~= "push" and leg.status ~= "void" then live[#live + 1] = leg.odds end
+    end
+    if #live == 0 then return nil end
+    return Odds.ParlayProfit(bet.stake, live)
+end
+
+-- The BETS payload's `bets`: open bets plus bets settled (won, lost, push) within GROUP_SETTLED_KEEP
+-- (boundary inclusive); void and rejected bets left out; newest placed first; at most GROUP_BETS_MAX.
+-- Entry: { id, who, text, stake (copper), status ("accepted" = open, won, lost, push), at (placed),
+-- win (open bets only: profit if it wins) }.
+function Bookie.GroupBets(book, now)
+    local list = {}
+    for _, b in pairs(book.bets) do
+        if b.status == "accepted" then
+            list[#list + 1] = b
+        elseif (b.status == "won" or b.status == "lost" or b.status == "push")
+               and (b.settledAt or 0) >= now - Bookie.GROUP_SETTLED_KEEP then
+            list[#list + 1] = b
+        end
+    end
+    table.sort(list, function(a, c)
+        local x, y = a.placedAt or 0, c.placedAt or 0
+        if x ~= y then return x > y end
+        return a.id > c.id
+    end)
+    local out = {}
+    for i = 1, math.min(#list, Bookie.GROUP_BETS_MAX) do
+        local b = list[i]
+        out[i] = { id = b.id, who = b.bettor, text = Bookie.BetText(book, b), stake = b.stake, status = b.status,
+                   at = b.placedAt, win = b.status == "accepted" and winIfOpen(b) or nil }
+    end
+    return out
+end
+
+------------------------------------------------------------------------------------------
 -- Messages (SPEC §5, shapes in Protocol.lua). Still pure: nothing here sends anything.
 -- Handlers and builders return outbound messages for the Comm glue (UI/Bookie.lua) to send:
 --     { type = "BET_ACK", payload = { ... }, to = "Name" }
@@ -641,6 +725,8 @@ local function syncPayload(book, player, now)
     s.bookName = book.name
     return s
 end
+
+local betsAsked = setmetatable({}, { __mode = "k" })    -- book -> { [member] = time of the last BETS answer }
 
 -- Handle a message from a bettor. `sender` is the name Comm delivered it from (members are
 -- keyed by exactly that string); `payload` has already passed Protocol.Validate.
@@ -668,6 +754,24 @@ function Bookie.Handle(book, sender, msgType, payload, now)
             reply("SYNC", syncPayload(book, sender, now))
         elseif member and member.status == "pending" then
             -- ignored; the bettor stays "requested"
+        else
+            reply("JOIN_DENY", { reason = "not_member", ownerName = book.ownerName or "" })
+        end
+
+    elseif msgType == "BETS_REQ" then
+        -- like SYNC_REQ: active members are answered, pending ones ignored, anyone else told they are not in
+        if member and member.status == "active" then
+            -- A member asking again within BETS_MIN_INTERVAL of the last ANSWER is ignored (the tab asks
+            -- every 30 s; this only stops a hammering client). Memory only; ignored asks do not count.
+            local asked = betsAsked[book]
+            if not asked then asked = {}; betsAsked[book] = asked end
+            local last = asked[sender]
+            if not (last and now >= last and now - last < Bookie.BETS_MIN_INTERVAL) then
+                asked[sender] = now
+                reply("BETS", { rev = book.rev, bets = Bookie.GroupBets(book, now) })
+            end
+        elseif member and member.status == "pending" then
+            -- ignored
         else
             reply("JOIN_DENY", { reason = "not_member", ownerName = book.ownerName or "" })
         end

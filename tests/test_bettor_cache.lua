@@ -207,6 +207,38 @@ do
     check(rj.currentLine == -4.5 and rj.currentOdds == -110, "reject keeps currentLine")
 end
 
+-- Group bets (All Bets).
+do
+    local gs = Cache.NewStore()
+    check(Cache.ApplyGroupBets(gs, "NOPE-1", {}, NOW) == 0, "no book, nothing stored")
+    Cache.ApplySync(gs, "G-2", { rev = 1, balance = 0, bets = {}, markets = {} }, NOW)
+    check(Cache.GroupBets(gs, "G-2") == nil and Cache.GroupAge(gs, "G-2", NOW) == nil, "nothing until the first BETS")
+    local n = Cache.ApplyGroupBets(gs, "G-2", {
+        { id = 1, who = "Ann", text = "LAL +5.5 -110 · LAL @ BOS", stake = 1000, status = "won", at = NOW - 500 },
+        { id = 2, who = "Bob", text = "3-leg parlay +738: a · b · c", stake = 2000, status = "accepted", at = NOW - 100, win = 14760 },
+        { id = 3, who = "Cy", text = "x", stake = 500, status = "accepted", at = NOW - 300, win = 450 },
+        { id = 4, who = "Dee", text = "y", stake = 700, status = "lost", at = NOW - 50 },
+        { who = "bad entry without a text", stake = 1, status = "won" },
+        "not a table",
+        { id = 5, who = "Eve", text = ("z"):rep(1000), stake = 100, status = "push", at = NOW - 900 },
+    }, NOW)
+    check(n == 5, "malformed entries are skipped (kept " .. n .. ")")
+    local g = Cache.GroupBets(gs, "G-2")
+    check(#g.open == 2 and #g.settled == 3, "split into open and settled")
+    check(g.open[1].who == "Bob" and g.open[2].who == "Cy", "open bets newest first")
+    check(g.settled[1].who == "Dee" and g.settled[2].who == "Ann" and g.settled[3].who == "Eve", "settled bets newest first")
+    check(g.atStake == 2500, "total at stake counts open bets only")
+    check(#g.settled[3].text == 240, "long text is cut")
+    check(g.open[1].win == 14760 and g.settled[1].win == nil, "win only on open bets")
+    check(Cache.GroupAge(gs, "G-2", NOW + 42) == 42, "age in seconds")
+    -- The list is replaced, and capped.
+    local many = {}
+    for i = 1, 300 do many[i] = { id = i, who = "P" .. i, text = "t", stake = 100, status = "won", at = i } end
+    check(Cache.ApplyGroupBets(gs, "G-2", many, NOW + 1) == Cache.GROUP_BETS_MAX, "sanity cap on the list size")
+    check(#Cache.GroupBets(gs, "G-2").settled == Cache.GROUP_BETS_MAX, "the cap applies to what is stored")
+    check(Cache.ApplyGroupBets(gs, "G-2", {}, NOW + 2) == 0 and #Cache.GroupBets(gs, "G-2").open == 0, "an empty BETS clears the list")
+end
+
 -- A bet whose market was not sent (the bookie only sends markets of the bets it includes).
 check(Cache.EventName(nil) == "Game no longer listed" and Cache.EventName({ event = "A @ B" }) == "A @ B", "EventName fallback")
 do

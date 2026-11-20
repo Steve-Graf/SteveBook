@@ -13,6 +13,7 @@ local Bettor = {}
 ns.UI.Bettor = Bettor
 
 local PING_EVERY = 30
+local GROUP_EVERY = 30     -- All Bets: ask the bookie again this often while the tab is shown
 local REFRESH_EVERY = 5   -- while the window is open: games start, so the lists must age
 local WIN_W, WIN_H = 900, 640
 local SLIP_W = 276
@@ -21,11 +22,22 @@ local BOARD_W = WIN_W - 2 * PAD - SLIP_W - 10       -- the board's width
 local GAME_COL_W = 150
 local CELL_GAP = 4
 local CELL_W = math.floor((BOARD_W - GAME_COL_W - 4 * CELL_GAP) / 3)
+local GROUP_W = WIN_W - 2 * PAD
+local GROUP_ROW_H = 22
+-- All Bets columns: who, the pick (the bookie's text), stake, to win, status.
+local GROUP_COLS = {
+    { title = "Who",    x = 6,   w = 120, justify = "LEFT" },
+    { title = "Pick",   x = 130, w = 420, justify = "LEFT" },
+    { title = "Stake",  x = 556, w = 90,  justify = "RIGHT" },
+    { title = "To win", x = 652, w = 120, justify = "RIGHT" },
+    { title = "Status", x = 780, w = 84,  justify = "CENTER" },
+}
 local BLOCK_H, CELL_H = 76, 30
 local LEG_H = 32
 local GREEN, RED, GOLD, GREY = "|cff40ff40", "|cffff5050", "|cffffd100", "|cff999999"
 
 local frame, tab, showJoin, filter
+local groupReqAt            -- when BETS_REQ was last sent (nil: send on the next refresh)
 local slip = Slip.New()
 local restoreStake            -- copper to put back in the stake box after a rejection
 local seq = 0
@@ -257,6 +269,14 @@ function handlers.BET_REJECT(sender, p, code)
     say((bet.legs and "Parlay" or "Bet") .. " rejected: " .. text)
 end
 
+-- All Bets: the group's bets as the bookie rendered them. Same sender rule as the other bookie
+-- messages, and only from a bookie we already know (so nobody can fill our list before JOIN_OK).
+function handlers.BETS(sender, p, code)
+    local b = bookFor(code, sender)
+    if not b or b.status ~= "active" or not b.owner then return end
+    Cache.ApplyGroupBets(store(), code, p.bets, now())
+end
+
 function handlers.BALANCE(sender, p, code)
     local b = bookFor(code, sender)
     if not b then return end
@@ -273,7 +293,10 @@ function handlers.PONG(sender, p, code)
     if not b or b.status ~= "active" then return end
     local wasOnline = Cache.IsOnline(st, code, now())
     if not Cache.MarkPong(st, code, now(), sender) then return end
-    if not wasOnline then send("SYNC_REQ", { rev = b.rev or 0 }, code) end
+    if not wasOnline then
+        groupReqAt = nil                       -- back online: ask for the group's bets again if that tab is open
+        send("SYNC_REQ", { rev = b.rev or 0 }, code)
+    end
 end
 
 local registered
@@ -559,6 +582,79 @@ local function balanceEntries(b)
 end
 
 ------------------------------------------------------------------------------------------
+-- All Bets view
+------------------------------------------------------------------------------------------
+
+local groupRows = {}
+local GROUP_STATUS = { accepted = GOLD .. "Open|r", pending = GOLD .. "Open|r", open = GOLD .. "Open|r",
+    won = GREEN .. "Won|r", lost = RED .. "Lost|r", push = GREY .. "Push|r", void = GREY .. "Void|r" }
+
+-- Text from other players goes into FontStrings: a "|" would start a colour/escape code.
+local function plain(text) return (text:gsub("|", "||")) end
+
+local function getGroupRow(i)
+    local r = groupRows[i]
+    if r then return r end
+    r = CreateFrame("Frame", nil, ui.groupContent)
+    r:SetSize(GROUP_W, GROUP_ROW_H)
+    r.bg = r:CreateTexture(nil, "BACKGROUND")
+    r.bg:SetAllPoints()
+    r.cols = {}
+    for i2, c in ipairs(GROUP_COLS) do
+        local fs = label(r, "GameFontHighlight", c.justify)
+        fs:SetPoint("LEFT", c.x, 0)
+        fs:SetWidth(c.w)
+        fs:SetWordWrap(false)          -- long picks are cut off instead of spilling into the next column
+        r.cols[i2] = fs
+    end
+    groupRows[i] = r
+    return r
+end
+
+local function renderGroup(b, t)
+    local st = store()
+    local g = Cache.GroupBets(st, b.code)
+    local online = Cache.IsOnline(st, b.code, t)
+    local entries = {}
+    if not g then
+        ui.groupHead:SetText(online and (GREY .. "Loading...|r") or (GREY .. "Waiting for the bookie to come online.|r"))
+        ui.groupAge:SetText("")
+    else
+        for _, e in ipairs(g.open) do entries[#entries + 1] = e end
+        for _, e in ipairs(g.settled) do entries[#entries + 1] = e end
+        if #entries == 0 then
+            ui.groupHead:SetText(GREY .. "No bets yet|r")
+        else
+            ui.groupHead:SetText(("%d open, %d settled in the last 48h, total at stake %s"):format(
+                #g.open, #g.settled, money(g.atStake)))
+        end
+        local age = Cache.GroupAge(st, b.code, t) or 0
+        ui.groupAge:SetText(GREY .. ("Updated %ds ago"):format(age) .. (online and "" or "  (the bookie is offline)") .. "|r")
+    end
+
+    local me = baseName(UnitName and UnitName("player"))
+    local y = 0
+    for i, e in ipairs(entries) do
+        local r = getGroupRow(i)
+        r:SetPoint("TOPLEFT", ui.groupContent, "TOPLEFT", 0, -y)
+        local mine = me and baseName(e.who) == me
+        if mine then paint(r.bg, 0.29, 0.23, 0.11, 1)
+        elseif i % 2 == 0 then paint(r.bg, 0.12, 0.095, 0.06, 1)
+        else paint(r.bg, 0.095, 0.075, 0.05, 1) end
+        r.cols[1]:SetText((mine and GOLD or "") .. plain(e.who) .. (mine and "|r" or ""))
+        r.cols[2]:SetText(plain(e.text))
+        r.cols[3]:SetText(money(e.stake))
+        local open = e.status == "accepted" or e.status == "pending" or e.status == "open"
+        r.cols[4]:SetText(open and e.win and (GREEN .. money(e.win) .. "|r") or "")
+        r.cols[5]:SetText(GROUP_STATUS[e.status] or e.status)
+        r:Show()
+        y = y + GROUP_ROW_H
+    end
+    for i = #entries + 1, #groupRows do groupRows[i]:Hide() end
+    ui.groupContent:SetHeight(math.max(y, 1))
+end
+
+------------------------------------------------------------------------------------------
 -- Slip panel (Lines tab, right)
 ------------------------------------------------------------------------------------------
 
@@ -761,7 +857,11 @@ end
 -- Main window
 ------------------------------------------------------------------------------------------
 
-local function setTab(name) tab = name; showJoin = false; Bettor.Refresh() end
+local function setTab(name)
+    tab, showJoin = name, false
+    if name == "all" then groupReqAt = nil end   -- opening the tab asks straight away
+    Bettor.Refresh()
+end
 
 local function build()
     -- Named so Escape can close it (UISpecialFrames only takes global names).
@@ -802,6 +902,7 @@ local function build()
         showJoin = false
         Slip.ClearAll(slip)
         ui.stake:SetText("")
+        groupReqAt = nil
         Bettor.Refresh()
     end)
     ui.book:SetPoint("TOPLEFT", PAD, -30)
@@ -812,7 +913,7 @@ local function build()
 
     ui.tabs = {}
     local prev
-    for _, t in ipairs({ { "lines", "Lines" }, { "bets", "My Bets" }, { "balance", "Balance" } }) do
+    for _, t in ipairs({ { "lines", "Lines" }, { "bets", "My Bets" }, { "all", "All Bets" }, { "balance", "Balance" } }) do
         local b = button(frame, t[2], 100, function() setTab(t[1]) end, 24)
         if prev then b:SetPoint("LEFT", prev, "RIGHT", 4, 0) else b:SetPoint("TOPLEFT", PAD, -60) end
         ui.tabs[t[1]] = b
@@ -876,6 +977,37 @@ local function build()
         self:SetVerticalScroll(math.min(max, math.max(0, self:GetVerticalScroll() - delta * 40)))
     end)
 
+    -- All Bets: a summary, column labels and a scroll frame of rows.
+    local g = CreateFrame("Frame", nil, frame)
+    g:SetPoint("TOPLEFT", PAD, -94)
+    g:SetSize(GROUP_W, WIN_H - 110)
+    ui.group = g
+    ui.groupHead = label(g, "GameFontNormal")
+    ui.groupHead:SetPoint("TOPLEFT", 4, 0)
+    ui.groupHead:SetWidth(GROUP_W - 8)
+    ui.groupHead:SetWordWrap(false)
+    ui.groupAge = label(g, "GameFontHighlightSmall")
+    ui.groupAge:SetPoint("TOPLEFT", 4, -20)
+    ui.groupAge:SetWidth(GROUP_W - 8)
+    for _, c in ipairs(GROUP_COLS) do
+        local fs = label(g, "GameFontNormalSmall", c.justify)
+        fs:SetPoint("TOPLEFT", c.x, -44)
+        fs:SetWidth(c.w)
+        fs:SetText(c.title)
+    end
+    ui.groupScroll = CreateFrame("ScrollFrame", nil, g)
+    ui.groupScroll:SetPoint("TOPLEFT", 0, -62)
+    ui.groupScroll:SetPoint("BOTTOMRIGHT", 0, 0)
+    ui.groupContent = CreateFrame("Frame", nil, ui.groupScroll)
+    ui.groupContent:SetSize(GROUP_W, 1)
+    ui.groupScroll:SetScrollChild(ui.groupContent)
+    ui.groupScroll:EnableMouseWheel(true)
+    ui.groupScroll:SetScript("OnMouseWheel", function(self, delta)
+        local max = math.max(0, ui.groupContent:GetHeight() - self:GetHeight())
+        self:SetVerticalScroll(math.min(max, math.max(0, self:GetVerticalScroll() - delta * 44)))
+    end)
+    g:Hide()
+
     -- Join screen (replaces the body while visible)
     local j = CreateFrame("Frame", nil, frame)
     j:SetPoint("TOPLEFT", PAD, -94)
@@ -929,7 +1061,7 @@ function Bettor.Refresh()
     ui.joinPanel:SetShown(needJoin)
     if needJoin then
         for _, btn in pairs(ui.tabs) do btn:SetEnabled(false) end
-        ui.boardArea:Hide(); ui.slipHolder:Hide(); ui.listScroll:Hide()
+        ui.boardArea:Hide(); ui.slipHolder:Hide(); ui.listScroll:Hide(); ui.group:Hide()
         ui.joinPanel.forget:SetShown(b ~= nil and b.status ~= "active")
         local msg = "Ask your bookie for their join code."
         if b and not showJoin then
@@ -947,7 +1079,18 @@ function Bettor.Refresh()
     tab = tab or "lines"
     for name, btn in pairs(ui.tabs) do btn:SetEnabled(name ~= tab) end
 
-    if tab == "lines" then
+    ui.group:SetShown(tab == "all")
+    if tab == "all" then
+        -- Ask the bookie for the group's bets now, then every GROUP_EVERY seconds, only while the
+        -- book is online (nothing is sent to an offline bookie).
+        if Cache.IsOnline(st, b.code, t) and (not groupReqAt or t - groupReqAt >= GROUP_EVERY) then
+            groupReqAt = t                        -- set first: a reply may arrive (and refresh) inside send
+            send("BETS_REQ", {}, b.code)
+        end
+        ui.boardArea:Hide(); ui.slipHolder:Hide(); ui.listScroll:Hide()
+        renderGroup(b, t)
+        slipUpdate()
+    elseif tab == "lines" then
         ui.listScroll:Hide()
         ui.boardArea:Show(); ui.slipHolder:Show()
         local board = Cache.Board(st, b.code, t, filter)
@@ -993,6 +1136,7 @@ function Bettor.Show()
     register()
     if not frame then build() end
     tab = tab or "lines"
+    if tab == "all" then groupReqAt = nil end      -- opening the window on this tab asks straight away
     frame:Show()
     Bettor.Refresh()
 end

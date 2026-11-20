@@ -108,7 +108,10 @@ local function run(msg)
     return table.concat(out, "\n")
 end
 
-check(run(""):find("/book new"), "/book with no book shows help")
+run("")
+check(_G.SteveBookBettorFrame and _G.SteveBookBettorFrame:IsShown(), "/book opens the bettor window")
+run("")
+check(not _G.SteveBookBettorFrame:IsShown(), "/book again closes it")
 check(run("help"):find("/book new"), "/book help")
 check(run("list"):find("No books"), "/book list with no books")
 local out = run("new Smoke Test")
@@ -120,7 +123,7 @@ check(run("list"):find(code or "?", 1, true), "/book list shows the code")
 check(run("use 1"):find("Active book"), "/book use 1")
 check(run("use " .. (code or "")):find("Active book"), "/book use <code>")
 check(run("use 99"):find("no such book"), "/book use unknown")
-check(run(""):find("Active book"), "/book shows the active book")
+check(run("status"):find("Active book"), "/book status shows the active book")
 
 -- The channel for the new book was requested.
 check(code and stub.channels[ns.Protocol.ChannelName(code)] ~= nil, "hidden channel joined for the new book")

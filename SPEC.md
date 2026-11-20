@@ -108,8 +108,8 @@ privacy (the group asked for it): other members' picks and stakes are visible to
 - `BETS.bets` holds open bets plus bets settled in the last 48 hours (`Bookie.GROUP_SETTLED_KEEP`),
   voided bets left out, newest first, at most 60 (`Bookie.GROUP_BETS_MAX`). Entry:
   `{ id, who, text, stake (copper), status, at (placed), win? (open bets: profit if it wins) }`.
-  `text` is rendered by the bookie so the client needs no market data: a single reads
-  "LAL +5.5 -110 · LAL @ BOS", a parlay "3-leg parlay +738: LAL +5.5 · Over 231.5 · MIA ML".
+  `text` is rendered by the bookie so the client needs no market data (at most 160 bytes; a parlay drops trailing legs and ends ", ..."): a single reads
+  "LAL +5.5 -110, LAL @ BOS", a parlay "3-leg parlay +738: LAL +5.5, Over 231.5, MIA ML".
 - The bookie window already lists every bet in its Bets tab.
 
 ## 4. Data model (bookie's SavedVariables are the source of truth)

@@ -38,6 +38,7 @@ function CreateFrame() return newFrame() end
 UIParent = newFrame()
 function GetServerTime() return T end
 date = os.date
+UnitName = function() return "Me" end
 local tickers = {}
 C_Timer = {
     NewTicker = function(iv, fn)
@@ -378,6 +379,85 @@ do
     B.SlipState().single = nil
     handlers.MARKET("Bookie", { rev = 22, market = market(1, "open", -110) }, CODE)   -- back to -3.5
     B.Refresh()
+end
+
+-- All Bets (the group's bets).
+do
+    local function nReq() local n = 0; for _, e in ipairs(sent) do if e.t == "BETS_REQ" then n = n + 1 end end; return n end
+    local entries = {
+        { id = 1, who = "Me", text = "PHI -3.5 -110 · PHI @ DAL", stake = 2000, status = "accepted", at = T - 10, win = 1818 },
+        { id = 2, who = "Ann", text = ("a very long parlay description "):rep(6), stake = 1000, status = "accepted", at = T - 5, win = 4000 },
+        { id = 3, who = "Bob", text = "NYG ML +150", stake = 500, status = "lost", at = T - 3600 },
+    }
+    -- Forged and misplaced BETS are ignored.
+    local before = Cache.GroupBets(SteveBookDB.cache, CODE)
+    handlers.BETS("Mallory", { rev = 1, bets = entries }, CODE)
+    check(Cache.GroupBets(SteveBookDB.cache, CODE) == nil, "BETS from someone other than the bookie is ignored")
+    handlers.BETS("Bookie", { rev = 1, bets = entries }, "NOP-1234")
+    check(Cache.Book(SteveBookDB.cache, "NOP-1234") == nil, "BETS for a book I never joined is ignored")
+    Cache.RequestJoin(SteveBookDB.cache, "REQ-1111")
+    handlers.BETS("Bookie", { rev = 1, bets = entries }, "REQ-1111")
+    check(Cache.GroupBets(SteveBookDB.cache, "REQ-1111") == nil, "BETS for a book that has not approved me is ignored")
+    Cache.Forget(SteveBookDB.cache, "REQ-1111")
+
+    -- Opening the tab asks straight away (and shows Loading... until the answer).
+    local r0 = nReq()
+    findPrefix("All Bets"):Click()
+    check(nReq() == r0 + 1, "opening All Bets sends BETS_REQ immediately")
+    check(frameWithTextContaining("Loading...") ~= nil, "Loading... until the first BETS arrives")
+    ticker(5).fn()
+    check(nReq() == r0 + 1, "no second request within 30 s")
+    T = T + 29; Cache.MarkPong(SteveBookDB.cache, CODE, T, "Bookie"); ticker(5).fn()
+    check(nReq() == r0 + 1, "still none at 29 s")
+    T = T + 1; Cache.MarkPong(SteveBookDB.cache, CODE, T, "Bookie"); ticker(5).fn()
+    check(nReq() == r0 + 2, "asks again after 30 s")
+
+    -- The answer renders.
+    handlers.BETS("Bookie", { rev = 2, bets = entries }, CODE)
+    B.Refresh()
+    check(frameWithTextContaining("2 open, 1 settled in the last 48h, total at stake 30s") ~= nil, "count header")
+    check(frameWithTextContaining("Updated 0s ago") ~= nil, "Updated Ns ago")
+    check(frameWithTextContaining("PHI -3.5 -110") ~= nil and frameWithTextContaining("NYG ML +150") ~= nil, "pick text rows")
+    check(frameWithTextContaining("Ann") ~= nil and frameWithTextContaining("Bob") ~= nil, "who column")
+    local mine
+    for _, f in ipairs(frames) do local x = rawget(f, "_text"); if type(x) == "string" and x:find("Me", 1, true) and x:find("|cffffd100", 1, true) and x:sub(-2) == "|r" then mine = f end end
+    check(mine ~= nil, "the viewer's own rows are highlighted")
+    T = T + 12
+    Cache.MarkPong(SteveBookDB.cache, CODE, T, "Bookie")
+    B.Refresh()
+    check(frameWithTextContaining("Updated 12s ago") ~= nil, "the age counts up")
+
+    -- Other players' text cannot inject colour codes into the list.
+    handlers.BETS("Bookie", { rev = 2, bets = { { id = 9, who = "Eve|cffff0000", text = "|cff00ff00hacked|r", stake = 100, status = "won", at = T } } }, CODE)
+    B.Refresh()
+    check(frameWithTextContaining("||cff00ff00hacked||r") ~= nil and frameWithTextContaining("Eve||cffff0000") ~= nil, "pipes in names and picks are escaped")
+    handlers.BETS("Bookie", { rev = 2, bets = entries }, CODE)
+    B.Refresh()
+
+    -- Offline: never ask. Online again: ask straight away.
+    r0 = nReq()
+    b.lastPong = T - 1000
+    T = T + 40
+    ticker(5).fn()
+    check(nReq() == r0, "nothing is sent while the book is offline")
+    check(frameWithTextContaining("the bookie is offline") ~= nil, "offline note")
+    handlers.PONG("Bookie", {}, CODE)
+    B.Refresh()
+    check(nReq() == r0 + 1, "coming back online asks again")
+
+    -- Empty state.
+    handlers.BETS("Bookie", { rev = 3, bets = {} }, CODE)
+    B.Refresh()
+    check(frameWithTextContaining("No bets yet") ~= nil, "empty state")
+    -- Hiding the window sends nothing, even when 30 s pass.
+    B.Hide()
+    T = T + 100
+    Cache.MarkPong(SteveBookDB.cache, CODE, T, "Bookie")
+    r0 = nReq()
+    check(ticker(5) == nil and nReq() == r0, "nothing is sent while the window is hidden")
+    B.Show()
+    check(nReq() == r0 + 1, "showing the window on All Bets asks straight away")
+    findPrefix("Lines"):Click()
 end
 
 -- Hiding the window stops the refresh ticker; showing starts it again.

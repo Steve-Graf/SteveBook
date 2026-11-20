@@ -339,6 +339,61 @@ function Cache.EventName(market)
     return market and market.event or "Game no longer listed"
 end
 
+------------------------------------------------------------------------------------------
+-- Group bets ("All Bets", SPEC §3b): what every member has bet, rendered by the bookie.
+------------------------------------------------------------------------------------------
+
+Cache.GROUP_BETS_MAX = 100     -- sanity cap; the bookie sends at most 60
+local GROUP_TEXT_MAX, GROUP_WHO_MAX = 240, 40
+
+local function isOpenStatus(st) return st == "accepted" or st == "pending" or st == "open" end
+
+-- BETS: replace the group list. Entries are { id, who, text, stake, status, at, win? }.
+-- Malformed entries are skipped, long strings cut, and the list capped. Returns how many kept.
+function Cache.ApplyGroupBets(store, code, entries, now)
+    local b = Cache.Book(store, code, false)
+    if not b then return 0 end
+    local list = {}
+    for _, e in ipairs(entries or {}) do
+        if #list >= Cache.GROUP_BETS_MAX then break end
+        if type(e) == "table" and type(e.who) == "string" and type(e.text) == "string"
+            and type(e.stake) == "number" and type(e.status) == "string" then
+            list[#list + 1] = {
+                id = e.id, who = e.who:sub(1, GROUP_WHO_MAX), text = e.text:sub(1, GROUP_TEXT_MAX),
+                stake = e.stake, status = e.status, at = type(e.at) == "number" and e.at or 0,
+                win = type(e.win) == "number" and e.win or nil,
+            }
+        end
+    end
+    b.groupBets, b.groupAt = list, now
+    return #list
+end
+
+-- Seconds since the last BETS, or nil if none has arrived yet.
+function Cache.GroupAge(store, code, now)
+    local b = Cache.Book(store, code, false)
+    return b and b.groupAt and math.max(0, now - b.groupAt) or nil
+end
+
+-- The group list split for display: open bets first (newest first), then settled (newest
+-- first), with the numbers for the header. nil if no BETS has arrived.
+function Cache.GroupBets(store, code)
+    local b = Cache.Book(store, code, false)
+    if not b or not b.groupBets then return nil end
+    local out = { open = {}, settled = {}, atStake = 0 }
+    for _, e in ipairs(b.groupBets) do
+        if isOpenStatus(e.status) then out.open[#out.open + 1] = e; out.atStake = out.atStake + e.stake
+        else out.settled[#out.settled + 1] = e end
+    end
+    local function newest(a, c)
+        if a.at ~= c.at then return a.at > c.at end
+        return (a.id or 0) > (c.id or 0)
+    end
+    table.sort(out.open, newest)
+    table.sort(out.settled, newest)
+    return out
+end
+
 -- Total copper at risk in accepted + pending bets.
 function Cache.OpenRisk(store, code)
     local b = Cache.Book(store, code, false)
