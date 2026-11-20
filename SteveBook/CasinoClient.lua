@@ -170,11 +170,21 @@ function Client.ExpirePending(store, code, now)
 end
 
 -- TBL_RESULT. Returns the table.
+local LOG_KEEP = 6
+
 function Client.ApplyResult(store, code, p)
     local t = Client.Table(store, code, false)
     if not t then return nil end
     t.rev = math.max(t.rev or 0, p.rev or 0)
     t.lastResult = { round = p.round, number = p.number, dealer = p.dealer, results = copyList(p.results) }
+    if #t.bets > 0 then t.prevBets = t.bets end           -- "same as last round" (roulette)
+    if p.dealer then                                       -- blackjack: a short log of recent rounds
+        local nets = {}
+        for i, r in ipairs(p.results) do nets[i] = { name = r.name, net = r.net } end
+        t.log = t.log or {}
+        table.insert(t.log, 1, { round = p.round, total = p.dealer.total, bust = p.dealer.bust, blackjack = p.dealer.blackjack, nets = nets })
+        while #t.log > LOG_KEEP do table.remove(t.log) end
+    end
     t.bets = {}
     t.pending = {}
     for _, r in ipairs(p.results) do

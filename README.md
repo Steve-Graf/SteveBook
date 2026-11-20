@@ -46,7 +46,7 @@ still join with the code). Typing a code still works.
 table**, or **Join a table** from the list of open tables (a code still works for a table that is not
 listed). Players sit down only when the host lets them in, and they have no chips until the host adds
 some (for example after they pay in gold). Chips are the table's own credit, separate from the
-sportsbook. Roulette: players bet on the board and the host spins. Blackjack: players bet, the host
+sportsbook. Roulette: players click bets onto a bet slip, set the stakes and place them all at once (with "same as last round"), and the host spins. Blackjack: players bet, the host
 deals, and everyone plays the dealer in turn (hit, stand, double, split). To try a table alone, turn
 on `/book loopback`, host a table and join it from the list.
 

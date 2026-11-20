@@ -83,13 +83,16 @@ local deal = allByText("Deal")[1]
 click(deal); settle()
 eq(t.status, "playing", "dealt")
 check(textOf("Your turn") ~= nil, "the player is told it is their turn")
-check(textOf("10s") ~= nil, "the player's cards are shown (10 of spades)")
-check(textOf("??") ~= nil, "the dealer's hole card is shown as ??")
+check(textOf("|cff11111110|r") ~= nil, "the player's ten of spades is drawn as a card, in black ink")
+check(textOf("|cffffd100?|r") ~= nil, "the dealer's hole card is drawn face down")
+check(textOf("|cffb3201f9|r") ~= nil, "the dealer's nine of hearts is drawn in red ink")
 local hit = allByText("Hit")[1]
 click(hit); settle()                                          -- 10+6+K = 26: bust
 settle()
 eq(t.round, 2, "the round finished after the bust")
 check(tc.lastResult and tc.lastResult.results[1].hands[1].outcome == "bust", "the result says bust")
+check(textOf("Round 1") ~= nil, "the table log lists the finished round")
+check(textOf("BUST") ~= nil or textOf("|cffff5050BUST|r") ~= nil, "the seat shows the bust")
 -- a double and a split through the buttons
 click(allByText("Place bet")[1]); settle()
 t.bj.shoe = { "8S", "9H", "8D", "TC", "3H", "KD", "2C", "5S" }; t.bj.pos = 1

@@ -362,6 +362,11 @@ messages.
   results as `TBL_RESULT`. Everything addressed to one player uses the `to` field (see §5), so
   other clients can read it on the wire. Roulette has no hidden information, which is why it was
   chosen first.
+- **Roulette window.** Picks go onto a bet slip (up to 7 at once, a stake for each); one click places them
+  all, after the window checks the limits and the chips so a slip that cannot be covered places
+  nothing. "Same as last round" reloads the previous round's bets. Blackjack shows the dealer and
+  one row per seat (cards, total, bet), your decision buttons with the turn timer, the bet panel and
+  a log of recent rounds.
 - **Rounds (roulette).** Betting is open from the moment the table opens. The host presses
   **Spin**: betting stops, the wheel "turns" for 3 seconds, the host's client draws the pocket,
   everyone is paid, the result is broadcast and the next round opens. A bet names the round it is

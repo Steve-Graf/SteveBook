@@ -74,4 +74,22 @@ do
     eq(#t3.bets, 2, "a snapshot that already lists the bet is not doubled by its OK")
 end
 
+-- last round's bets and the blackjack log
+do
+    local t4 = K.RequestJoin(store, "RLT-PREV", 1)
+    K.ApplyJoinOk(store, "RLT-PREV", "Steve", { game = "roulette", name = "P", ownerName = "Steve", rev = 1 })
+    K.ApplyPlayer(store, "RLT-PREV", { rev = 2, balance = 500, bets = { { id = 1, kind = "red", amount = 100 }, { id = 2, kind = "straight", numbers = { 17 }, amount = 200 } } })
+    K.ApplyResult(store, "RLT-PREV", { rev = 3, round = 1, number = 5, results = {} })
+    eq(#t4.prevBets, 2, "the bets of the round that just finished are remembered"); eq(t4.prevBets[2].numbers[1], 17, "with their numbers")
+    K.ApplyResult(store, "RLT-PREV", { rev = 4, round = 2, number = 6, results = {} })
+    eq(#t4.prevBets, 2, "a round without bets keeps the earlier ones")
+    local t5 = K.RequestJoin(store, "BJK-LOGS", 1)
+    K.ApplyJoinOk(store, "BJK-LOGS", "Steve", { game = "blackjack", name = "B", ownerName = "Steve", rev = 1 })
+    for r = 1, 8 do
+        K.ApplyResult(store, "BJK-LOGS", { rev = 10 + r, round = r, dealer = { cards = { "TS", "9H" }, total = 19, bust = false, blackjack = false },
+            results = { { name = "Bob", net = 100 * r, balance = 0, hands = {} } } })
+    end
+    eq(#t5.log, 6, "the log keeps the last six rounds"); eq(t5.log[1].round, 8, "newest first"); eq(t5.log[1].total, 19, "dealer total"); eq(t5.log[1].nets[1].net, 800, "who won what")
+end
+
 if fails == 0 then print("casino_client: all passed") else os.exit(1) end
