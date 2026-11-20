@@ -15,7 +15,7 @@ ns.UI.Casino = UI
 
 local GOLD, GREEN, RED, GREY = "|cffffd100", "|cff40ff40", "|cffff5050", "|cff999999"
 local CELL_W, CELL_H = 38, 34
-local HOST_ROWS, PENDING_ROWS, TABLE_ROWS = 9, 5, 8
+local HOST_ROWS, PENDING_ROWS, TABLE_ROWS = 7, 4, 8
 
 local function say(msg) print(GOLD .. "SteveBook Casino:|r " .. msg) end
 local function money(c) return Odds.FormatMoney(c) end
@@ -384,18 +384,15 @@ local function buildHost()
     H.codeBox:SetScript("OnChar", function(self) self:SetText(hostCode or "") end)   -- read only: you can still copy it
 
     local pl = label(f, "GameFontNormal"); at(pl, f, 16, 114); pl:SetText("Players")
-    local cb = label(f, "GameFontHighlightSmall"); at(cb, f, 250, 116); cb:SetText("Chips to add or take:")
-    H.chips = editBox(f, 80, "10s", 12); at(H.chips, f, 380, 110)
+    local cb = label(f, "GameFontHighlightSmall", "RIGHT"); at(cb, f, 130, 118); cb:SetWidth(180); cb:SetText("Chips to add or take:")
+    H.chips = editBox(f, 80, "10s", 12); at(H.chips, f, 318, 110)
 
-    H.pending = {}
-    for i = 1, PENDING_ROWS do
-        local r = {}
-        r.name = label(f, "GameFontHighlight"); at(r.name, f, 16, 144 + (i - 1) * 26)
-        r.admit = button(f, "Let in with chips", 130, function() end, 20); at(r.admit, f, 160, 140 + (i - 1) * 26)
-        r.deny = button(f, "Turn down", 80, function() end, 20); at(r.deny, f, 296, 140 + (i - 1) * 26)
-        H.pending[i] = r
+    -- the players: column headings, then one row each
+    local hdrs = { { 126, 80, "Chips", "RIGHT" }, { 210, 70, "Result", "RIGHT" } }
+    for _, h in ipairs(hdrs) do
+        local fs = label(f, "GameFontNormalSmall", h[4]); at(fs, f, h[1], 142); fs:SetWidth(h[2]); fs:SetText(h[3])
     end
-    local py = 144 + PENDING_ROWS * 26 + 8
+    local py = 160
     H.rows = {}
     for i = 1, HOST_ROWS do
         local r = {}
@@ -408,10 +405,20 @@ local function buildHost()
         r.kick = button(f, "Remove", 64, function() end, 20); at(r.kick, f, 350, y)
         H.rows[i] = r
     end
+    H.empty = label(f, "GameFontHighlightSmall"); at(H.empty, f, 16, py + 4)
     H.more = label(f, "GameFontHighlightSmall"); at(H.more, f, 16, py + HOST_ROWS * 26 + 2)
-    local hdrs = { { 126, 80, "Chips", "RIGHT" }, { 210, 70, "Result", "RIGHT" } }
-    for _, h in ipairs(hdrs) do
-        local fs = label(f, "GameFontNormalSmall", h[4]); at(fs, f, h[1], py - 14); fs:SetWidth(h[2]); fs:SetText(h[3])
+
+    -- players waiting for a seat
+    local qy = py + HOST_ROWS * 26 + 22
+    H.pendTitle = label(f, "GameFontNormal"); at(H.pendTitle, f, 16, qy)
+    H.pending = {}
+    for i = 1, PENDING_ROWS do
+        local r = {}
+        local y = qy + 24 + (i - 1) * 26
+        r.name = label(f, "GameFontHighlight"); at(r.name, f, 16, y + 4)
+        r.admit = button(f, "Let in with chips", 130, function() end, 20); at(r.admit, f, 160, y)
+        r.deny = button(f, "Turn down", 80, function() end, 20); at(r.deny, f, 296, y)
+        H.pending[i] = r
     end
 
     -- right column
@@ -526,14 +533,15 @@ local function refreshHost()
             r.kick:SetScript("OnClick", function() CN.Kick(t, e.name); UI.Refresh() end)
         end
     end
-    H.more:SetText(#ledger > HOST_ROWS and (GREY .. ("+%d more seated"):format(#ledger - HOST_ROWS) .. "|r")
-        or (#ledger == 0 and (GREY .. "Nobody is seated yet.|r") or ""))
+    H.more:SetText(#ledger > HOST_ROWS and (GREY .. ("+%d more seated"):format(#ledger - HOST_ROWS) .. "|r") or "")
+    H.empty:SetText(#ledger == 0 and (GREY .. "Nobody is seated yet.|r") or "")
+    H.pendTitle:SetText(#pending > 0 and "Asking for a seat" or (GREY .. "Nobody is waiting for a seat.|r"))
 
     local last = t.lastResult
     local lines = {}
     if bjGame then
         local pub = ns.BlackjackTable.Public(t)
-        local dealerText = #pub.dealer.cards == 0 and (GREY .. "-|r") or UI.CardsText(pub.dealer.cards) .. (pub.dealer.hidden and " ??" or "")
+        local dealerText = #pub.dealer.cards == 0 and (GREY .. "no cards yet|r") or UI.CardsText(pub.dealer.cards) .. (pub.dealer.hidden and " ??" or "")
         H.number:SetText(dealerText)
         H.history:SetText(last and last.dealer and (GREY .. ("Last round: dealer %d%s"):format(last.dealer.total, last.dealer.bust and " (bust)" or "") .. "|r") or "")
         for _, h in ipairs(pub.hands) do
