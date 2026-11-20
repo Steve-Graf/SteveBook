@@ -58,6 +58,15 @@ createBtn._scripts.OnClick(createBtn)
 eq(#Casino.List(db), before + 1, "Create table creates a table")
 local t = Casino.List(db)[1]
 check(_G.SteveBookCasinoHostFrame and _G.SteveBookCasinoHostFrame:IsShown(), "the host window opens")
+check(not _G.SteveBookCasinoFrame:IsShown(), "and the launcher steps aside instead of sitting behind it")
+do
+    local back = stub.findByText("Casino")
+    check(back ~= nil, "the host window has a Casino button")
+    back._scripts.OnClick(back)
+    check(_G.SteveBookCasinoFrame:IsShown() and not _G.SteveBookCasinoHostFrame:IsShown(), "which returns to the launcher")
+    UI.OpenHost(Casino.List(db)[1].code)
+    check(_G.SteveBookCasinoHostFrame:IsShown() and not _G.SteveBookCasinoFrame:IsShown(), "and Open brings the host window back")
+end
 check(say():find(t.code, 1, true), "the code is announced in chat")
 check(stub.findByText(t.code) ~= nil, "the code is shown in the host window")
 for _, n in ipairs(UISpecialFrames) do special[n] = true end

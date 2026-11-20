@@ -59,11 +59,14 @@ local function at(region, parent, x, y, point)
     return region
 end
 
-local function newWindow(name, w, h, title)
+-- `anchor` = { point, x, y } for where the window first opens (it can be dragged afterwards). The
+-- launcher sits in the middle; the host window opens at the left and a table the player sits at on
+-- the right, so a host who also plays (/book loopback) sees both.
+local function newWindow(name, w, h, title, anchor)
     local f = CreateFrame("Frame", name, UIParent, "BasicFrameTemplateWithInset")
     if UISpecialFrames then table.insert(UISpecialFrames, name) end     -- Escape closes it
     f:SetSize(w, h)
-    f:SetPoint("CENTER")
+    if anchor then f:SetPoint(anchor[1], UIParent, anchor[1], anchor[2], anchor[3]) else f:SetPoint("CENTER") end
     f:SetMovable(true)
     f:EnableMouse(true)
     f:SetClampedToScreen(true)
@@ -76,6 +79,13 @@ local function newWindow(name, w, h, title)
     f.title:SetPoint("TOP", 0, -5)
     f.title:SetText(title)
     return f
+end
+
+-- A small "Casino" button in the corner of a table window: back to the list of games.
+local function casinoButton(f)
+    local b = button(f, "Casino", 64, function() f:Hide(); UI.Show() end, 20)
+    b:SetPoint("TOPLEFT", f, "TOPLEFT", 8, -3)
+    return b
 end
 
 local function colored(n)
@@ -364,8 +374,9 @@ end
 
 local function buildHost()
     local H = host
-    local f = newWindow("SteveBookCasinoHostFrame", 720, 560, "SteveBook Casino: Host")
+    local f = newWindow("SteveBookCasinoHostFrame", 720, 560, "SteveBook Casino: Host", { "TOPLEFT", 40, -70 })
     H.frame = f
+    casinoButton(f)
     H.head = label(f, "GameFontNormalLarge"); at(H.head, f, 16, 34)
     H.status = label(f, "GameFontHighlight"); at(H.status, f, 16, 58)
     local cl = label(f, "GameFontHighlightSmall"); at(cl, f, 16, 84); cl:SetText("Table code (share it):")
@@ -668,8 +679,9 @@ end
 
 local function buildTable()
     local P = play
-    local f = newWindow("SteveBookCasinoTableFrame", 860, 610, "SteveBook Casino")
+    local f = newWindow("SteveBookCasinoTableFrame", 860, 610, "SteveBook Casino", { "TOPRIGHT", -40, -70 })
     P.frame = f
+    casinoButton(f)
 
     P.head = label(f, "GameFontNormalLarge"); at(P.head, f, 16, 34)
     P.status = label(f, "GameFontHighlight"); at(P.status, f, 16, 58)
@@ -913,8 +925,9 @@ end
 
 local function buildBlackjack()
     local B = bj
-    local f = newWindow("SteveBookBlackjackFrame", 860, 590, "SteveBook Casino")
+    local f = newWindow("SteveBookBlackjackFrame", 860, 590, "SteveBook Casino", { "TOPRIGHT", -40, -70 })
     B.frame = f
+    casinoButton(f)
     B.head = label(f, "GameFontNormalLarge"); at(B.head, f, 16, 34)
     B.status = label(f, "GameFontHighlight"); at(B.status, f, 16, 58); B.status:SetWidth(500)
     B.balance = label(f, "GameFontHighlight", "RIGHT"); at(B.balance, f, 460, 36); B.balance:SetWidth(260)
@@ -1072,12 +1085,14 @@ end
 function UI.OpenHost(code)
     if not host.frame then buildHost() end
     hostCode = ns.Protocol.CanonicalCode(code)
+    UI.Hide()                                  -- the launcher steps aside
     host.frame:Show()
     UI.Refresh()
 end
 
 function UI.OpenTable(code)
     code = ns.Protocol.CanonicalCode(code)
+    UI.Hide()                                  -- the launcher steps aside
     if gameOfCode(code) == "blackjack" then
         if not bj.frame then buildBlackjack() end
         bjCode = code
