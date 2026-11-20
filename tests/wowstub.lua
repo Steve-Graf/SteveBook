@@ -120,6 +120,15 @@ end
 
 function stub.install()
     local G = _G
+    -- WoW's Lua accepts extra arguments in xpcall(f, handler, ...); plain Lua 5.1 does not, and
+    -- ChatThrottleLib relies on it. Make the stub environment behave like the game.
+    do
+        local raw = xpcall
+        xpcall = function(f, h, ...)
+            local n, args = select("#", ...), { ... }
+            return raw(function() return f(unpack(args, 1, n)) end, h)
+        end
+    end
     G.CreateFrame = function(_, name, parent)
         local f = newFrame(parent, name)
         if name then G[name] = f end
