@@ -1083,7 +1083,10 @@ local function build()
         showJoin = false
         Bettor.Refresh()
     end)
-    j.forget:SetPoint("TOPLEFT", j.status, "BOTTOMLEFT", 0, -14)
+    j.health = label(j, "GameFontHighlight")
+    j.health:SetPoint("TOPLEFT", j.status, "BOTTOMLEFT", 0, -8)
+    j.health:SetWidth(WIN_W - 40)
+    j.forget:SetPoint("TOPLEFT", j.health, "BOTTOMLEFT", 0, -14)
     j:Hide()
     ui.joinPanel = j
     local L = ns.BookLobby
@@ -1145,6 +1148,16 @@ function Bettor.Refresh()
             end
         end
         ui.joinPanel.status:SetText(msg)
+        -- Can anything get through? Waiting on a bookie: their book's channel and whether they were
+        -- heard. Otherwise: the lobby channel the open-books list comes from.
+        local hcode, howner = ns.Protocol and ns.Protocol.LOBBY_CODE, nil
+        if b and b.status == "requested" and not showJoin then hcode, howner = b.code, b.owner end
+        local hok, htext
+        if hcode and ns.Comm and ns.Comm.Health then
+            local ran, ok, text = pcall(ns.Comm.Health, hcode, howner)
+            if ran then hok, htext = ok, text end
+        end
+        ui.joinPanel.health:SetText(htext and ((hok and "" or RED) .. plain(htext) .. (hok and "" or "|r")) or "")
         return
     end
 

@@ -626,5 +626,43 @@ do
     check(true, "no ns.BookLobby: join screen still draws")
 end
 
+-- Connection status line on the join screen and on "Request sent, waiting".
+do
+    local calls, answer = {}, { true, "Connected, but Zed has not been heard yet. Are they online?" }
+    ns.Comm.Health = function(code, who) calls[#calls + 1] = { code, who }; return answer[1], answer[2] end
+    Cache.RequestJoin(SteveBookDB.cache, "HLT-1111")
+    Cache.Book(SteveBookDB.cache, "HLT-1111").owner = "Zed"
+    SteveBookDB.cache.selected = "HLT-1111"
+    B.Hide(); B.Show()
+    check(frameWithTextContaining("Waiting for the bookie to approve you") ~= nil, "waiting state is up")
+    local line = frameWithTextContaining("has not been heard yet")
+    check(line ~= nil and not line._text:find("|cff", 1, true), "healthy line shows in normal colour: " .. tostring(line and line._text))
+    local last = calls[#calls]
+    check(last and last[1] == "HLT-1111" and last[2] == "Zed", "Health is asked about the waiting book and its owner")
+
+    -- A broken connection turns the line red, and the 5 s refresh ticker picks the change up.
+    answer = { false, "Not connected: the SteveBook channel is not working and this character is not in a guild. Run /book net." }
+    ticker(5).fn()
+    line = frameWithTextContaining("Not connected")
+    check(line ~= nil and line._text:find("|cffff5050", 1, true) == 1 and line._text:sub(-2) == "|r", "failing line is red")
+    check(not frameWithTextContaining("has not been heard yet"), "old line replaced")
+
+    -- With no book waiting on (code-entry screen) it is the lobby channel that is checked, with no name.
+    Cache.Forget(SteveBookDB.cache, "HLT-1111")
+    SteveBookDB.cache.selected = nil
+    calls = {}
+    findButton("+ Join"):Click()
+    last = calls[#calls]
+    check(last and last[1] == ns.Protocol.LOBBY_CODE and last[2] == nil, "join screen asks about the lobby channel")
+
+    -- No Health (older Comm) or a Health that errors: the screen still draws.
+    ns.Comm.Health = nil
+    B.Refresh()
+    ns.Comm.Health = function() error("boom") end
+    B.Refresh()
+    check(true, "missing or failing Comm.Health is tolerated")
+    ns.Comm.Health = nil
+end
+
 print = print_real
 if fails == 0 then print("test_bettor_ui: all passed") else print(fails .. " FAILED"); os.exit(1) end
