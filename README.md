@@ -72,7 +72,7 @@ table**, or **Join a table** from the list of open tables (a code still works fo
 listed). Players sit down only when the host lets them in, and they have no chips until the host adds
 some (for example after they pay in gold). Chips are the table's own credit, separate from the
 sportsbook. Roulette: players click bets onto a bet slip, set the stakes and place them all at once (with "same as last round"), and the host spins. Blackjack: players bet, the host
-deals, and everyone plays the dealer in turn (hit, stand, double, split). Closing a window does not leave the table or stop the game; a player can leave and ask to rejoin (their chips are kept), and chat tells you when it is your turn in blackjack. To try a table alone, turn
+deals, and everyone plays the dealer in turn (hit, stand, double, split). Both blackjack windows have a **Mini** button (saved): the host's shrinks to the dealer's cards, the status lines and Deal; the player's to the dealer's cards, their own hand, Hit/Stand/Double/Split and a one-line bet strip (Full brings everything back). Closing a window does not leave the table or stop the game; a player can leave and ask to rejoin (their chips are kept), and chat tells you when it is your turn in blackjack. To try a table alone, turn
 on `/book loopback`, host a table and join it from the list.
 
 ## Tests

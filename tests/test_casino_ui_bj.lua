@@ -133,6 +133,36 @@ do
     check(textOf("Round over.") == nil, "the results are gone")
 end
 
+-- the mini views
+do
+    local function pass() stub.advance(1); stub.runAfters() end
+    local function lastShown(text) local l = allByText(text); return l[#l] and l[#l]:IsShown() end
+    check(#allByText("Mini") == 2, "each blackjack window has a Mini button")
+    check(lastShown("Leave table"), "full player window shows Leave table")
+    check(lastShown("Close table"), "full host window shows Close table")
+    local bjMini, hostMini = allByText("Mini")[2], allByText("Mini")[1]
+    click(bjMini)
+    eq(db.casinoMini and db.casinoMini.bj, true, "the player's mini choice is saved")
+    check(not lastShown("Leave table"), "mini player window leaves out Leave table")
+    check(allByText("Hit")[1] ~= nil and allByText("Place bet")[1] ~= nil, "the buttons the player needs are still there")
+    click(hostMini)
+    eq(db.casinoMini.host, true, "the host's mini choice is saved")
+    check(not lastShown("Close table"), "mini host window leaves out Close table")
+    check(rawget(allByText("Deal")[1], "_shown") ~= false, "but keeps Deal")
+    -- play a round entirely in mini
+    click(allByText("Place bet")[1]); settle()
+    t.bj.shoe = { "TS", "9H", "KD", "8C" }; t.bj.pos = 1
+    click(allByText("Deal")[1]); settle()
+    check(textOf("|cff11111110|r") ~= nil, "the player's cards are still drawn in mini")
+    click(allByText("Stand")[1]); settle()
+    local tries = 0
+    while t.status ~= "results" and tries < 12 do pass(); tries = tries + 1 end
+    pass(); pass(); pass()
+    click(allByText("Full")[2]); click(allByText("Full")[1])
+    check(db.casinoMini.bj == nil and db.casinoMini.host == nil, "Full clears both choices")
+    check(lastShown("Leave table") and lastShown("Close table"), "the full windows come back")
+end
+
 -- leaving
 click(allByText("Leave table")[#allByText("Leave table")]); settle()
 check(tc.status == "left" or tc.status == "seated", "the leave button works without errors")

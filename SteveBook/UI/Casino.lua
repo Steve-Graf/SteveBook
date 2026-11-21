@@ -21,6 +21,23 @@ local function say(msg) print(GOLD .. "SteveBook Casino:|r " .. msg) end
 local function money(c) return Odds.FormatMoney(c) end
 local function db() return SteveBookDB end
 
+-- "Mini" view of a blackjack window (saved per window: "host" or "bj").
+local function isMini(kind)
+    local d = db()
+    return (d and d.casinoMini and d.casinoMini[kind] == true) and true or false
+end
+local function setMini(kind, on)
+    local d = db()
+    if not d then return end
+    d.casinoMini = d.casinoMini or {}
+    d.casinoMini[kind] = on and true or nil
+end
+-- Move a region (clear its old anchor first).
+local function place(region, parent, x, y)
+    region:ClearAllPoints()
+    region:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -y)
+end
+
 ------------------------------------------------------------------------------------------
 -- Widgets (same look as the other windows)
 ------------------------------------------------------------------------------------------
@@ -811,7 +828,30 @@ local function buildHost()
         say("Table closed. Settle up with your players in gold, then delete it from /casino.")
     end, 22)
     at(H.close, body, 688, 566 - 32)
+    -- everything the mini view leaves out
+    H.fullOnly = { cl, H.codeBox, H.listed, pp, qp, ll, H.minBox, dash, H.maxBox, H.setLimits, H.close, H.skip, ht }
+    H.miniBtn = button(f, "Mini", 52, function() setMini("host", not isMini("host")); UI.Refresh() end, 20)
+    H.miniBtn:SetPoint("TOPLEFT", f, "TOPLEFT", 76, -3)
     f:SetScript("OnShow", function() UI.Refresh() end)
+end
+
+-- Mini: the dealer's cards, the Deal button and the status lines; the rest of the window is hidden.
+local function layoutHost(mini)
+    local H = host
+    if mini then
+        H.frame:SetSize(420, 302); H.body:SetSize(408, 268)
+        H.head:SetWidth(390); H.status:SetWidth(390)
+        place(H.hintBox, H.body, 14, 56); H.hintBox:SetSize(380, 30); H.hint:SetWidth(360)
+        place(H.gameBox, H.body, 14, 94); H.gameBox:SetSize(380, 124); H.blackjack:SetSize(380, 124)
+        place(H.spin, H.body, 14, 226)
+    else
+        H.frame:SetSize(780, 600); H.body:SetSize(768, 566)
+        H.head:SetWidth(400); H.status:SetWidth(500)
+        place(H.hintBox, H.body, 14, 80); H.hintBox:SetSize(752, 30); H.hint:SetWidth(732)
+        place(H.gameBox, H.body, 446, 118); H.gameBox:SetSize(320, 402); H.blackjack:SetSize(320, 402)
+        place(H.spin, H.body, 14, 528)
+    end
+    for _, w in ipairs(H.fullOnly) do w:SetShown(not mini) end
 end
 
 local function refreshHost()
@@ -820,6 +860,9 @@ local function refreshHost()
     local t = hostTable()
     if not t then H.frame:Hide(); return end
     local bjGame = t.game == "blackjack"
+    local mini = bjGame and isMini("host")
+    if H.layoutMini ~= mini then layoutHost(mini); H.layoutMini = mini end
+    H.miniBtn:SetShown(bjGame); H.miniBtn:SetText(mini and "Full" or "Mini")
     H.head:SetText(t.name)
     local statusText = ({ betting = GREEN .. "Taking bets|r", spinning = GOLD .. "Spinning...|r", closed = RED .. "Closed|r",
         playing = GOLD .. "Players are deciding|r", dealer = GOLD .. "Dealer's turn|r", results = GOLD .. "Showing the results|r" })[t.status]
@@ -905,7 +948,7 @@ local function refreshHost()
         H.dealerNote:SetText(#pub.dealer.cards == 0 and (last and last.dealer and (MUTED .. ("Last round: dealer %d%s"):format(last.dealer.total, last.dealer.bust and " (bust)" or "") .. "|r") or (MUTED .. "No cards yet.|r"))
             or (pub.dealer.value and ("Dealer has " .. pub.dealer.value) or (MUTED .. "The hole card is face down.|r")))
         for i, r in ipairs(H.bjRows) do
-            local h = pub.hands[i]
+            local h = (not mini) and pub.hands[i] or nil
             r.name:SetShown(h ~= nil); r.info:SetShown(h ~= nil); r.badge:SetShown(h ~= nil)
             if h then
                 local m = t.members[h.name]
@@ -927,14 +970,14 @@ local function refreshHost()
                 for j = 1, HOST_CARDS do r.cards[j]:Hide() end
             end
         end
-        H.bjMore:SetText(#pub.hands > 5 and (GREY .. ("+%d more players"):format(#pub.hands - 5) .. "|r") or "")
+        H.bjMore:SetText((not mini and #pub.hands > 5) and (GREY .. ("+%d more players"):format(#pub.hands - 5) .. "|r") or "")
         H.spin:SetText("Deal")
         local anyWager = false
         for _, name in ipairs(Casino.Seated(t)) do
             for _, b in ipairs(t.members[name].bets) do if b.kind == "wager" then anyWager = true end end
         end
         if t.status == "betting" and anyWager then H.spin:Enable() else H.spin:Disable() end
-        H.skip:Show()
+        H.skip:SetShown(not mini)
         if t.status == "playing" then H.skip:Enable() else H.skip:Disable() end
     else
         local function pocketColor(n)
@@ -1493,11 +1536,14 @@ local function buildBlackjack()
     B.next = panel(body, 626, 56, 250, 196, COL.panel, COL.line)
     local n = B.next
     local nt = label(n, "GameFontNormal"); at(nt, n, 12, 10); nt:SetText("Your bet")
+    B.betTitle = nt
     B.betNote = label(n, "GameFontHighlightSmall"); at(B.betNote, n, 12, 30); B.betNote:SetWidth(226); B.betNote:SetWordWrap(true)
     local qx = 12
+    B.quick = {}
     for _, v in ipairs({ 100, 500, 1000, 10000 }) do
         local b = flat(n, money(v), 50, 24, function() amount = v; B.amountBox:SetText(money(v)) end)
         at(b, n, qx, 66); qx = qx + 54
+        B.quick[#B.quick + 1] = b
     end
     B.amountBox = editBox(n, 80, money(amount), 12); at(B.amountBox, n, 12, 100)
     B.place = button(n, "Place bet", 134, function()
@@ -1519,6 +1565,10 @@ local function buildBlackjack()
     B.log = label(B.logBox, "GameFontHighlightSmall"); at(B.log, B.logBox, 12, 32); B.log:SetWidth(226)
     B.log:SetWordWrap(true); B.log:SetJustifyV("TOP"); B.log:SetHeight(292)
 
+    B.barW = 576
+    B.miniBtn = button(f, "Mini", 52, function() setMini("bj", not isMini("bj")); UI.Refresh() end, 20)
+    B.miniBtn:SetPoint("TOPLEFT", f, "TOPLEFT", 76, -3)
+
     local ticker
     f:SetScript("OnShow", function()
         if bjCode then CN.Sync(bjCode) end
@@ -1526,6 +1576,55 @@ local function buildBlackjack()
         UI.Refresh()
     end)
     f:SetScript("OnHide", function() if ticker then ticker:Cancel(); ticker = nil end end)
+end
+
+-- Mini: the dealer's cards, your own hand, your decision buttons and a one-line bet strip. Switching
+-- back restores the full layout (every position is set explicitly in both modes).
+local function layoutBj(mini)
+    local B = bj
+    local w = mini and 452 or 600
+    B.barW = mini and 428 or 576
+    if mini then B.frame:SetSize(492, 438); B.body:SetSize(480, 404)
+    else B.frame:SetSize(900, 640); B.body:SetSize(888, 606) end
+    -- head lines
+    B.head:SetWidth(mini and 200 or 340)
+    B.status:SetWidth(mini and 452 or 580)
+    place(B.balance, B.body, mini and 150 or 330, 10); B.balance:SetWidth(mini and 316 or 430)
+    -- dealer
+    B.dealerBox:SetSize(w, 92)
+    place(B.dealerNote, B.dealerBox, mini and 12 or 410, mini and 52 or 36)
+    B.dealerNote:SetWidth(mini and 100 or 180)
+    B.dealerNote:SetJustifyH(mini and "LEFT" or "RIGHT")
+    -- seats: in mini only yours is drawn, in the first row
+    for _, r in ipairs(B.rows) do
+        r.frame:SetSize(w, 62)
+        place(r.badge, r.frame, mini and 352 or 496, 12)
+        place(r.note, r.frame, mini and 352 or 496, 36)
+    end
+    -- decision
+    place(B.act, B.body, 14, mini and 226 or 508); B.act:SetSize(w, 88)
+    place(B.timer, B.act, mini and 252 or 400, 10)
+    B.barTrack:SetSize(B.barW, 6); B.barFill:SetSize(B.barW, 6)
+    B.waiting:SetWidth(B.barW - 6)
+    local bw, step = mini and 104 or 138, mini and 110 or 144
+    for i, b in ipairs({ B.hit, B.stand, B.double, B.split }) do b:SetWidth(bw); place(b, B.act, 12 + (i - 1) * step, 48) end
+    -- bet
+    if mini then
+        place(B.next, B.body, 14, 322); B.next:SetSize(w, 74)
+        for i, b in ipairs(B.quick) do place(b, B.next, 12 + (i - 1) * 54, 8) end
+        place(B.amountBox, B.next, 236, 7)
+        B.place:SetWidth(84); place(B.place, B.next, 322, 6)
+        B.back:SetWidth(130); place(B.back, B.next, 12, 42)
+        place(B.msg, B.next, 150, 46); B.msg:SetWidth(296)
+    else
+        place(B.next, B.body, 626, 56); B.next:SetSize(250, 196)
+        for i, b in ipairs(B.quick) do place(b, B.next, 12 + (i - 1) * 54, 66) end
+        place(B.amountBox, B.next, 12, 100)
+        B.place:SetWidth(134); place(B.place, B.next, 104, 99)
+        B.back:SetWidth(226); place(B.back, B.next, 12, 134)
+        place(B.msg, B.next, 12, 164); B.msg:SetWidth(226)
+    end
+    for _, x in ipairs({ B.leave, B.round, B.betTitle, B.betNote, B.logBox, B.more }) do x:SetShown(not mini) end
 end
 
 local function signed(c) return (c >= 0 and GREEN .. "+" or RED .. "-") .. money(math.abs(c)) .. "|r" end
@@ -1538,6 +1637,9 @@ local function refreshBlackjack()
     local st = tc.state
     local pub = st and st.bj
     local me = myName(tc)
+    local mini = isMini("bj") and tc.status == "seated"      -- leaving needs the full window's rejoin button
+    if B.layoutMini ~= mini then layoutBj(mini); B.layoutMini = mini end
+    B.miniBtn:SetText(isMini("bj") and "Full" or "Mini")
     B.head:SetText(tc.name or "Blackjack")
 
     local statusText
@@ -1579,6 +1681,11 @@ local function refreshBlackjack()
 
     -- seats
     local hands = pub and pub.hands or {}
+    if mini then
+        local mine = {}
+        for _, h in ipairs(hands) do if h.name == me then mine[1] = h end end
+        hands = mine
+    end
     local seatChips = {}
     for _, s in ipairs(st and st.seats or {}) do seatChips[s.name] = s.balance end
     for i, r in ipairs(B.rows) do
@@ -1646,7 +1753,7 @@ local function refreshBlackjack()
         local left = pub.deadline and (pub.deadline - GetServerTime()) or nil
         B.timer:SetText(left and (GOLD .. ("%d s left"):format(math.max(0, left)) .. "|r") or "")
         local frac = left and math.max(0, math.min(1, left / ns.BlackjackTable.TURN_SECONDS)) or 1
-        B.barFill:SetSize(math.max(1, 576 * frac), 6)
+        B.barFill:SetSize(math.max(1, B.barW * frac), 6)
         B.barTrack:Show(); B.barFill:Show()
     elseif st and st.status == "results" and pub then
         glow(B.hit, false); glow(B.stand, false)
@@ -1655,7 +1762,7 @@ local function refreshBlackjack()
         B.actTitle:SetText(GOLD .. "Round over|r")
         B.timer:SetText(MUTED .. ("next round in %d s"):format(math.max(0, left)) .. "|r")
         local frac = math.max(0, math.min(1, left / ns.BlackjackTable.RESULTS_SECONDS))
-        B.barFill:SetSize(math.max(1, 576 * frac), 6); B.barTrack:Show(); B.barFill:Show()
+        B.barFill:SetSize(math.max(1, B.barW * frac), 6); B.barTrack:Show(); B.barFill:Show()
         local mine = Client.MyHands(tc, me)
         if mine and outcomeBadge(mine) then
             local net = handsNet(mine)

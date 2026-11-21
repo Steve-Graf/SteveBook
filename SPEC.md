@@ -436,6 +436,11 @@ messages.
   No insurance and no surrender. Players who sat out a round simply are not dealt in. A fresh
   shoe is shuffled when fewer than 60 cards remain. Every wager, double and split is a stack in the
   player's `bets` list, so kicking, leaving, closing or a reload returns exactly what is on the table.
+- **Mini view (v0.8.4):** both blackjack windows have a Mini/Full button, saved in
+  `SteveBookDB.casinoMini = { host, bj }`. Host mini: dealer cards, status lines, the "what next" strip
+  and Deal (Skip, players, limits, Close table are hidden). Player mini: dealer cards, the player's own
+  hand only, the decision buttons and a one-line bet strip (log, other seats and Leave are hidden). The
+  player's mini only applies while seated, so "Ask to rejoin" is never hidden. Roulette has no mini view.
 - **Not in v1:** the host playing at their own table, a spin timer for roulette,
   commit-and-reveal proof of fairness (players trust the host's client, as they trust the bookie's),
   insurance and surrender, re-splitting.
