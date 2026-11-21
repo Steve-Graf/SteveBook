@@ -49,6 +49,12 @@ heard there, with the version each of them runs (a friend who opens `/casino` an
 you never hear each other, make sure you both run the latest version (from v0.4.0 on), and that you
 are on the same realm group and faction; custom channels do not cross realms.
 
+## Guild messages
+
+From v0.8.0 every message also goes through guild chat (a second path that needs no channel), so friends
+in your guild can reach each other even when the hidden channel fails. `/book guild` turns it off or on,
+and `/book net` shows what was last heard on each path.
+
 ## If a channel shows as "disabled"
 
 `/book net` lists each SteveBook channel and says whether it works. A channel can hold a slot number

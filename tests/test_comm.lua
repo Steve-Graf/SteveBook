@@ -565,4 +565,81 @@ do
     Comm.LeaveBook(code)
 end
 
+------------------------------------------------------------------------------------------
+-- 14. guild transport: a second path, deduplicated on receive
+------------------------------------------------------------------------------------------
+do
+    local code = "GLD-TEST"
+    IsInGuild = function() return true end
+    SteveBookDB.noGuild = nil
+    stub.channels[Protocol.ChannelName(code)] = nil
+    stub.addonMessages = {}
+    local ok, how = Comm.Send("MARKET", { rev = 1, market = { id = 1 } }, code)
+    eq(ok, true, "send ok with the channel down")
+    eq(how, "guild", "reported as sent by guild while the channel is not ready")
+    tick(2)
+    local guildMsgs = 0
+    for _, m in ipairs(stub.addonMessages) do if m.chatType == "GUILD" then guildMsgs = guildMsgs + 1 end end
+    eq(guildMsgs, 1, "one GUILD addon message went out")
+    check(Comm.NetReport()[#Comm.NetReport() - 1]:find("Guild messages: ON", 1, true) ~= nil, "/book net says guild is on")
+
+    -- the same message (same id) arriving on both transports is handled once
+    drainSeen()
+    local env = assert(Protocol.Wrap("MARKET", "GLD-TEST", { rev = 5, market = { id = 5 } }))
+    env.m = "t0001"
+    local text = AceSer:Serialize(env)
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", text, "GUILD", "Zed-Realm")
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", text, "CHANNEL", "Zed-Realm")
+    eq(#drainSeen(), 1, "both copies deliver one message")
+    -- a new id from the same sender is a new message
+    env.m = "t0002"
+    text = AceSer:Serialize(env)
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", text, "GUILD", "Zed-Realm")
+    eq(#drainSeen(), 1, "a different id is delivered")
+    -- messages without an id (older versions) always deliver
+    env.m = nil
+    text = AceSer:Serialize(env)
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", text, "CHANNEL", "Zed-Realm")
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", text, "CHANNEL", "Zed-Realm")
+    eq(#drainSeen(), 2, "messages with no id are never treated as duplicates")
+
+    -- off switch and no guild
+    SteveBookDB.noGuild = true
+    stub.addonMessages = {}
+    ok, how = Comm.Send("MARKET", { rev = 2, market = { id = 2 } }, code)
+    eq(how, "queued", "with guild messages off, a down channel means queued")
+    tick(2)
+    guildMsgs = 0
+    for _, m in ipairs(stub.addonMessages) do if m.chatType == "GUILD" then guildMsgs = guildMsgs + 1 end end
+    eq(guildMsgs, 0, "nothing goes out by guild when it is off")
+    SteveBookDB.noGuild = nil
+    IsInGuild = function() return false end
+    ok, how = Comm.Send("MARKET", { rev = 3, market = { id = 3 } }, code)
+    eq(how, "queued", "not in a guild: the channel path alone")
+    IsInGuild = nil
+    Comm.LeaveBook(code)
+end
+
+------------------------------------------------------------------------------------------
+-- 15. Comm.Health: a one-line answer for windows that are waiting on someone
+------------------------------------------------------------------------------------------
+do
+    local code = "HLT-HEAL"
+    stub.channels[Protocol.ChannelName(code)] = nil
+    IsInGuild = function() return false end
+    local ok, text = Comm.Health(code, "Nobody")
+    eq(ok, false, "no channel and no guild is not connected")
+    check(text:find("/book net", 1, true) ~= nil, "...and says where to look")
+    IsInGuild = function() return true end
+    ok, text = Comm.Health(code, "Nobody")
+    eq(ok, true, "a guild path counts as connected")
+    check(text:find("has not been heard", 1, true) ~= nil, "...but says the other side is silent")
+    local env = assert(Protocol.Wrap("MARKET", code, { rev = 1, market = { id = 1 } }))
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "GUILD", "Heal-Realm")
+    ok, text = Comm.Health(code, "Heal")
+    eq(ok, true, "heard recently"); check(text:find("heard", 1, true) and text:find("guild", 1, true), "names the path: " .. text)
+    IsInGuild = nil
+    drainSeen()
+end
+
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end

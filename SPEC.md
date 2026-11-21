@@ -240,6 +240,26 @@ Rules:
 
 ---
 
+### Transports (v0.8.0)
+
+Every message goes out on two paths and is heard on both; a receiver acts on the first copy.
+
+- **Hidden channel** (`SBN` + code, see `Protocol.ChannelName`): reaches any player, but a join can fail
+  silently. In Forever a channel can hold a slot and be listed as disabled by `GetChannelList`
+  (every send then fails with `InvalidChannel`); `Comm` treats such a channel as not joined, leaves it
+  after a few seconds and joins again. Names without the `N` (up to v0.7.4) stayed stuck on some
+  characters, so the name changed; `Protocol.LegacyChannelName` is the old one and is left when found.
+- **GUILD addon messages**: no joining, only guild members. On by default when the character is in a
+  guild; `/book guild` turns it off (`SteveBookDB.noGuild`).
+- **Dedupe**: the envelope has an optional `m` (session tag + counter). A receiver remembers
+  `sender:m` for 120 s and drops the second copy. Messages without `m` (older clients) always deliver.
+- **Health**: `/book net` lists each channel (working, DISABLED, NOT JOINED), the guild state and when
+  anything was last heard on each path. `Comm.Health(code, who)` returns (ok, one line) for a window
+  that is waiting on someone ("Not connected ...", "Connected, but X has not been heard yet",
+  "X was heard 12 s ago (via guild)").
+
+---
+
 ## 6. UI
 
 Slash command `/book` opens the window; minimap button optional (LibDBIcon).

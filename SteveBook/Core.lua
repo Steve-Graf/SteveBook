@@ -17,6 +17,7 @@ local function help()
     say("/book loopback     test alone: let this character be bookie and bettor of its own book")
     say("/book lobby        check the lobby channel the lists of tables and books use")
     say("/book net          show whether each SteveBook channel is really working")
+    say("/book guild        turn the guild-chat second path on or off (on by default)")
     say("/book hide         hide the active book from (or show it in) the list of books")
     say("/casino            open the casino (roulette tables)")
     say("/book icon         show or hide the minimap icon")
@@ -65,6 +66,10 @@ local function handle(msg)
         if ns.CasinoNet.AskLobby then ns.CasinoNet.AskLobby() end             -- join it and ask, so the answer is fresh
         for _, line in ipairs(ns.CasinoNet.LobbyReport()) do say(line) end
         say("Ask your friend to open /casino and press Join a table, then run /book lobby again: they should be listed.")
+    elseif cmd == "guild" then
+        db.noGuild = not db.noGuild or nil
+        say(db.noGuild and "Guild messages OFF: only the hidden channel is used."
+            or "Guild messages ON: every message also goes through guild chat (guild members only).")
     elseif cmd == "net" then
         for _, line in ipairs(ns.Comm.NetReport()) do say(line) end
     elseif cmd == "hide" then

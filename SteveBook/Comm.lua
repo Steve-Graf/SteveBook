@@ -12,6 +12,11 @@
 --   Comm.JoinBook(code), Comm.LeaveBook(code), Comm.IsJoined(code)
 --   Comm.Me() -> the player's name as delivered to handlers
 --
+-- Two transports carry every message, so one broken path does not silence the addon:
+--   * the hidden per-book chat channel (anyone, but joining it can fail silently), and
+--   * GUILD addon messages (no joining; only for guild members; /book guild turns it off).
+-- Each message carries an id (`m`) so a receiver that hears both copies acts on one.
+--
 -- APIs not verified in WoW: Forever. Each is guarded; see the /dump checks in README.md.
 local ADDON, ns = ...
 local Protocol = ns.Protocol
@@ -31,6 +36,8 @@ local queued = {}                   -- code -> { {text, prio}, ... } waiting for
 local joined = {}                   -- code -> true while we want to be in the channel
 local lastTry = {}                  -- code -> GetTime() of the last JoinTemporaryChannel call
 local attempts = {}                 -- code -> join attempts since the channel was last up
+local heardVia = {}                -- transport ("CHANNEL" / "GUILD") -> when a message last came in on it
+local heardFrom = {}               -- sender -> { at, via }
 local MAX_QUEUE = 20
 -- Big messages (a SYNC of a whole book is ~200 bytes per market) are deflated before they are
 -- chunked: ChatThrottleLib moves only ~800 bytes a second, and this text compresses ~10x.
@@ -199,6 +206,15 @@ function Comm.NetReport()
         lines[#lines + 1] = ("%s: %s"):format(Protocol.ChannelName(code), state)
     end
     if #lines == 0 then lines[1] = "No SteveBook channels are wanted right now (open /casino or join a book)." end
+    local g = Comm.GuildState()
+    lines[#lines + 1] = g == "on" and "Guild messages: ON (a second path that needs no channel; /book guild turns it off)"
+        or g == "off" and "Guild messages: OFF (/book guild turns them on)"
+        or "Guild messages: not available (this character is not in a guild)"
+    local t = clock()
+    local function ago(via)
+        return heardVia[via] and ("last heard %d s ago"):format(t - heardVia[via]) or "nothing heard yet"
+    end
+    lines[#lines + 1] = "Heard by channel: " .. ago("CHANNEL") .. ". Heard by guild: " .. ago("GUILD") .. "."
     return lines
 end
 
@@ -317,6 +333,66 @@ end
 -- ---------------------------------------------------------------------------------------
 -- Sending
 
+-- GUILD transport -------------------------------------------------------------------------
+local function guildReady()
+    local db = SteveBookDB
+    if db and db.noGuild then return false end
+    return (IsInGuild and IsInGuild()) and true or false
+end
+
+local function guildSend(text, prio)
+    if not guildReady() then return false end
+    return (pcall(function() Comm:SendCommMessage(PREFIX, text, "GUILD", nil, prio) end))
+end
+
+function Comm.GuildState()
+    local db = SteveBookDB
+    if db and db.noGuild then return "off" end
+    if not (IsInGuild and IsInGuild()) then return "noguild" end
+    return "on"
+end
+
+-- Message ids, so the copy that arrives on the second transport is dropped.
+local sessionTag = ("%04x"):format(math.random(0, 0xFFFF))
+local sequence = 0
+local function nextId() sequence = sequence + 1; return sessionTag .. sequence end
+
+local seenId, seenCount = {}, 0
+local SEEN_SECONDS = 120
+local function duplicate(sender, env)
+    if type(env.m) ~= "string" then return false end
+    local key = sender .. ":" .. env.m
+    local t = clock()
+    if seenId[key] and t - seenId[key] < SEEN_SECONDS then return true end
+    seenId[key] = t
+    seenCount = seenCount + 1
+    if seenCount > 300 then
+        for k, at in pairs(seenId) do if t - at >= SEEN_SECONDS then seenId[k] = nil; seenCount = seenCount - 1 end end
+    end
+    return false
+end
+
+-- What was last heard on each transport (for /book net): { CHANNEL = time, GUILD = time }.
+function Comm.Heard() return heardVia, heardFrom end
+
+-- A line for a window that is waiting on someone: can this client reach them at all, and has it
+-- heard them? Returns ok (true when some path works), text. `who` (optional) is the player waited on.
+function Comm.Health(code, who)
+    local id, disabled = Comm.ChannelState(code)
+    local channelOk = id > 0 and not disabled
+    local guildOk = Comm.GuildState() == "on"
+    local t = clock()
+    local h = who and heardFrom[normalize(who)]
+    if h and t - h.at < 180 then
+        return true, ("%s was heard %d s ago (via %s)."):format(who, t - h.at, h.via == "GUILD" and "guild" or "the channel")
+    end
+    if channelOk or guildOk then
+        return true, who and ("Connected, but %s has not been heard yet. Are they online?"):format(who)
+            or "Connected."
+    end
+    return false, "Not connected: the SteveBook channel is not working and this character is not in a guild. Run /book net."
+end
+
 local function rawSend(text, code, prio)
     local id = channelId(code)
     if id <= 0 then return false, "channel not ready" end
@@ -341,8 +417,12 @@ local function flush()
         elseif (attempts[code] or 0) >= MAX_JOIN_ATTEMPTS then
             queued[code] = nil
             attempts[code] = nil
-            say("Could not join the channel for book " .. code .. ", so " .. #list ..
-                " message(s) were dropped. Is the 10-channel limit reached?")
+            if guildReady() then
+                dbg(nil, "channel for %s never came up; %d message(s) went by guild only", code, #list)
+            else
+                say("Could not join the channel for book " .. code .. ", so " .. #list ..
+                    " message(s) were dropped. Is the 10-channel limit reached?")
+            end
         else
             tryJoin(code)
             waiting = true
@@ -365,21 +445,23 @@ function Comm.Send(msgType, payload, bookCode, target)
     local env, err = Protocol.Wrap(msgType, bookCode, payload)
     if not env then return false, err end
     if target then env.to = normalize(target) end
+    env.m = nextId()
     local sok, text = pcall(AceSer.Serialize, AceSer, env)
     if not sok then return false, tostring(text) end
     local prio = PRIORITY[msgType]
     local wire = pack(text)
-    dbg(msgType, "send %s book %s to %s on channel #%s (%d bytes, %d on the wire)", msgType, bookCode,
-        env.to or "everyone", channelId(bookCode), #text, #wire)
+    dbg(msgType, "send %s book %s to %s on channel #%s%s (%d bytes, %d on the wire)", msgType, bookCode,
+        env.to or "everyone", channelId(bookCode), guildReady() and " and guild" or "", #text, #wire)
     if Comm.LoopbackActive(bookCode) then loopback(text, msgType, bookCode, env.to) end
     text = wire
+    local viaGuild = guildSend(text, prio)   -- the second path; needs no channel
     -- pcall returns (ok, rawSend's first result, rawSend's second result)
     local ok, sent, serr = pcall(rawSend, text, bookCode, prio)
-    if not ok then return false, tostring(sent) end
+    if not ok then return viaGuild, viaGuild and "guild" or tostring(sent) end
     if sent == false and serr == "channel not ready" then
         enqueue(bookCode, text, prio)        -- joins are asynchronous; deliver once ready
         Comm.JoinBook(bookCode)
-        return true, "queued"
+        return true, viaGuild and "guild" or "queued"
     end
     return true
 end
@@ -412,6 +494,11 @@ Comm:RegisterComm(PREFIX, function(_, message, distribution, sender)
     if not Protocol.ShouldDeliver(msgType, isOwner(code)) then
         return dbg(msgType, "ignored %s from %s: not for my role (I %s book %s)", msgType, sent,
             isOwner(code) and "own" or "do not own", code)
+    end
+    heardVia[distribution] = clock()
+    heardFrom[sent] = { at = clock(), via = distribution }
+    if duplicate(sent, env) then
+        return dbg(msgType, "duplicate %s from %s via %s (already handled)", msgType, sent, distribution)
     end
     dbg(msgType, "recv %s from %s via %s, book %s", msgType, sent, distribution, code)
     dispatch(msgType, sent, payload, code)
