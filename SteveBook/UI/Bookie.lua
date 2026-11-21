@@ -881,6 +881,25 @@ local function confirmImport()
     UI.Refresh()
 end
 
+-- Export: the games waiting for a result, as import lines, in the paste box and selected, ready for
+-- Ctrl+C. Paste them into the wowbook site; it answers with FINAL lines that settle them. (A "|" in a
+-- WoW edit box is written "||"; the importer and the site both read either.)
+local function exportGames()
+    local book = currentBook()
+    if not book then return end
+    local text, nMarkets, nGames = Import.Export(book, now())
+    if nMarkets == 0 then
+        say("No games are waiting for a result: nothing is locked or under way.")
+        return
+    end
+    local p = ui.panel
+    p.box:SetText((text:gsub("|", "||")))
+    p.box:SetFocus()
+    p.box:HighlightText()
+    say(("Exported %s (%s) and selected them: press Ctrl+C, paste into wowbook, then Clear here and paste what it gives back."):format(
+        plural(nGames, "game"), plural(nMarkets, "market")))
+end
+
 -- The Import tab's list: one line per pasted line, saying what would happen to it.
 local function importEntries(book)
     local plan = curPlan
@@ -1020,6 +1039,11 @@ local function buildImportPanel()
     p.title = label(p, "GameFontNormal")
     p.title:SetPoint("TOPLEFT", 10, -8)
     p.title:SetText("Import lines")
+    p.export = button(p, "Export games", 100, exportGames)
+    p.export:SetSize(100, 20)
+    p.export:SetPoint("TOPRIGHT", -8, -6)
+    tip(p.export, { "Export games", "The games waiting for a result, as lines to paste into the wowbook site.",
+                    "It gives back FINAL lines: paste those here to settle them." })
     p.help = label(p, "GameFontHighlight")
     p.help:SetPoint("TOPLEFT", 10, -28)
     p.help:SetWidth(PANEL_W - 20)

@@ -23,6 +23,10 @@
 -- mismatch is an error, not a guess. Identical lines are duplicates.
 -- Times are converted with date arithmetic (days-from-civil), never os.time, so the result
 -- does not depend on the machine's timezone.
+-- Export: Import.Export(book, now) writes the games still waiting for a result as these same lines
+-- (the book's own names and close times), for pasting into the wowbook site, which answers with FINAL
+-- lines for exactly those games. Times are written in UTC ("2026-11-27T00:30Z").
+--
 -- Results: a FINAL line carries the final score and settles every market of that game that is still
 -- waiting: the moneyline (higher score wins, a tie is a push), each spread (the line belongs to the
 -- first-listed side of that market, like everywhere else) and each total (Over/Under against the sum;
@@ -205,6 +209,63 @@ function Import.Parse(text, now)
         end
     end
     return items
+end
+
+-- Epoch seconds -> "2026-11-27T00:30Z" (":SS" only when the seconds are not zero). The inverse of
+-- ParseTime for UTC; pure date arithmetic like the rest of this file (days-from-civil's inverse).
+local function civilFromDays(z)
+    z = z + 719468
+    local era = math.floor(z / 146097)
+    local doe = z - era * 146097
+    local yoe = math.floor((doe - math.floor(doe / 1460) + math.floor(doe / 36524) - math.floor(doe / 146096)) / 365)
+    local y = yoe + era * 400
+    local doy = doe - (365 * yoe + math.floor(yoe / 4) - math.floor(yoe / 100))
+    local mp = math.floor((5 * doy + 2) / 153)
+    local d = doy - math.floor((153 * mp + 2) / 5) + 1
+    local m = mp < 10 and mp + 3 or mp - 9
+    if m <= 2 then y = y + 1 end
+    return y, m, d
+end
+
+function Import.FormatTime(t)
+    local days = math.floor(t / 86400)
+    local secs = t - days * 86400
+    local y, m, d = civilFromDays(days)
+    local h, mi, sec = math.floor(secs / 3600), math.floor((secs % 3600) / 60), secs % 60
+    if sec == 0 then return ("%04d-%02d-%02dT%02d:%02dZ"):format(y, m, d, h, mi) end
+    return ("%04d-%02d-%02dT%02d:%02d:%02dZ"):format(y, m, d, h, mi, sec)
+end
+
+local function plain(s) return trim((tostring(s or ""):gsub("|", " "))) end       -- a name can never hold a "|"
+local function signedOdds(o) return o > 0 and ("+" .. o) or tostring(o) end
+local EXPORT_KIND = { moneyline = "ML", spread = "SPREAD", total = "TOTAL" }
+local EXPORT_ORDER = { moneyline = 1, spread = 2, total = 3 }
+
+-- The markets of `book` that are waiting for a result (locked, or open with the game under way), as
+-- import lines, oldest game first. Returns the text, the number of markets, the number of games. Paste
+-- it into the wowbook site; what comes back (FINAL lines) is imported here to settle them.
+function Import.Export(book, now)
+    local list, games, nGames = {}, {}, 0
+    for _, m in pairs(book.markets or {}) do
+        if m.status == "locked" or (m.status == "open" and now and now >= m.closesAt) then list[#list + 1] = m end
+    end
+    table.sort(list, function(a, b)
+        if a.closesAt ~= b.closesAt then return a.closesAt < b.closesAt end
+        if a.event ~= b.event then return a.event < b.event end
+        if a.type ~= b.type then return EXPORT_ORDER[a.type] < EXPORT_ORDER[b.type] end
+        if (a.line or 0) ~= (b.line or 0) then return (a.line or 0) < (b.line or 0) end
+        return a.id < b.id
+    end)
+    local lines = {}
+    for _, m in ipairs(list) do
+        local f = { EXPORT_KIND[m.type], plain(m.sport), plain(m.event), Import.FormatTime(m.closesAt) }
+        if m.type ~= "moneyline" then f[#f + 1] = ("%g"):format(m.line) end
+        for i = 1, 2 do f[#f + 1] = plain(m.selections[i].label) .. ":" .. signedOdds(m.selections[i].odds) end
+        lines[#lines + 1] = table.concat(f, "|")
+        local g = plain(m.event) .. "|" .. m.closesAt
+        if not games[g] then games[g] = true; nGames = nGames + 1 end
+    end
+    return table.concat(lines, "\n"), #lines, nGames
 end
 
 local function key(spec)

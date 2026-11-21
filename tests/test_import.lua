@@ -563,4 +563,74 @@ do
     check(dbl2[1].final ~= nil, "doubled pipes: FINAL parses: " .. tostring(dbl2[1].err))
 end
 
+-- FormatTime is the inverse of ParseTime for UTC -------------------------------------------------------------
+do
+    eq(Import.FormatTime(0), "1970-01-01T00:00Z", "format: the epoch")
+    eq(Import.FormatTime(1795728600), "2026-11-26T21:30Z", "format: the SPEC example in UTC")
+    eq(Import.FormatTime(951825600), "2000-02-29T12:00Z", "format: leap day")
+    eq(Import.FormatTime(1795728615), "2026-11-26T21:30:15Z", "format: seconds only when not zero")
+    eq(Import.FormatTime(4107542400), "2100-03-01T00:00Z", "format: 2100 is not a leap year")
+    local bad = 0
+    for t = 0, 4200000000, 86400 * 37 + 12345 do               -- a spread of instants over 130 years
+        if P(Import.FormatTime(t)) ~= t then bad = bad + 1 end
+    end
+    for _, t in ipairs({ 951782400, 951868799, 1709164800, 1709251199, 1735689599, 1735689600 }) do   -- around leap days and new year
+        if P(Import.FormatTime(t)) ~= t then bad = bad + 1 end
+    end
+    eq(bad, 0, "format: ParseTime(FormatTime(t)) == t for every instant tried")
+end
+
+-- Export: the games waiting for a result, as import lines ---------------------------------------------------
+do
+    local ebook = Model.CreateBook(Model.NewDB(), "E", "Steve", NOW)
+    local T1 = P("2026-11-26T16:30-05:00")
+    local function add(sport, kind, event, closes, line, l1, o1, l2, o2)
+        return assert(Bookie.AddMarket(ebook, { sport = sport, event = event, type = kind, line = line, closesAt = closes,
+            selections = { { label = l1, odds = o1 }, { label = l2, odds = o2 } } }, NOW))
+    end
+    local ml = add("NBA", "moneyline", "LAL @ BOS", T1, nil, "LAL", 150, "BOS", -170)
+    add("NBA", "total", "LAL @ BOS", T1, 231.5, "Over", -110, "Under", -110)
+    add("NBA", "spread", "LAL @ BOS", T1, 5.5, "LAL", -110, "BOS", -110)
+    add("NBA", "moneyline", "NYK @ MIA", T1 + 3600, nil, "NYK", 100, "MIA", -120)
+    add("NBA", "moneyline", "SOON @ LATER", T1 + 86400, nil, "SOON", 100, "LATER", -120)   -- not started
+    local done = add("NBA", "moneyline", "OLD @ DONE", T1 - 7200, nil, "OLD", 100, "DONE", -120)
+    assert(Bookie.Settle(ebook, done.id, 1, NOW))                                         -- already settled
+    local GAMES_ON = T1 + 4000                                                            -- LAL @ BOS is under way, NYK @ MIA too
+
+    local text, nMarkets, nGames = Import.Export(ebook, T1 + 3601)
+    eq(nMarkets, 4, "export: the four markets of the two games under way")
+    eq(nGames, 2, "export: two games")
+    local lines = {}
+    for l in (text .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = l end
+    eq(lines[1], "ML|NBA|LAL @ BOS|2026-11-26T21:30Z|LAL:+150|BOS:-170", "export: moneyline first")
+    eq(lines[2], "SPREAD|NBA|LAL @ BOS|2026-11-26T21:30Z|5.5|LAL:-110|BOS:-110", "export: then the spread, line on the first side")
+    eq(lines[3], "TOTAL|NBA|LAL @ BOS|2026-11-26T21:30Z|231.5|Over:-110|Under:-110", "export: then the total")
+    eq(lines[4], "ML|NBA|NYK @ MIA|2026-11-26T22:30Z|NYK:+100|MIA:-120", "export: the later game after")
+    check(not text:find("SOON") and not text:find("OLD @"), "export: not a game that has not started, nor one already settled")
+
+    -- the same paste, read back by the importer, is the book as it already is: nothing to do
+    local plan = Import.Plan(ebook, text, T1 + 3601)
+    eq(plan.ok, 0, "export read back: nothing new")
+    eq(plan.errors, 0, "export read back: no errors")
+    eq(plan.duplicate + plan.started, 4, "export read back: every line is the market it came from")
+
+    -- a locked market is waiting too, even before its game's time
+    assert(Bookie.Lock(ebook, ml.id))
+    local _, n2 = Import.Export(ebook, T1 - 60)
+    eq(n2, 1, "export: a locked market counts although its game has not started")
+    assert(Bookie.Unlock(ebook, ml.id, NOW))
+    local empty, n0 = Import.Export(ebook, T1 - 10000)
+    eq(n0, 0, "export: nothing waiting gives nothing"); eq(empty, "", "...and an empty text")
+
+    -- a "|" in a name can never reach the text
+    local pbook = Model.CreateBook(Model.NewDB(), "P", "Steve", NOW)
+    assert(Bookie.AddMarket(pbook, { sport = "N|BA", event = "A|B @ C", type = "moneyline", closesAt = T1,
+        selections = { { label = "A|B", odds = 100 }, { label = "C", odds = -120 } } }, NOW))
+    local ptext = Import.Export(pbook, T1 + 1)
+    eq(select(2, ptext:gsub("|", "")), 5, "export: exactly the five separators of a moneyline line, whatever the names")
+    -- and what it exports settles the same market when a FINAL line comes back for it
+    local back = Import.Plan(ebook, "FINAL|NBA|NYK @ MIA|2026-11-26T22:30Z|NYK:90|MIA:95", T1 + 90000)
+    eq(back.items[1].status, "settle", "a FINAL line written with the exported name and time finds the market")
+end
+
 if fails == 0 then print("import: all tests passed") else os.exit(1) end

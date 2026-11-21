@@ -37,6 +37,10 @@ and press **Settle N markets**: each game's moneyline, spreads and totals are se
 Games that are not in your book, already settled, or not started yet are skipped, so pasting the same
 block twice is harmless. You can type a line by hand too (the close time may be left out). Format: SPEC §7.
 
+Or let the wowbook site pick the games from your book: press **Export games** in the Import panel (the
+waiting games appear selected: Ctrl+C), paste them into the wowbook page's **Settle my book** mode, copy
+the string it gives back, and paste that into the Import panel (Clear first) and press **Settle**.
+
 ## Minimap icon
 
 A coin button on the minimap: left-click opens the bet window, right-click the bookie window, drag

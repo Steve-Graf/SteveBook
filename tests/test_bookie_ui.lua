@@ -961,4 +961,30 @@ do
     T = T - 120
 end
 
+-- Export: the waiting games land in the paste box, selected, ready to copy ------------------------------------
+do
+    UI.Show()
+    W.tabs.markets:Click()
+    P.clear:Click()
+    check(P.export ~= nil, "the panel has an Export button")
+    local mk = assert(Bookie.AddMarket(book, { sport = "NBA", event = "EXP @ ORT", type = "moneyline", closesAt = T + 60,
+        selections = { { label = "EXP", odds = -110 }, { label = "ORT", odds = -110 } } }, T))
+    drain(); chatText()
+    P.export:Click()
+    check(not P.box:GetText():find("EXP @ ORT", 1, true), "a game that has not started is not exported")
+    T = T + 120                                                    -- the game is under way
+    P.export:Click()
+    local boxText = P.box:GetText()
+    check(boxText:find("ML||NBA||EXP @ ORT||", 1, true) and boxText:find("EXP:-110||ORT:-110", 1, true),
+          "the waiting game is in the box (pipes written the way an edit box wants them): " .. boxText)
+    check(chatText():find("Exported %d+ games? %(%d+ markets?%)"), "chat says what was exported")
+    check(sumText():find("0 new") and not P.go:IsEnabled(), "read back, the export has nothing new to import: " .. sumText():gsub("\n", " / "))
+    -- the answer from the site settles it
+    P.box:SetText("FINAL||NBA||EXP @ ORT||" .. ns.Import.FormatTime(mk.closesAt) .. "||EXP:101||ORT:99")
+    check(P.go:GetText() == "Settle 1 market", "a FINAL line written with the exported time is ready to settle: " .. P.go:GetText())
+    P.go:Click()
+    eq(mk.status, "settled", "...and settles the game")
+    T = T - 120
+end
+
 if fails == 0 then realprint("bookie_ui: all tests passed") else os.exit(1) end

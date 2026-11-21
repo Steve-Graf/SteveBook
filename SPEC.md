@@ -364,6 +364,15 @@ TOTAL|NFL|PHI @ DAL|2026-11-26T16:30-05:00|47.5|Over:-110|Under:-110
   one paste. A confirmed paste sends one MARKET broadcast per settled market and one SYNC per affected
   bettor (not per market), because the game limits a client to about one message a second.
   `python3 tools/nba_lines.py --results` prints FINAL lines for finished NBA games (ESPN).
+- **Export, then settle (wowbook).** The **Export games** button on the Import panel writes the games
+  still waiting for a result (a market locked, or open with its game under way) as ordinary import
+  lines, in UTC (`2026-11-27T00:30Z`), selected in the paste box for Ctrl+C. Pasting that into the
+  wowbook site's "Settle my book" mode returns one FINAL line per game ESPN has finished, written with
+  the export's own names and times so the addon finds the markets exactly; games not finished or not
+  found come back as `#` notes (ignored by the importer). The site matches only on an exact game name
+  (abbreviation, full name or nickname) at the same start time and never guesses. Paste the answer
+  into the same panel and press Settle. In an edit box a `|` is written `||`; the importer and the
+  site read either form.
 - Optionally wrap the whole block with a `GB1:` prefix + base64 later, if pasting raw text proves
   fragile. Not supported yet: such a block is reported as unsupported.
 
