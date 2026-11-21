@@ -479,9 +479,14 @@ function Casino.Handle(t, sender, msgType, payload, now)
 
     elseif msgType == "TBL_ACT" then
         local e = engine(t)
-        if m and m.status == "seated" and e and e.Act then
+        if m and m.status == "seated" and e and e.Act and payload.ref ~= nil and m.lastAct == payload.ref then
+            -- the same click sent again (the answer was slow or lost): never act twice, just restate the table
+            reply("TBL_PLAYER", Casino.PlayerMessage(t, sender))
+            reply("TBL_STATE", Casino.StateMessage(t))
+        elseif m and m.status == "seated" and e and e.Act then
             local ok, reason = e.Act(t, sender, payload.round, payload.action, now)
             if ok then
+                m.lastAct = payload.ref
                 reply("TBL_PLAYER", Casino.PlayerMessage(t, sender))
                 events[#events + 1] = { kind = "act", name = sender, action = payload.action }
             else

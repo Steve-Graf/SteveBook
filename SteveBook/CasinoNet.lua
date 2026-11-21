@@ -529,7 +529,8 @@ function handlers.TBL_BET_REJECT(sender, p, code)
     if not (tc and tc.status == "seated") then return end
     local bet = Client.ApplyBetReject(db().casinoCache, code, p.ref, p.balance)
     if bet or (p.ref and p.ref:sub(1, 3) == "act") then say(rejectText(p)) end
-    if p.reason == "round_closed" then CasinoNet.Sync(code) end     -- our round number was stale
+    if tc.actPending and tc.actPending.ref == p.ref then tc.actPending = nil end      -- answered (no)
+    if p.reason == "round_closed" or p.reason == "not_your_turn" then CasinoNet.Sync(code) end   -- our view was stale
 end
 
 function handlers.TBL_RESULT(sender, p, code)
@@ -631,9 +632,34 @@ end
 function CasinoNet.Act(code, action)
     local tc = cache(code)
     if not Client.MyTurn(tc, tc and tc.me or me()) then return nil, "It is not your turn." end
+    if Client.ActPending(tc) then return nil, "Waiting for the host to answer your last move." end
     seq = seq + 1
-    ns.Comm.Send("TBL_ACT", { ref = "act" .. seq, round = tc.state.round, action = action }, code)
+    local ref = ("act%d-%04d-%d"):format(now(), math.random(0, 9999), seq)        -- unique across reloads
+    tc.actPending = { ref = ref, action = action, round = tc.state.round, rev = tc.state.rev or 0, at = now(), tries = 1 }
+    ns.Comm.Send("TBL_ACT", { ref = ref, round = tc.state.round, action = action }, code)
+    changed(code)
     return true
+end
+
+-- Resend a decision the host has not answered (same ref, so the host never acts on it twice), then give up.
+local ACT_RETRY_SECONDS, ACT_TRIES = 2, 4
+function CasinoNet.RetryActs()
+    local d = db()
+    if not (d and d.casinoCache) then return end
+    local t0 = now()
+    for _, tc in ipairs(Client.List(d.casinoCache)) do
+        local p = tc.status == "seated" and Client.ActPending(tc) or nil
+        if p and t0 - p.at >= ACT_RETRY_SECONDS then
+            if p.tries >= ACT_TRIES then
+                tc.actPending = nil
+                say(("The host of %s did not answer your %s. Try again."):format(tc.name or tc.code, p.action))
+            else
+                p.tries, p.at = p.tries + 1, t0
+                ns.Comm.Send("TBL_ACT", { ref = p.ref, round = p.round, action = p.action }, tc.code)
+            end
+            changed(tc.code)
+        end
+    end
 end
 
 function CasinoNet.ClearBets(code)
@@ -704,6 +730,7 @@ local function register()
     if C_Timer and C_Timer.NewTicker then
         C_Timer.NewTicker(TICK_SECONDS, tick)
         C_Timer.NewTicker(1, blackjackTick)
+        C_Timer.NewTicker(1, CasinoNet.RetryActs)
         C_Timer.NewTicker(ANNOUNCE_EVERY, function() CasinoNet.Announce(); CasinoNet.Heartbeat() end)   -- list + heartbeat
     end
 end

@@ -216,6 +216,16 @@ function Client.MyTurn(t, myName)
     return bj.turnHand or 1
 end
 
+-- Blackjack: a decision I sent that the table has not answered yet (its state revision has not moved
+-- past the one I sent it against), or nil. The window greys the buttons meanwhile, so one click is
+-- one action, and CasinoNet resends it with the same ref until the host answers.
+function Client.ActPending(t)
+    local p = t and t.actPending
+    if not p then return nil end
+    if not (t.state and (t.state.rev or 0) <= (p.rev or 0)) then t.actPending = nil; return nil end
+    return p
+end
+
 -- Blackjack: my hands as the table shows them, or nil.
 function Client.MyHands(t, myName)
     local bj = t and t.state and t.state.bj

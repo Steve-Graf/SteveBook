@@ -91,7 +91,24 @@ check(textOf("|cffffd100?|r") ~= nil, "the dealer's hole card is drawn face down
 check(textOf("|cffb3201f9|r") ~= nil, "the dealer's nine of hearts is drawn in red ink")
 local hit = allByText("Hit")[1]
 check(UI.IsGlowing(hit) and UI.IsGlowing(allByText("Stand")[1]), "Hit and Stand glow on the player's turn")
-click(hit); settle()                                          -- 10+6+K = 26: bust
+click(hit)                                                    -- 10+6+K = 26: bust
+do
+    local again, why = CN.Act(t.code, "hit")                  -- a second click before the host answers
+    eq(again, nil, "a second action while one is unanswered is refused")
+    check(why and why:find("Waiting", 1, true), "and says to wait")
+    check(Client.ActPending(tc) ~= nil, "the first action is pending")
+end
+settle()
+check(Client.ActPending(tc) == nil, "the host's answer clears it")
+do   -- an unanswered action is resent with the same ref, then given up
+    local p = { ref = "actX", action = "stand", round = tc.state.round, rev = tc.state.rev, at = GetServerTime() - 3, tries = 1 }
+    tc.actPending = p
+    CN.RetryActs()
+    eq(p.tries, 2, "an unanswered action is resent"); eq(p.ref, "actX", "with the same ref")
+    for _ = 1, 3 do p.at = GetServerTime() - 3; CN.RetryActs() end
+    check(tc.actPending == nil, "after a few tries it is given up")
+    tc.actPending = nil
+end
 settle()
 eq(t.round, 2, "the round finished after the bust")
 check(tc.lastResult and tc.lastResult.results[1].hands[1].outcome == "bust", "the result says bust")

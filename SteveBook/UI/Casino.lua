@@ -1754,6 +1754,12 @@ local function refreshBlackjack()
             if #h.cards == 2 and not (h.aces and h.split) and free >= (h.bet or 0) then B.double:Enable() else B.double:Disable() end
             if #mine == 1 and Blackjack.CanSplit(h.cards) and free >= (h.bet or 0) then B.split:Enable() else B.split:Disable() end
         end
+        local sending = Client.ActPending(tc)                -- one click is one action: wait for the host's answer
+        if sending then
+            B.hit:Disable(); B.stand:Disable(); B.double:Disable(); B.split:Disable()
+            glow(B.hit, false); glow(B.stand, false)
+            B.actTitle:SetText(GOLD .. ("Sending %s..."):format(sending.action) .. "|r")
+        end
         local left = pub.deadline and (pub.deadline - GetServerTime()) or nil
         B.timer:SetText(left and (GOLD .. ("%d s left"):format(math.max(0, left)) .. "|r") or "")
         local frac = left and math.max(0, math.min(1, left / ns.BlackjackTable.TURN_SECONDS)) or 1

@@ -251,4 +251,20 @@ do
     valid("TBL_BET_REJECT", out[1].payload)
 end
 
+-- the same click sent twice (slow answer, resend) acts once
+do
+    local t16 = newTable({ "Rae" })
+    wager(t16, "Rae", 1000); rig(t16, { "2S", "9D", "3H", "8C", "4D", "5D" }); E.Deal(t16, nil, NOW)
+    local out, ev = C.Handle(t16, "Rae", "TBL_ACT", { ref = "h1", round = t16.round, action = "hit" }, NOW)
+    eq(#t16.bj.hands.Rae[1].cards, 3, "the first hit draws a card")
+    local rev = t16.rev
+    out, ev = C.Handle(t16, "Rae", "TBL_ACT", { ref = "h1", round = t16.round, action = "hit" }, NOW)
+    eq(#t16.bj.hands.Rae[1].cards, 3, "the same ref again draws nothing")
+    eq(t16.rev, rev, "and changes nothing")
+    eq(out[1].type, "TBL_PLAYER", "it restates the player's chips"); eq(out[2].type, "TBL_STATE", "and the table")
+    eq(#ev, 0, "no act event for the repeat")
+    C.Handle(t16, "Rae", "TBL_ACT", { ref = "h2", round = t16.round, action = "hit" }, NOW)
+    eq(#t16.bj.hands.Rae[1].cards, 4, "a new ref is a new decision")
+end
+
 if fails == 0 then print("blackjack_table: all passed") else os.exit(1) end

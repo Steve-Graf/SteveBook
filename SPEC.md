@@ -436,6 +436,12 @@ messages.
   No insurance and no surrender. Players who sat out a round simply are not dealt in. A fresh
   shoe is shuffled when fewer than 60 cards remain. Every wager, double and split is a stack in the
   player's `bets` list, so kicking, leaving, closing or a reload returns exactly what is on the table.
+- **Reliable decisions (v0.8.6):** a blackjack decision (`TBL_ACT`) carries a unique `ref`. The host
+  remembers each player's last one (`member.lastAct`) and a repeat only restates the table (`TBL_PLAYER`
+  + `TBL_STATE`), so a resend never acts twice. The client keeps the decision pending
+  (`tc.actPending`, cleared when the table's `rev` moves past the one it was sent against or the host
+  rejects it), greys Hit/Stand/Double/Split meanwhile, resends every 2 s up to 4 times, then tells the
+  player. Before this a lost message did nothing and a second click took a second card.
 - **Mini view (v0.8.4):** both blackjack windows have a Mini/Full button, saved in
   `SteveBookDB.casinoMini = { host, bj }`. Host mini: dealer cards, status lines, the "what next" strip
   and Deal (Skip, players, limits, Close table are hidden). Player mini: dealer cards, the player's own
