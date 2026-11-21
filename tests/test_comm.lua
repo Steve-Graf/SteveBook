@@ -128,9 +128,15 @@ tick(10)
 do
     local spy = {}
     local orig = Comm.SendCommMessage
-    Comm.SendCommMessage = function(self, prefix, text, dist, target, prio)
+    Comm.SendCommMessage = function(self, prefix, text, dist, target, prio, ...)
         spy[#spy + 1] = { prefix = prefix, dist = dist, target = target, prio = prio }
-        return orig(self, prefix, text, dist, target, prio)
+        return orig(self, prefix, text, dist, target, prio, ...)
+    end
+    -- short messages go straight to ChatThrottleLib (so the game's own result code survives)
+    local origCtl = ChatThrottleLib.SendAddonMessage
+    ChatThrottleLib.SendAddonMessage = function(self, prio, prefix, text, chattype, target, queue, ...)
+        spy[#spy + 1] = { prefix = prefix, dist = chattype, target = target, prio = prio }
+        return origCtl(self, prio, prefix, text, chattype, target, queue, ...)
     end
     local P = {
         JOIN_OK = { bookName = "X", ownerName = "Tester", rev = 1 },
@@ -152,10 +158,11 @@ do
         local ok, err = Comm.Send(msgType, payload, "PRI-0001", "Bob")        -- addressed to Bob, on the channel
         check(ok == true, msgType .. " sent: " .. tostring(err))
         check(#spy == 1 and spy[1].dist == "CHANNEL" and spy[1].target == 7, msgType .. " went out on the channel, never as a WHISPER")
-        eq(spy[1] and spy[1].prio, want[msgType], msgType .. " priority")
+        eq(spy[1] and spy[1].prio, want[msgType] or "NORMAL", msgType .. " priority")
         eq(spy[1] and spy[1].prefix, "SteveBook", msgType .. " prefix")
     end
     Comm.SendCommMessage = orig
+    ChatThrottleLib.SendAddonMessage = origCtl
 end
 
 ------------------------------------------------------------------------------------------
@@ -585,7 +592,11 @@ do
     local guildMsgs = 0
     for _, m in ipairs(stub.addonMessages) do if m.chatType == "GUILD" then guildMsgs = guildMsgs + 1 end end
     eq(guildMsgs, 1, "one GUILD addon message went out")
-    check(Comm.NetReport()[#Comm.NetReport() - 1]:find("Guild messages: ON", 1, true) ~= nil, "/book net says guild is on")
+    do
+    local found = false
+    for _, line in ipairs(Comm.NetReport()) do if line:find("Guild messages: ON", 1, true) then found = true end end
+    check(found, "/book net says guild is on")
+end
 
     -- the same message (same id) arriving on both transports is handled once
     drainSeen()
@@ -666,16 +677,16 @@ do
     IsInGuild = nil
 end
 
--- 17. every message goes by both paths (v0.8.6: one-sided path choice stranded a player's bets)
+-- 17. which paths a message takes: guild only for peers proven reachable by guild, else both
 do
     local code = "DBL-TEST"
     IsInGuild = function() return true end
     SteveBookDB.noGuild = nil
     Comm.JoinBook(code); tick(2)
     stub.channels[Protocol.ChannelName(code)] = 8
-    local function count(msgType, to)
+    local function count(msgType, to, both)
         stub.addonMessages = {}
-        Comm.Send(msgType, { rev = 1, market = { id = 1 } }, code, to)
+        Comm.Send(msgType, { rev = 1, market = { id = 1 } }, code, to, both)
         tick(2)
         local g, c = 0, 0
         for _, m in ipairs(stub.addonMessages) do
@@ -683,17 +694,37 @@ do
         end
         return g, c
     end
+    local function hear(name, via, m)
+        local env = assert(Protocol.Wrap("PING", code, {}))
+        env.m = m
+        stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), via, name)
+        drainSeen()
+    end
     local g, c = count("MARKET")
-    check(g == 1 and c == 1, ("gameplay goes by guild and channel (guild %d, channel %d)"):format(g, c))
-    -- even for a peer heard on both paths
-    local env = assert(Protocol.Wrap("PING", code, {}))
-    env.m = "dbl01"
-    stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "GUILD", "Gus-Realm")
-    env.m = "dbl02"
-    stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "CHANNEL", "Gus-Realm")
-    drainSeen()
-    g, c = count("MARKET", "Gus")
-    check(g == 1 and c == 1, "a peer heard on both paths still gets both")
+    check(g == 1 and c == 1, ("nobody heard yet: both paths (guild %d, channel %d)"):format(g, c))
+    hear("Chan-Realm", "CHANNEL", "p01")                      -- heard on the channel only: not proven by guild
+    g, c = count("MARKET")
+    check(g == 1 and c == 1, "a peer heard only on the channel keeps the channel in use")
+    hear("Chan-Realm", "GUILD", "p02")                        -- now proven
+    g, c = count("MARKET")
+    check(g == 1 and c == 0, ("everyone proven by guild: guild only (guild %d, channel %d)"):format(g, c))
+    g, c = count("MARKET", "Chan")
+    check(g == 1 and c == 0, "a message addressed to a proven peer: guild only")
+    g, c = count("MARKET", "Stranger")
+    check(g == 1 and c == 1, "a message addressed to someone never heard: both")
+    hear("Late-Realm", "CHANNEL", "p03")                      -- a second peer, channel only
+    g, c = count("MARKET")
+    check(g == 1 and c == 1, "one unproven peer among proven ones brings the channel back")
+    g, c = count("MARKET", "Chan")
+    check(g == 1 and c == 0, "...but a message to the proven one is still guild only")
+    hear("Late-Realm", "GUILD", "p04")
+    g, c = count("PING")
+    check(g == 1 and c == 1, "handshake and presence messages always go both ways")
+    g, c = count("MARKET", nil, true)
+    check(g == 1 and c == 1, "a resend (both = true) goes both ways")
+    IsInGuild = function() return false end
+    g, c = count("MARKET")
+    check(g == 0 and c == 1, "not in a guild: the channel alone")
     IsInGuild = nil
     Comm.LeaveBook(code)
 end
@@ -711,6 +742,50 @@ do
     ok, text = Comm.Health(code)
     check(ok == true and text:find("Hosty", 1, true) and text:find("guild", 1, true), "names who was heard: " .. tostring(text))
     IsInGuild = nil
+end
+
+-- 19. what the game really did with each message is recorded, announced and (when transient) retried
+do
+    local code = "RES-TEST"
+    IsInGuild = function() return true end
+    SteveBookDB.noGuild = nil
+    Comm.JoinBook(code); tick(2)
+    stub.channels[Protocol.ChannelName(code)] = 5
+    local real = C_ChatInfo.SendAddonMessage
+    local calls, answer = 0, 0
+    C_ChatInfo.SendAddonMessage = function(prefix, text, kind, target)
+        calls = calls + 1
+        stub.addonMessages[#stub.addonMessages + 1] = { prefix = prefix, text = text, chatType = kind, target = target }
+        return answer
+    end
+    local before = Comm.SendStats()
+    local okBefore = (before.GUILD and before.GUILD.ok or 0)
+    Comm.Send("MARKET", { rev = 1, market = { id = 1 } }, code); tick(3)
+    check((Comm.SendStats().GUILD.ok or 0) > okBefore, "an accepted guild send is counted")
+    -- the game refuses with a transient code: counted, announced once, sent again
+    answer = 8                                              -- ChannelThrottle
+    calls = 0
+    local printedBefore = #stub.printed
+    Comm.Send("MARKET", { rev = 2, market = { id = 2 } }, code); tick(3)
+    check(Comm.SendStats().GUILD.fail >= 1 and Comm.SendStats().CHANNEL.fail >= 1, "refusals are counted per path")
+    local warned = 0
+    for i = printedBefore + 1, #stub.printed do if stub.printed[i]:find("refused a message", 1, true) then warned = warned + 1 end end
+    check(warned >= 1 and warned <= 2, "a refusal is announced in chat, not once per message (" .. warned .. ")")
+    local afterFirst = calls
+    for _ = 1, 4 do stub.runAfters(); tick(2) end
+    check(calls > afterFirst, "a transient refusal is sent again")
+    check(calls <= 2 * 3 * 2, "...but only a few times (" .. calls .. ")")
+    local text = table.concat(Comm.NetReport(), "\n")
+    check(text:find("refused", 1, true) ~= nil and text:find("Sent by guild", 1, true) ~= nil, "/book net shows the totals")
+    -- a refusal that will not get better is not resent
+    answer = 7                                              -- InvalidChannel
+    calls = 0
+    Comm.Send("MARKET", { rev = 3, market = { id = 3 } }, code); tick(3)
+    for _ = 1, 4 do stub.runAfters(); tick(2) end
+    check(calls <= 2, "InvalidChannel is not resent (" .. calls .. ")")
+    C_ChatInfo.SendAddonMessage = real
+    IsInGuild = nil
+    Comm.LeaveBook(code)
 end
 
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end

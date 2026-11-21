@@ -107,7 +107,7 @@ check(textOf("BUST") ~= nil or textOf("|cffff5050BUST|r") ~= nil, "the seat show
 do   -- bets the host has not answered are resent; a seat with no table asks again
     local seatedBefore = tc.status
     tc.pending = tc.pending or {}
-    tc.pending["betX"] = { bet = { kind = "wager", amount = 100 }, placedAt = GetServerTime() - 3, round = tc.state.round }
+    tc.pending["betX"] = { bet = { kind = "wager", amount = 100 }, placedAt = GetServerTime() - 5, round = tc.state.round }
     CN.RetryActs()
     eq(tc.pending["betX"].tries, 2, "an unanswered bet is resent")
     eq(tc.pending["betX"].round, tc.state.round, "for its own round")
@@ -121,11 +121,11 @@ do   -- bets the host has not answered are resent; a seat with no table asks aga
     settle()
 end
 do   -- an unanswered action is resent with the same ref, then given up
-    local p = { ref = "actX", action = "stand", round = tc.state.round, rev = tc.state.rev, at = GetServerTime() - 3, tries = 1 }
+    local p = { ref = "actX", action = "stand", round = tc.state.round, rev = tc.state.rev, at = GetServerTime() - 5, tries = 1 }
     tc.actPending = p
     CN.RetryActs()
     eq(p.tries, 2, "an unanswered action is resent"); eq(p.ref, "actX", "with the same ref")
-    for _ = 1, 3 do p.at = GetServerTime() - 3; CN.RetryActs() end
+    for _ = 1, 3 do p.at = GetServerTime() - 20; CN.RetryActs() end
     check(tc.actPending == nil, "after a few tries it is given up")
     tc.actPending = nil
 end

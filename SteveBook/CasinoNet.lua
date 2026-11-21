@@ -36,8 +36,10 @@ local function cache(code)
 end
 
 -- Send a list of { type, payload, to } for one table.
+local stateSentAt = {}                   -- code -> when a table-wide TBL_STATE last went out
 local function send(code, msgs)
     for _, m in ipairs(msgs) do
+        if m.type == "TBL_STATE" and not m.to then stateSentAt[code] = GetServerTime() end
         local ok, err = ns.Comm.Send(m.type, m.payload, code, m.to)
         if ok == false then say(("could not send %s: %s"):format(m.type, tostring(err))) end
     end
@@ -229,8 +231,25 @@ function CasinoNet.NextBlackjackRound(code)
 end
 
 -- Tell everyone what the table looks like now, and if the players are done start the dealer.
+-- Table-wide state goes out at most once per STATE_DELAY: bets and moves that land close together share
+-- one broadcast (the latest state), which matters because the game allows only about one addon message a
+-- second. Replies to the player who acted are not delayed.
+local STATE_DELAY = 0.6
+local statePending = {}
+local function queueState(t)
+    if statePending[t.code] then return end
+    statePending[t.code] = true
+    local code = t.code
+    local function go()
+        statePending[code] = nil
+        local th = hosted(code)
+        if th then send(code, { stateMsg(th) }) end
+    end
+    if C_Timer and C_Timer.After then C_Timer.After(STATE_DELAY, go) else go() end
+end
+
 function CasinoNet.AfterBlackjack(t)
-    send(t.code, { stateMsg(t) })
+    queueState(t)
     if t.status == "dealer" and not dealerPending[t.code] then
         dealerPending[t.code] = true
         local code = t.code
@@ -312,7 +331,9 @@ function CasinoNet.Heartbeat()
     local d = db()
     if not d then return end
     for _, t in ipairs(Casino.List(d)) do
-        if t.hostName == me() and t.status ~= "closed" and #Casino.Seated(t) > 0 then
+        -- the heartbeat is a full table broadcast; skip it when one just went out
+        if t.hostName == me() and t.status ~= "closed" and #Casino.Seated(t) > 0
+            and now() - (stateSentAt[t.code] or 0) >= 12 then
             send(t.code, { stateMsg(t) })
         end
     end
@@ -644,7 +665,9 @@ function CasinoNet.Act(code, action)
 end
 
 -- Resend a decision the host has not answered (same ref, so the host never acts on it twice), then give up.
-local ACT_RETRY_SECONDS, ACT_TRIES = 2, 4
+-- Resends back off (4 s, then 8 s more...): the game allows only about one message a second per addon, so a
+-- slow answer is usually congestion, and resending quickly would only add to it.
+local ACT_RETRY_SECONDS, ACT_TRIES = 4, 3
 local SYNC_EVERY, QUIET_SYNC = 3, 40
 function CasinoNet.RetryActs()
     local d = db()
@@ -654,9 +677,9 @@ function CasinoNet.RetryActs()
         if tc.status == "seated" then
             -- bets the host has not answered: send again with the same ref (the host never takes one twice)
             for ref, pb in pairs(tc.pending or {}) do
-                if t0 - (pb.sentAt or pb.placedAt) >= ACT_RETRY_SECONDS and (pb.tries or 1) < 4 and pb.round then
+                if t0 - (pb.sentAt or pb.placedAt) >= ACT_RETRY_SECONDS * (pb.tries or 1) and (pb.tries or 1) < ACT_TRIES and pb.round then
                     pb.tries, pb.sentAt = (pb.tries or 1) + 1, t0
-                    ns.Comm.Send("TBL_BET", { ref = ref, round = pb.round, bet = pb.bet }, tc.code)
+                    ns.Comm.Send("TBL_BET", { ref = ref, round = pb.round, bet = pb.bet }, tc.code, nil, true)   -- a resend: both paths
                 end
             end
             -- seated but the table never arrived, or the host has been silent a long while: ask again
@@ -667,13 +690,13 @@ function CasinoNet.RetryActs()
             end
         end
         local p = tc.status == "seated" and Client.ActPending(tc) or nil
-        if p and t0 - p.at >= ACT_RETRY_SECONDS then
+        if p and t0 - p.at >= ACT_RETRY_SECONDS * p.tries then
             if p.tries >= ACT_TRIES then
                 tc.actPending = nil
                 say(("The host of %s did not answer your %s. Try again."):format(tc.name or tc.code, p.action))
             else
                 p.tries, p.at = p.tries + 1, t0
-                ns.Comm.Send("TBL_ACT", { ref = p.ref, round = p.round, action = p.action }, tc.code)
+                ns.Comm.Send("TBL_ACT", { ref = p.ref, round = p.round, action = p.action }, tc.code, nil, true)   -- a resend: both paths
             end
             changed(tc.code)
         end

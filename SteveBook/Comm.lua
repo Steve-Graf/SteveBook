@@ -34,6 +34,7 @@ AceComm:Embed(Comm)
 local handlers = {}                 -- msgType -> { fn, ... }
 local queued = {}                   -- code -> { {text, prio}, ... } waiting for the channel
 local joined = {}                   -- code -> true while we want to be in the channel
+local sendStats = {}               -- distribution -> { ok, fail, codes = { [result] = n }, lastCode, lastAt }
 local lastTry = {}                  -- code -> GetTime() of the last JoinTemporaryChannel call
 local attempts = {}                 -- code -> join attempts since the channel was last up
 local heardVia = {}                -- transport ("CHANNEL" / "GUILD") -> when a message last came in on it
@@ -194,6 +195,15 @@ end
 
 function Comm.IsJoined(code) return channelId(code) > 0 end
 
+local function resultName(r)
+    local e = Enum and Enum.SendAddonMessageResult
+    if type(r) == "boolean" then return r and "accepted" or "REFUSED" end
+    if e then
+        for k, v in pairs(e) do if v == r then return ("%s (%s)"):format(tostring(r), k) end end
+    end
+    return tostring(r)
+end
+
 -- /book net: one line per hidden channel this client wants to be in.
 function Comm.NetReport()
     local lines = {}
@@ -218,19 +228,24 @@ function Comm.NetReport()
         return heardVia[via] and ("last heard %d s ago"):format(t - heardVia[via]) or "nothing heard yet"
     end
     lines[#lines + 1] = "Heard by channel: " .. ago("CHANNEL") .. ". Heard by guild: " .. ago("GUILD") .. "."
+    for _, dist in ipairs({ "GUILD", "CHANNEL" }) do
+        local st = sendStats[dist]
+        local label = dist == "GUILD" and "Sent by guild" or "Sent by channel"
+        if not st or (st.ok == 0 and st.fail == 0) then
+            lines[#lines + 1] = label .. ": nothing yet."
+        else
+            local why = {}
+            for code, n in pairs(st.codes) do why[#why + 1] = ("%s x%d"):format(resultName(code), n) end
+            table.sort(why)
+            lines[#lines + 1] = ("%s: %d accepted by the game, %d refused%s."):format(label, st.ok, st.fail,
+                st.fail > 0 and (" (" .. table.concat(why, ", ") .. ", last " .. math.floor(clock() - (st.lastAt or 0)) .. " s ago)") or "")
+        end
+    end
     return lines
 end
 
 -- /book net test: send one tiny addon message down each path and print the game's own answer. The
 -- normal send path (AceComm) never reports failures, so this is the only place they show up.
-local function resultName(r)
-    local e = Enum and Enum.SendAddonMessageResult
-    if type(r) == "boolean" then return r and "accepted" or "REFUSED" end
-    if e then
-        for k, v in pairs(e) do if v == r then return ("%s (%s)"):format(tostring(r), k) end end
-    end
-    return tostring(r)
-end
 
 function Comm.SendTest()
     local lines = {}
@@ -261,6 +276,8 @@ function Comm.SendTest()
     end
     return lines
 end
+
+function Comm.SendStats() return sendStats end
 
 -- A channel can sit in the list as disabled and stay that way (the join was refused, for instance
 -- while the client was still loading). Joining a name we already hold does nothing, so leave it and
@@ -384,9 +401,87 @@ local function guildReady()
     return (IsInGuild and IsInGuild()) and true or false
 end
 
+-- What the game really did with each message. AceComm hands the result of every real send (one per
+-- part) to a callback; the addon never looked, so a refused message was invisible. Now each result is
+-- counted per path, a refusal is announced in chat (at most once a minute per kind) and the transient
+-- kinds are sent again. /book net shows the totals.
+local lastWarn = {}
+local MAX_RESENDS = 2
+
+local function statFor(dist)
+    local s = sendStats[dist]
+    if not s then s = { ok = 0, fail = 0, codes = {} }; sendStats[dist] = s end
+    return s
+end
+
+local function retryable(result)
+    local e = Enum and Enum.SendAddonMessageResult
+    return result == (e and e.ChannelThrottle or 8) or result == (e and e.GeneralError or 9)
+        or result == (e and e.AddonMessageThrottle or 3)
+end
+
+local transmit
+
+-- Record one real send. `code` is the game's answer when known (a number; 0 is success), else nil.
+local function record(arg, ok, code)
+    local s = statFor(arg.dist)
+    if ok then s.ok = s.ok + 1; return end
+    local why = code or "unknown"
+    s.fail = s.fail + 1
+    s.codes[why] = (s.codes[why] or 0) + 1
+    s.lastCode, s.lastAt = why, clock()
+    local key = arg.dist .. tostring(why)
+    if not lastWarn[key] or clock() - lastWarn[key] >= 60 then
+        lastWarn[key] = clock()
+        say(("The game refused a message sent by %s: %s. /book net has the totals."):format(
+            arg.dist == "GUILD" and "guild" or "channel", resultName(why)))
+    end
+    if (code == nil or retryable(code)) and (arg.tries or 0) < MAX_RESENDS and not arg.waiting and C_Timer and C_Timer.After then
+        arg.waiting = true
+        C_Timer.After(1.5 + (arg.tries or 0), function()
+            arg.waiting = false
+            arg.tries = (arg.tries or 0) + 1
+            pcall(transmit, arg)
+        end)
+    end
+end
+
+-- ChatThrottleLib's callback: (arg, didSend, sendResult). Short messages use it directly, so the
+-- game's own code survives.
+local function onCtl(arg, didSend, result)
+    if type(arg) ~= "table" then return end
+    record(arg, didSend == true or result == 0, type(result) == "number" and result or nil)
+end
+
+-- AceComm's callback for long (multi-part) messages. Its wrapper and ChatThrottleLib disagree about
+-- the arguments, so the numeric code is lost; the last argument is the plain did-it-send boolean.
+local function onAce(arg, sent, _, result)
+    if type(arg) ~= "table" then return end
+    if type(result) == "number" then return record(arg, result == 0, result) end
+    local ok = result
+    if type(result) ~= "boolean" then ok = (sent ~= false) end
+    record(arg, ok == true, nil)
+end
+
+-- One real send on one path. arg = { dist = "GUILD"|"CHANNEL", code, text, prio, tries }.
+function transmit(arg)
+    local target
+    if arg.dist == "CHANNEL" then
+        target = channelId(arg.code)
+        if target <= 0 then return false end
+    end
+    local CTL = _G.ChatThrottleLib
+    if #arg.text <= 254 and CTL and CTL.SendAddonMessage and not arg.text:find("^[\001-\009]") then
+        CTL:SendAddonMessage(arg.prio or "NORMAL", PREFIX, arg.text, arg.dist, target, PREFIX, onCtl, arg)
+    else
+        Comm:SendCommMessage(PREFIX, arg.text, arg.dist, target, arg.prio, onAce, arg)
+    end
+    return true
+end
+
 local function guildSend(text, prio)
     if not guildReady() then return false end
-    return (pcall(function() Comm:SendCommMessage(PREFIX, text, "GUILD", nil, prio) end))
+    return (pcall(transmit, { dist = "GUILD", text = text, prio = prio }))
 end
 
 function Comm.GuildState()
@@ -431,7 +526,37 @@ local function notePeer(code, sender, via)
     if via == "GUILD" then p.guild = clock() else p.chan = clock() end
 end
 
-local function needGuild() return guildReady() end
+-- Which paths a message goes by. The game lets each addon prefix send about ONE message a second once
+-- its burst of 10 is spent (see the API page for C_ChatInfo.SendAddonMessage), and the limit is for
+-- both paths together; sending everything twice halved the table's speed (blackjack lagged several
+-- seconds per move). So the guild is the main path when there is one (no joining, never "disabled"),
+-- and the channel is added only for someone not proven reachable by guild: a peer is proven by
+-- having been heard on the guild lately, which only a guild member can do. Handshakes are rare, so
+-- they always go both ways, and so does a resend (`both`).
+local PEER_WINDOW = 600
+local BOTH_WAYS = {
+    JOIN_REQ = true, JOIN_OK = true, JOIN_DENY = true, SYNC_REQ = true, PING = true, PONG = true,
+    LOBBY_ASK = true, LOBBY_TABLE = true, LOBBY_BOOKS = true,
+    TBL_JOIN = true, TBL_JOIN_OK = true, TBL_JOIN_DENY = true, TBL_LEAVE = true, TBL_SYNC_REQ = true,
+}
+
+local function guildProven(p)
+    return p ~= nil and p.guild ~= nil and clock() - p.guild < PEER_WINDOW
+end
+
+-- Returns useGuild, useChannel.
+local function pathsFor(msgType, code, to, both)
+    if not guildReady() then return false, true end
+    if both or BOTH_WAYS[msgType] then return true, true end
+    local c = peers[code]
+    if to then return true, not guildProven(c and c[normalize(to)]) end
+    if not c or next(c) == nil then return true, true end          -- nobody heard yet: unknown, use both
+    for _, p in pairs(c) do
+        if not guildProven(p) then return true, true end
+    end
+    return true, false
+end
+Comm.PathsFor = pathsFor
 
 -- What was last heard on each transport (for /book net): { CHANNEL = time, GUILD = time }.
 function Comm.Heard() return heardVia, heardFrom end
@@ -467,7 +592,7 @@ end
 local function rawSend(text, code, prio)
     local id = channelId(code)
     if id <= 0 then return false, "channel not ready" end
-    Comm:SendCommMessage(PREFIX, text, "CHANNEL", id, prio)
+    transmit({ dist = "CHANNEL", code = code, text = text, prio = prio })
     return true
 end
 
@@ -512,7 +637,7 @@ local function enqueue(code, text, prio)
     end
 end
 
-function Comm.Send(msgType, payload, bookCode, target)
+function Comm.Send(msgType, payload, bookCode, target, both)
     local env, err = Protocol.Wrap(msgType, bookCode, payload)
     if not env then return false, err end
     if target then env.to = normalize(target) end
@@ -521,12 +646,14 @@ function Comm.Send(msgType, payload, bookCode, target)
     if not sok then return false, tostring(text) end
     local prio = PRIORITY[msgType]
     local wire = pack(text)
-    local useGuild = needGuild()
-    dbg(msgType, "send %s book %s to %s on channel #%s%s (%d bytes, %d on the wire)", msgType, bookCode,
-        env.to or "everyone", channelId(bookCode), useGuild and " and guild" or "", #text, #wire)
+    local useGuild, useChannel = pathsFor(msgType, bookCode, env.to, both)
+    dbg(msgType, "send %s book %s to %s by %s (%d bytes, %d on the wire)", msgType, bookCode, env.to or "everyone",
+        useGuild and (useChannel and ("guild and channel #" .. tostring(channelId(bookCode))) or "guild only")
+            or ("channel #" .. tostring(channelId(bookCode))), #text, #wire)
     if Comm.LoopbackActive(bookCode) then loopback(text, msgType, bookCode, env.to) end
     text = wire
-    local viaGuild = useGuild and guildSend(text, prio)   -- second path; needs no channel
+    local viaGuild = useGuild and guildSend(text, prio)
+    if not useChannel then return viaGuild, viaGuild and "guild" or "guild send failed" end
     -- pcall returns (ok, rawSend's first result, rawSend's second result)
     local ok, sent, serr = pcall(rawSend, text, bookCode, prio)
     if not ok then return viaGuild, viaGuild and "guild" or tostring(sent) end

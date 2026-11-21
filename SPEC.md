@@ -242,11 +242,29 @@ Rules:
 
 ### Transports (v0.8.0)
 
-Every message goes out on both paths and is heard on both; a receiver acts on the first copy. (v0.8.3
-sent table traffic by one path only when the other side had been heard on it; v0.8.6 reverted that: a
-channel can receive but fail to send, so a player looked healthy while his bets never arrived.
-Redundancy beats bandwidth. Lag is handled by priority instead: clicks and their answers are `ALERT`,
-the bulk table state is not.)
+**The limit that shapes everything:** the game lets each addon prefix send about ONE message a second once
+its burst of 10 is spent, counted over all paths together (wiki: `C_ChatInfo.SendAddonMessage`).
+ChatThrottleLib (v32, bundled) retries a message the game answers with `AddonMessageThrottle`, so
+over-sending shows up as lag, not as lost messages. Every design choice below follows from needing few
+messages.
+
+- **Paths.** The guild is the main path when the character has one. The channel is added only for a peer
+  not proven reachable by guild (proof: heard on the guild in the last 10 minutes, which only a guild
+  member can do), for a message to someone never heard, and always for handshakes and presence
+  (`BOTH_WAYS` in Comm.lua: join, lobby, sync request, ping/pong) and for resends (`both` argument of
+  `Comm.Send`). A receiver acts on the first copy (`m` dedupe, below). History: v0.8.0 sent everything twice
+  (blackjack lagged several seconds per move), v0.8.3 trimmed by guessing which path worked (stranded a
+  player), v0.8.7 went back to twice; this is the evidence-based version.
+- **Fewer messages.** The host combines table-wide state broadcasts that fall within 0.6 s into one
+  (`queueState`), skips the heartbeat broadcast when one just went out, and resends back off
+  (4 s, then 8 s more) instead of piling onto a congested limit.
+- **Seeing refusals.** Short messages go straight to ChatThrottleLib so the game's own result code
+  survives (AceComm's callback wrapper drops it). Every result is counted per path; a refusal is
+  announced in chat (once a minute per kind), `ChannelThrottle`/`GeneralError` are sent again, and
+  `/book net` shows "accepted / refused (codes)" per path.
+- **Test.** `tests/test_twoclients.lua` runs a host and two friends as separate addon instances, passes
+  their real wire messages between them and, with the fake game enforcing the 10 + 1/s limit, asserts how
+  many messages a round uses and how long seating, bets, the deal and a move take.
 
 - **Hidden channel** (`SBN` + code, see `Protocol.ChannelName`): reaches any player, but a join can fail
   silently. In Forever a channel can hold a slot and be listed as disabled by `GetChannelList`

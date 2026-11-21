@@ -155,7 +155,9 @@ function stub.install()
     G.hooksecurefunc = function() end
     G.securecallfunction = function(f, ...) return f(...) end
     G.issecretvalue = function() return false end
-    G.Enum = { SendAddonMessageResult = { Success = 0, AddonMessageThrottle = 3, ChannelThrottle = 4 } }
+    -- the codes the wiki lists (Enum.SendAddonMessageResult)
+    G.Enum = { SendAddonMessageResult = { Success = 0, AddonMessageThrottle = 3, NotInGroup = 5, InvalidChannel = 7,
+        ChannelThrottle = 8, GeneralError = 9, AddOnMessageLockdown = 11, TargetOffline = 12 } }
     G.DEFAULT_CHAT_FRAME = newFrame()
     G.NUM_CHAT_WINDOWS = 1
     G.ChatFrame1 = newFrame()
@@ -171,7 +173,16 @@ function stub.install()
     G.C_ChatInfo = {
         RegisterAddonMessagePrefix = function() return true end,
         SendAddonMessage = function(prefix, text, chatType, target)
-            stub.addonMessages[#stub.addonMessages + 1] = { prefix = prefix, text = text, chatType = chatType, target = target }
+            -- stub.addonBudget = { tokens, burst, rate, last } models the game's per-prefix limit (10 burst,
+            -- about 1 message a second after); an empty bucket answers AddonMessageThrottle (3) and sends nothing.
+            local b = stub.addonBudget
+            if b then
+                b.tokens = math.min(b.burst, b.tokens + (stub.mono - b.last) * b.rate)
+                b.last = stub.mono
+                if b.tokens < 1 then b.refused = (b.refused or 0) + 1; return 3 end
+                b.tokens = b.tokens - 1
+            end
+            stub.addonMessages[#stub.addonMessages + 1] = { prefix = prefix, text = text, chatType = chatType, target = target, at = stub.mono }
             return 0
         end,
     }
