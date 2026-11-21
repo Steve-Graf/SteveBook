@@ -23,7 +23,7 @@ local listeners = {}
 local function db() return SteveBookDB end
 local function me() return UnitName("player") end
 local function now() return GetServerTime() end
-local function baseName(name) return type(name) == "string" and name:match("^([^%-]+)") or nil end
+local function baseName(name) return type(name) == "string" and name:match("^([^%-%s]+)") or nil end
 
 function BL.Subscribe(fn) listeners[#listeners + 1] = fn end
 local function changed() for _, fn in ipairs(listeners) do pcall(fn) end end

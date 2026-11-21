@@ -169,7 +169,7 @@ end
 local handlers = {}
 
 -- "Name-Realm" -> "Name".
-local function baseName(name) return type(name) == "string" and name:match("^([^%-]+)") or nil end
+local function baseName(name) return type(name) == "string" and name:match("^([^%-%s]+)") or nil end
 
 function handlers.JOIN_OK(sender, p, code)
     local st = store()

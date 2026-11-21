@@ -105,7 +105,7 @@ function Comm.Version()
     return ok and type(v) == "string" and v or nil
 end
 
-local function baseName(name) return type(name) == "string" and name:match("^([^%-]+)") or name end
+local function baseName(name) return type(name) == "string" and name:match("^([^%-%s]+)") or name end
 
 -- One spelling per player. In Forever the sender of an addon message arrives as "Tuesday lol" or
 -- "Steve Spinebreaker" (a space and a second word) while UnitName("player") is just "Tuesday" or

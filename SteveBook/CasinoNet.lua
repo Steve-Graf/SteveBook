@@ -17,7 +17,7 @@ local function say(msg) print(GOLD .. "SteveBook Casino:|r " .. msg) end
 local function me() return UnitName("player") end
 local function now() return GetServerTime() end
 local function money(c) return Odds.FormatMoney(c) end
-local function baseName(name) return type(name) == "string" and name:match("^([^%-]+)") or nil end
+local function baseName(name) return type(name) == "string" and name:match("^([^%-%s]+)") or nil end
 
 local listeners = {}
 function CasinoNet.Subscribe(fn) listeners[#listeners + 1] = fn end

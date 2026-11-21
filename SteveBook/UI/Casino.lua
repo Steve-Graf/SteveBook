@@ -1361,7 +1361,7 @@ local function refreshTable()
     if tc.status == "requested" then
         statusText = GOLD .. "Waiting for the host to let you in...|r"
         -- can this client hear anyone at the table at all?
-        local pok, connected, htext = pcall(ns.Comm.Health, bjCode)
+        local pok, connected, htext = pcall(ns.Comm.Health, playCode)
         if pok and htext then statusText = statusText .. "  " .. (connected and MUTED or RED) .. htext .. "|r" end
     elseif tc.status == "denied" then statusText = RED .. "The host turned down your request.|r" .. MUTED .. "  You can ask again.|r"
     elseif tc.status == "removed" then statusText = RED .. "The host removed you from the table.|r"
@@ -1647,7 +1647,11 @@ local function refreshBlackjack()
     B.head:SetText(tc.name or "Blackjack")
 
     local statusText
-    if tc.status == "requested" then statusText = GOLD .. "Waiting for the host to let you in...|r"
+    if tc.status == "requested" then
+        statusText = GOLD .. "Waiting for the host to let you in...|r"
+        -- can this client hear anyone at the table at all?
+        local pok, connected, htext = pcall(ns.Comm.Health, bjCode)
+        if pok and htext then statusText = statusText .. "  " .. (connected and MUTED or RED) .. htext .. "|r" end
     elseif tc.status == "denied" then statusText = RED .. "The host turned down your request.|r" .. MUTED .. "  You can ask again.|r"
     elseif tc.status == "removed" then statusText = RED .. "The host removed you from the table.|r"
     elseif tc.status == "left" then statusText = GOLD .. "You left the table. Your chips are safe: press Ask to rejoin and the host can let you back in.|r"

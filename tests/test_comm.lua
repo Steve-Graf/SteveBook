@@ -493,6 +493,10 @@ do
     eq(#got, 1, "a reply addressed to 'Tester lol' reaches the player Tester")
     eq(got[1] and got[1].sender, "Steve", "the sender is delivered as 'Steve'")
     eq(#send("Steve Spinebreaker", "Someone Else"), 0, "a reply for another player is dropped")
+    -- a friend on another realm: both names carry a second word AND a realm suffix
+    got = send("Steve Spinebreaker-Other Realm", "Tester lol-Other Realm")
+    eq(#got, 1, "a reply addressed to 'Tester lol-Other Realm' reaches the player Tester")
+    eq(#send("Steve Spinebreaker-Other Realm", "Someone Else-Other Realm"), 0, "another cross-realm player's reply is dropped")
     -- our own echo arrives under our spaced name and must be recognised as ours
     stub.player = "Tester"
     eq(#send("Tester lol", nil), 0, "our own spaced-name echo is ignored")
