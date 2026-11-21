@@ -228,7 +228,21 @@ local function rejoinIfStuck(code)
 end
 
 -- One real join attempt, at most once per JOIN_RETRY_SECONDS per channel.
+local legacyLeft = {}            -- code -> true once the pre-v0.7.5 channel name was left
+
+local function leaveLegacy(code)
+    if legacyLeft[code] then return end
+    legacyLeft[code] = true
+    local old = Protocol.LegacyChannelName(code)
+    local id = GetChannelName and GetChannelName(old) or 0
+    if id and id > 0 and LeaveChannelByName then
+        dbg(nil, "leaving the old channel %s (slot %s)", old, id)
+        pcall(LeaveChannelByName, old)
+    end
+end
+
 local function tryJoin(code)
+    leaveLegacy(code)
     if channelId(code) > 0 then attempts[code] = nil; disabledSince[code] = nil; return true end
     local t = clock()
     if lastTry[code] and t - lastTry[code] < JOIN_RETRY_SECONDS then return false, "waiting" end

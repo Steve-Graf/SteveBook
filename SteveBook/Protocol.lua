@@ -7,7 +7,7 @@ local Protocol = {}
 ns.Protocol = Protocol
 
 Protocol.VERSION = 1
-Protocol.LOBBY_CODE = "LBY-CSNO"          -- the casino lobby channel (SBLBYCSNO)
+Protocol.LOBBY_CODE = "LBY-CSNO"          -- the casino lobby channel (SBNLBYCSNO)
 
 -- dir: who may send it. "bettor" = bettor -> bookie, "bookie" = bookie -> bettor (or all),
 -- "any" = either side.
@@ -256,8 +256,15 @@ function Protocol.Unwrap(env, senderRole)
     return env.t, env.c, env.p
 end
 
--- Hidden channel name for a book code, e.g. "NFL-K7Q2" -> "SBNFLK7Q2".
+-- Hidden channel name for a book code, e.g. "NFL-K7Q2" -> "SBNNFLK7Q2".
+-- Up to v0.7.4 the name was "SB" .. code ("SBNFLK7Q2"). In Forever those names ended up stuck as
+-- "disabled" on some characters (a slot, but the server refused every message, and leaving and
+-- joining again did not help), while channels with other names worked at once. The extra "N" gives
+-- every channel a fresh name; LegacyChannelName is the old one, left when found.
 function Protocol.ChannelName(code)
+    return "SBN" .. (code or ""):upper():gsub("[^A-Z0-9]", "")
+end
+function Protocol.LegacyChannelName(code)
     return "SB" .. (code or ""):upper():gsub("[^A-Z0-9]", "")
 end
 

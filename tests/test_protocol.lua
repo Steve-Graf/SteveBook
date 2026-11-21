@@ -27,8 +27,8 @@ check(select(2, P.Unwrap({ v = 99, t = "PING", c = "X", p = {} })) == "protocol 
 check(select(2, P.Unwrap("junk")) == "not a table", "non-table")
 check(select(2, P.Unwrap({ v = 1, t = "PING", p = {} })) == "missing book code", "missing code")
 
-check(P.ChannelName("NFL-K7Q2") == "SBNFLK7Q2", "channel name")
-check(P.ChannelName("nfl-k7q2") == "SBNFLK7Q2", "channel name uppercases")
+check(P.ChannelName("NFL-K7Q2") == "SBNNFLK7Q2", "channel name")
+check(P.ChannelName("nfl-k7q2") == "SBNNFLK7Q2", "channel name uppercases")
 check(P.ShouldDeliver("BET_PLACE", true) and not P.ShouldDeliver("BET_PLACE", false), "bettor msgs go to the owner")
 check(P.ShouldDeliver("SYNC", false) and not P.ShouldDeliver("SYNC", true), "bookie msgs go to non-owners")
 check(P.ShouldDeliver("PING", true) and P.ShouldDeliver("PING", false), "any msgs go to everyone")
@@ -107,7 +107,7 @@ do
     check(P.ShouldDeliver("TBL_BET", true) and not P.ShouldDeliver("TBL_BET", false), "player messages go to the host")
     check(P.ShouldDeliver("TBL_RESULT", false) and not P.ShouldDeliver("TBL_RESULT", true), "host messages go to players")
     check(P.CanonicalCode("rltk7q2") == "RLT-K7Q2", "table codes canonicalise like book codes")
-    check(P.ChannelName("RLT-K7Q2") == "SBRLTK7Q2", "table channel name")
+    check(P.ChannelName("RLT-K7Q2") == "SBNRLTK7Q2", "table channel name")
 end
 
 -- blackjack and lobby messages
@@ -119,7 +119,7 @@ do
     check(W("TBL_RESULT", { rev = 3, round = 1, dealer = { cards = { "AS", "KH" }, total = 21 }, results = { { name = "Bob", net = 0, balance = 100, hands = {} } } }), "a blackjack result needs no number")
     check(W("TBL_STATE", { rev = 2, game = "blackjack", name = "BJ", status = "playing", round = 1, minBet = 100, maxBet = 10000, seats = {}, history = {}, bj = { phase = "playing" } }), "TBL_STATE with blackjack state")
     check(W("TBL_BET_REJECT", { ref = "a", reason = "not_your_turn" }), "not_your_turn"); check(W("TBL_BET_REJECT", { ref = "a", reason = "bad_action" }), "bad_action")
-    check(P.LOBBY_CODE == P.CanonicalCode(P.LOBBY_CODE), "the lobby code is canonical"); check(P.ChannelName(P.LOBBY_CODE) == "SBLBYCSNO", "lobby channel name")
+    check(P.LOBBY_CODE == P.CanonicalCode(P.LOBBY_CODE), "the lobby code is canonical"); check(P.ChannelName(P.LOBBY_CODE) == "SBNLBYCSNO", "lobby channel name")
     check(P.Wrap("LOBBY_ASK", P.LOBBY_CODE, {}), "LOBBY_ASK")
     check(P.ShouldDeliver("LOBBY_ASK", true) and P.ShouldDeliver("LOBBY_ASK", false), "lobby messages go to everyone")
     check(P.Wrap("LOBBY_TABLE", P.LOBBY_CODE, { tables = { { code = "RLT-AAAA", game = "roulette", name = "Fri", host = "Steve", status = "betting", seats = 2, minBet = 100, maxBet = 10000 } } }), "LOBBY_TABLE")

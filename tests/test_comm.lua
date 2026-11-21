@@ -552,4 +552,17 @@ do
     GetChannelList = nil
 end
 
+------------------------------------------------------------------------------------------
+-- 13. the pre-v0.7.5 channel name is left when the new one is joined
+------------------------------------------------------------------------------------------
+do
+    local code = "OLD-NAM1"
+    local legacy = Protocol.LegacyChannelName(code)
+    check(legacy ~= Protocol.ChannelName(code) and legacy == "SBOLDNAM1", "legacy name is the old spelling")
+    stub.channels[legacy] = 3
+    Comm.JoinBook(code)
+    check(stub.channels[legacy] == nil, "joining a book leaves its old channel name")
+    Comm.LeaveBook(code)
+end
+
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end
