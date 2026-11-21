@@ -76,14 +76,13 @@ local function at(region, parent, x, y, point)
     return region
 end
 
--- `anchor` = { point, x, y } for where the window first opens (it can be dragged afterwards). The
--- launcher sits in the middle; the host window opens at the left and a table the player sits at on
--- the right, so a host who also plays (/book loopback) sees both.
-local function newWindow(name, w, h, title, anchor)
+-- Every casino window opens in the middle of the screen (it can be dragged afterwards): they take
+-- each other's place, so there is no reason to scatter them around the edges.
+local function newWindow(name, w, h, title)
     local f = CreateFrame("Frame", name, UIParent, "BasicFrameTemplateWithInset")
     if UISpecialFrames then table.insert(UISpecialFrames, name) end     -- Escape closes it
     f:SetSize(w, h)
-    if anchor then f:SetPoint(anchor[1], UIParent, anchor[1], anchor[2], anchor[3]) else f:SetPoint("CENTER") end
+    f:SetPoint("CENTER")
     f:SetMovable(true)
     f:EnableMouse(true)
     f:SetClampedToScreen(true)
@@ -174,8 +173,8 @@ local function flat(parent, text, w, h, onClick)
 end
 
 -- A window with the dark body panel already in it. Returns the frame and the body.
-local function playerWindow(name, w, h, title, anchor)
-    local f = newWindow(name, w, h, title, anchor)
+local function playerWindow(name, w, h, title)
+    local f = newWindow(name, w, h, title)
     casinoButton(f)
     local body = panel(f, 6, 28, w - 12, h - 34, COL.ground, COL.edge)
     return f, body
@@ -692,7 +691,7 @@ end
 
 local function buildHost()
     local H = host
-    local f, body = playerWindow("SteveBookCasinoHostFrame", 780, 600, "SteveBook Casino: Host", { "TOPLEFT", 40, -70 })
+    local f, body = playerWindow("SteveBookCasinoHostFrame", 780, 600, "SteveBook Casino: Host")
     H.frame, H.body = f, body
 
     H.head = label(body, "GameFontNormalLarge"); at(H.head, body, 14, 8); H.head:SetWidth(400)
@@ -1221,7 +1220,7 @@ end
 
 local function buildTable()
     local P = play
-    local f, body = playerWindow("SteveBookCasinoTableFrame", 900, 640, "SteveBook Casino", { "TOPRIGHT", -40, -70 })
+    local f, body = playerWindow("SteveBookCasinoTableFrame", 900, 640, "SteveBook Casino")
     P.frame, P.body = f, body
 
     P.head = label(body, "GameFontNormalLarge"); at(P.head, body, 14, 8); P.head:SetWidth(340)
@@ -1487,7 +1486,7 @@ end
 
 local function buildBlackjack()
     local B = bj
-    local f, body = playerWindow("SteveBookBlackjackFrame", 900, 640, "SteveBook Casino", { "TOPRIGHT", -40, -70 })
+    local f, body = playerWindow("SteveBookBlackjackFrame", 900, 640, "SteveBook Casino")
     B.frame, B.body = f, body
 
     B.head = label(body, "GameFontNormalLarge"); at(B.head, body, 14, 8); B.head:SetWidth(340)
