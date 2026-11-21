@@ -51,8 +51,8 @@ are on the same realm group and faction; custom channels do not cross realms.
 
 ## Guild messages
 
-From v0.8.0 every message also goes through guild chat (a second path that needs no channel), so friends
-in your guild can reach each other even when the hidden channel fails. `/book guild` turns it off or on, `/book net test` sends a test message down each path and prints the game's own answer (the normal send path never reports failures),
+From v0.8.0 messages can also go through guild chat (a second path that needs no channel), so friends
+in your guild can reach each other even when the hidden channel fails. From v0.8.3 game traffic uses the channel and adds guild only for players the channel does not reach. `/book guild` turns it off or on, `/book net test` sends a test message down each path and prints the game's own answer (the normal send path never reports failures),
 and `/book net` shows what was last heard on each path.
 
 ## If a channel shows as "disabled"

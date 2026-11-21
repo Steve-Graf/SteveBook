@@ -242,7 +242,11 @@ Rules:
 
 ### Transports (v0.8.0)
 
-Every message goes out on two paths and is heard on both; a receiver acts on the first copy.
+Handshake messages (join, lobby, presence, sync requests; `BOTH_WAYS` in Comm.lua) go out on two paths
+and a receiver acts on the first copy. Gameplay messages (table state, bets, actions) go by the channel
+only, plus guild when the channel is not working or the player addressed (or, for a broadcast, any
+player at that table) has been heard by guild and not by channel in the last 10 minutes (v0.8.3: sending
+everything twice made blackjack lag, because the game rate-limits addon messages per prefix).
 
 - **Hidden channel** (`SBN` + code, see `Protocol.ChannelName`): reaches any player, but a join can fail
   silently. In Forever a channel can hold a slot and be listed as disabled by `GetChannelList`

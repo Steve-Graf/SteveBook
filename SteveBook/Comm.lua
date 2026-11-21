@@ -413,6 +413,42 @@ local function duplicate(sender, env)
     return false
 end
 
+-- Who has been heard on which path, per book/table: peers[code][name] = { chan = t, guild = t }.
+-- Sending everything twice doubles the traffic and the game rate-limits addon messages, so a table
+-- with a lot of chatter (blackjack) lagged. Gameplay messages go by guild only when the channel is
+-- down or the player being talked to has only been heard by guild; handshakes always go both ways.
+local peers = {}
+local PEER_WINDOW = 600
+local BOTH_WAYS = {
+    JOIN_REQ = true, JOIN_OK = true, JOIN_DENY = true, SYNC_REQ = true, PING = true, PONG = true,
+    LOBBY_ASK = true, LOBBY_TABLE = true, LOBBY_BOOKS = true,
+    TBL_JOIN = true, TBL_JOIN_OK = true, TBL_JOIN_DENY = true, TBL_LEAVE = true, TBL_SYNC_REQ = true,
+}
+
+local function notePeer(code, sender, via)
+    local c = peers[code]
+    if not c then c = {}; peers[code] = c end
+    local p = c[sender]
+    if not p then p = {}; c[sender] = p end
+    if via == "GUILD" then p.guild = clock() else p.chan = clock() end
+end
+
+local function guildOnly(p, t)
+    return p ~= nil and p.guild ~= nil and t - p.guild < PEER_WINDOW and not (p.chan and t - p.chan < PEER_WINDOW)
+end
+
+local function needGuild(msgType, code, to)
+    if not guildReady() then return false end
+    if channelId(code) <= 0 or BOTH_WAYS[msgType] then return true end
+    local c, t = peers[code], clock()
+    if to then
+        local p = c and c[normalize(to)]
+        return p == nil or guildOnly(p, t)          -- someone never heard yet: use both
+    end
+    if c then for _, p in pairs(c) do if guildOnly(p, t) then return true end end end
+    return false
+end
+
 -- What was last heard on each transport (for /book net): { CHANNEL = time, GUILD = time }.
 function Comm.Heard() return heardVia, heardFrom end
 
@@ -491,11 +527,12 @@ function Comm.Send(msgType, payload, bookCode, target)
     if not sok then return false, tostring(text) end
     local prio = PRIORITY[msgType]
     local wire = pack(text)
+    local useGuild = needGuild(msgType, bookCode, env.to)
     dbg(msgType, "send %s book %s to %s on channel #%s%s (%d bytes, %d on the wire)", msgType, bookCode,
-        env.to or "everyone", channelId(bookCode), guildReady() and " and guild" or "", #text, #wire)
+        env.to or "everyone", channelId(bookCode), useGuild and " and guild" or "", #text, #wire)
     if Comm.LoopbackActive(bookCode) then loopback(text, msgType, bookCode, env.to) end
     text = wire
-    local viaGuild = guildSend(text, prio)   -- the second path; needs no channel
+    local viaGuild = useGuild and guildSend(text, prio)   -- second path; needs no channel
     -- pcall returns (ok, rawSend's first result, rawSend's second result)
     local ok, sent, serr = pcall(rawSend, text, bookCode, prio)
     if not ok then return viaGuild, viaGuild and "guild" or tostring(sent) end
@@ -538,6 +575,7 @@ Comm:RegisterComm(PREFIX, function(_, message, distribution, sender)
     end
     heardVia[distribution] = clock()
     heardFrom[sent] = { at = clock(), via = distribution }
+    notePeer(code, sent, distribution)
     if duplicate(sent, env) then
         return dbg(msgType, "duplicate %s from %s via %s (already handled)", msgType, sent, distribution)
     end

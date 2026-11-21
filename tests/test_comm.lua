@@ -662,4 +662,43 @@ do
     IsInGuild = nil
 end
 
+-- 17. the guild copy is a fallback, not a doubling of every message
+do
+    local code = "DBL-TEST"
+    IsInGuild = function() return true end
+    SteveBookDB.noGuild = nil
+    Comm.JoinBook(code); tick(2)
+    stub.channels[Protocol.ChannelName(code)] = 8
+    check((GetChannelName(Protocol.ChannelName(code))) > 0, "channel is up for the test")
+    local function count(msgType, to)
+        stub.addonMessages = {}
+        Comm.Send(msgType, { rev = 1, market = { id = 1 } }, code, to)
+        tick(2)
+        local g, c = 0, 0
+        for _, m in ipairs(stub.addonMessages) do
+            if m.chatType == "GUILD" then g = g + 1 elseif m.chatType == "CHANNEL" then c = c + 1 end
+        end
+        return g, c
+    end
+    local g, c = count("MARKET")
+    check(g == 0 and c == 1, ("gameplay with a working channel and nobody guild-only goes by channel only (guild %d, channel %d)"):format(g, c))
+    g, c = count("PING")
+    check(g == 1 and c == 1, "a handshake/presence message still goes both ways")
+    -- a peer heard only by guild: gameplay now goes both ways
+    local env = assert(Protocol.Wrap("PING", code, {}))
+    env.m = "dbl01"
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "GUILD", "Gus-Realm")
+    drainSeen()
+    g, c = count("MARKET")
+    check(g == 1 and c == 1, "a guild-only peer is reached by guild as well")
+    -- ...until the same peer is heard on the channel too
+    env.m = "dbl02"
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "CHANNEL", "Gus-Realm")
+    drainSeen()
+    g, c = count("MARKET")
+    check(g == 0 and c == 1, "once the channel works for that peer, back to channel only")
+    IsInGuild = nil
+    Comm.LeaveBook(code)
+end
+
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end
