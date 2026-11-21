@@ -460,6 +460,16 @@ function Comm.Health(code, who)
     local guildOk = Comm.GuildState() == "on"
     local t = clock()
     local h = who and heardFrom[normalize(who)]
+    if not who and peers[code] then            -- nobody named: the most recent player heard at this book/table
+        local bestAt = 0
+        for name, p in pairs(peers[code]) do
+            local at = math.max(p.chan or 0, p.guild or 0)
+            if at > bestAt then
+                bestAt, who = at, name
+                h = { at = at, via = (p.guild or 0) >= (p.chan or 0) and "GUILD" or "CHANNEL" }
+            end
+        end
+    end
     if h and t - h.at < 180 then
         return true, ("%s was heard %d s ago (via %s)."):format(who, t - h.at, h.via == "GUILD" and "guild" or "the channel")
     end

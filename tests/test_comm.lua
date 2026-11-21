@@ -701,4 +701,19 @@ do
     Comm.LeaveBook(code)
 end
 
+-- 18. Health with nobody named: the most recent player heard at that book
+do
+    local code = "HLT-NONE"
+    IsInGuild = function() return true end
+    local ok, text = Comm.Health(code)
+    check(ok == true and text == "Connected.", "nobody heard yet: " .. tostring(text))
+    local env = assert(Protocol.Wrap("PING", code, {}))
+    env.m = "hlt01"
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "GUILD", "Hosty-Realm")
+    drainSeen()
+    ok, text = Comm.Health(code)
+    check(ok == true and text:find("Hosty", 1, true) and text:find("guild", 1, true), "names who was heard: " .. tostring(text))
+    IsInGuild = nil
+end
+
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end
