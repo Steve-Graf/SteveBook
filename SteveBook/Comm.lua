@@ -84,12 +84,31 @@ local function say(msg) print("|cffffd100SteveBook:|r " .. msg) end
 -- /book debug: trace every message in and out (PING/PONG left out, they repeat). For finding out
 -- why two players cannot talk; each side turns it on and reads its own chat.
 local QUIET = { PING = true, PONG = true }
+-- A rolling record of what this client sent, heard, ignored and had refused, kept in the saved data
+-- (SteveBookDB.netLog, the last NETLOG_MAX lines) whether or not /book debug is on. SavedVariables are
+-- written on /reload or logout, so someone with access to the file can read exactly what happened at a
+-- table afterwards, without anyone having to screenshot chat.
+local NETLOG_MAX = 300
+local function netLog(line)
+    local db = SteveBookDB
+    if not db then return end
+    local log = db.netLog
+    if not log then log = {}; db.netLog = log end
+    log[#log + 1] = ("%d %s"):format(GetServerTime and GetServerTime() or 0, line)
+    if #log > NETLOG_MAX + 50 then                      -- trim in batches, not on every line
+        for _ = 1, #log - NETLOG_MAX do table.remove(log, 1) end
+    end
+end
+
 local function dbg(msgType, fmt, ...)
     local db = SteveBookDB
-    if not (db and db.debug) or (msgType and QUIET[msgType]) then return end
     local args = { ... }
     for i = 1, select("#", ...) do args[i] = tostring(args[i]) end
-    say("|cff9d9d9d[debug]|r " .. fmt:format(unpack(args)))
+    local ok, line = pcall(fmt.format, fmt, unpack(args))
+    if not ok then line = fmt end
+    netLog(line)
+    if not (db and db.debug) or (msgType and QUIET[msgType]) then return end
+    say("|cff9d9d9d[debug]|r " .. line)
 end
 local function myName() return UnitName("player") end
 local function myRealm() return GetNormalizedRealmName and GetNormalizedRealmName() or nil end
@@ -430,6 +449,7 @@ local function record(arg, ok, code)
     s.fail = s.fail + 1
     s.codes[why] = (s.codes[why] or 0) + 1
     s.lastCode, s.lastAt = why, clock()
+    netLog(("REFUSED by %s: %s"):format(arg.dist, resultName(why)))
     local key = arg.dist .. tostring(why)
     if not lastWarn[key] or clock() - lastWarn[key] >= 60 then
         lastWarn[key] = clock()
@@ -740,6 +760,7 @@ f:SetScript("OnEvent", function(_, event, a1, ...)
     -- Chat channels are not ready the instant the world loads; the player's own channels (General,
     -- Trade) should get their numbers first, so wait longer after a fresh login than after a
     -- loading screen. (a1 is isInitialLogin.)
+    if SteveBookDB then SteveBookDB.netStats = sendStats end        -- saved with the data: what the game accepted and refused
     local delay = a1 and 15 or 5
     if C_Timer and C_Timer.After then C_Timer.After(delay, joinAll) else joinAll() end
 end)

@@ -788,4 +788,31 @@ do
     Comm.LeaveBook(code)
 end
 
+-- 20. a rolling record of sends, receipts and refusals is kept in the saved data, with debug off
+do
+    SteveBookDB.debug = false
+    SteveBookDB.netLog = nil
+    local code = "LOG-TEST"
+    IsInGuild = function() return true end
+    Comm.JoinBook(code); tick(2)
+    stub.channels[Protocol.ChannelName(code)] = 5
+    Comm.Send("MARKET", { rev = 1, market = { id = 1 } }, code); tick(2)
+    local env = assert(Protocol.Wrap("PING", code, {}))
+    env.m = "log01"
+    stub.fire("CHAT_MSG_ADDON", "SteveBook", AceSer:Serialize(env), "GUILD", "Zed-Realm")
+    drainSeen()
+    local log = SteveBookDB.netLog
+    check(type(log) == "table" and #log >= 2, "send and receive lines are recorded even with debug off")
+    local text = table.concat(log or {}, "\n")
+    check(text:find("send MARKET", 1, true) ~= nil, "a send is recorded")
+    check(text:find("recv PING from Zed", 1, true) ~= nil, "a receipt is recorded (even a PING, which debug mode hides)")
+    check(tonumber((log[1] or ""):match("^(%d+) ")) ~= nil, "each line starts with the server time")
+    for i = 1, 400 do Comm.Send("MARKET", { rev = i, market = { id = 1 } }, code) end
+    check(#SteveBookDB.netLog <= 351, "the record is capped (" .. #SteveBookDB.netLog .. ")")
+    stub.fire("PLAYER_ENTERING_WORLD", false)
+    check(SteveBookDB.netStats == Comm.SendStats(), "the send totals are saved too")
+    IsInGuild = nil
+    Comm.LeaveBook(code)
+end
+
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end
