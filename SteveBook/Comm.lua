@@ -512,7 +512,11 @@ function Comm.GuildState()
 end
 
 -- Message ids, so the copy that arrives on the second transport is dropped.
-local sessionTag = ("%04x"):format(math.random(0, 0xFFFF))
+-- Unique per session without relying on the random numbers (this client has no math.randomseed, so a
+-- tag drawn at load time could repeat after a /reload and make the other side drop real messages as
+-- duplicates): the clock to the millisecond, plus a little randomness.
+local sessionTag = ("%x%03x%02x"):format((GetServerTime and GetServerTime() or 0) % 0x100000,
+    math.floor(((GetTime and GetTime() or 0) * 1000) % 4096), math.random(0, 255))
 local sequence = 0
 local function nextId() sequence = sequence + 1; return sessionTag .. sequence end
 
@@ -760,7 +764,11 @@ f:SetScript("OnEvent", function(_, event, a1, ...)
     -- Chat channels are not ready the instant the world loads; the player's own channels (General,
     -- Trade) should get their numbers first, so wait longer after a fresh login than after a
     -- loading screen. (a1 is isInitialLogin.)
-    if SteveBookDB then SteveBookDB.netStats = sendStats end        -- saved with the data: what the game accepted and refused
+    if SteveBookDB then
+        SteveBookDB.netStats = sendStats                            -- saved with the data: what the game accepted and refused
+        netLog(("session %s, version %s, player %s, guild %s"):format(sessionTag, tostring(Comm.Version()), tostring(myName()),
+            tostring(IsInGuild and IsInGuild() or false)))
+    end
     local delay = a1 and 15 or 5
     if C_Timer and C_Timer.After then C_Timer.After(delay, joinAll) else joinAll() end
 end)

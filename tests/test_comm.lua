@@ -811,6 +811,9 @@ do
     check(#SteveBookDB.netLog <= 351, "the record is capped (" .. #SteveBookDB.netLog .. ")")
     stub.fire("PLAYER_ENTERING_WORLD", false)
     check(SteveBookDB.netStats == Comm.SendStats(), "the send totals are saved too")
+    local sess = false
+    for _, line in ipairs(SteveBookDB.netLog) do if line:find(" session %x+, version ") then sess = true end end
+    check(sess, "the session tag is written to the record at start-up")
     IsInGuild = nil
     Comm.LeaveBook(code)
 end
