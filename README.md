@@ -54,7 +54,7 @@ are on the same realm group and faction; custom channels do not cross realms.
 `/book net` lists each SteveBook channel and says whether it works. A channel can hold a slot number
 and still be listed by the game as disabled (the server never let the character in): every send to it
 fails with `InvalidChannel` and nothing is heard, so friends never see tables or join requests. From
-v0.7.3 the addon notices this, leaves the channel and joins again on its own. To check by hand:
+v0.7.3 the addon notices this, leaves the channel and joins again on its own. The cause found in Forever: taking a channel off every chat window (what SteveBook did up to v0.7.2 to hide it) leaves it disabled; v0.7.4 stops doing that and puts such a channel back on the main chat window. To check by hand:
 `/run print(GetChannelList())` prints slot, name and disabled for every channel, and
 `/run local id=GetChannelName("SBLBYCSNO") print(id, C_ChatInfo.SendAddonMessage("SteveBook","t","CHANNEL",id))`
 prints the slot and a result (0 is success, 7 is `InvalidChannel`).

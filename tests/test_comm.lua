@@ -40,6 +40,8 @@ end
 local filters, removed = {}, {}
 ChatFrame_AddMessageEventFilter = function(event, fn) filters[event] = fn end
 ChatFrame_RemoveChannel = function(_, name) removed[#removed + 1] = name end
+local added = {}                                      -- channels put (back) on the chat window
+ChatFrame_AddChannel = function(_, name) added[#added + 1] = name end
 
 -- ---- load the libs and the addon files in .toc order --------------------------------------------
 for _, p in ipairs({ "Libs/LibStub/LibStub.lua", "Libs/CallbackHandler-1.0/CallbackHandler-1.0.lua",
@@ -409,11 +411,8 @@ do
 
     removed = {}
     Comm.JoinBook("HID-DEN1")
-    local afterJoin = #removed
     stub.fire("CHAT_MSG_CHANNEL_NOTICE", "YOU_JOINED", "Tester", "", "5. " .. Protocol.ChannelName("HID-DEN1"))
-    local hid = false
-    for i = afterJoin + 1, #removed do if removed[i] == Protocol.ChannelName("HID-DEN1") then hid = true end end
-    check(hid, "the channel is hidden again when the YOU_JOINED notice arrives (the join is asynchronous)")
+    eq(#removed, 0, "a channel is never taken off the chat windows (that left it disabled in Forever)")
     Comm.LeaveBook("HID-DEN1")
 
     -- login join delay and joinAll
@@ -523,6 +522,7 @@ do
         for name, id in pairs(stub.channels) do t[#t + 1] = id; t[#t + 1] = name; t[#t + 1] = disabled[name] == true end
         return unpack(t)
     end
+    added = {}
     stub.channels[chan] = 7; disabled[chan] = true       -- a slot, but the server never let us in
     joinCalls = {}; stub.addonMessages = {}; stub.afters = {}
     local ok, how = Comm.Send("MARKET", { rev = 1, market = { id = 1 } }, code)
@@ -537,6 +537,9 @@ do
     check(named, "/book net names the problem")
     tick(12)
     check(stub.channels[chan] == nil, "after a few seconds disabled the channel was left")
+    local back = false
+    for _, n in ipairs(added) do if n == chan then back = true end end
+    check(back, "...and put back on the chat window, undoing an old removal")
     for _, a in ipairs(stub.afters) do a.fn() end
     check(joinsFor(chan) >= 1, "...and joined again")
     stub.channels[chan] = 8; disabled[chan] = false      -- this time the join took

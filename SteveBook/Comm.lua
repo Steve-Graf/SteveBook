@@ -156,17 +156,18 @@ function Comm.ChannelState(code)
 end
 
 -- The chat API moved in some client versions; use whichever name exists.
-local removeChannel = ChatFrame_RemoveChannel or (ChatFrameUtil and ChatFrameUtil.RemoveChannel)
+local addChannel = ChatFrame_AddChannel or (ChatFrameUtil and ChatFrameUtil.AddChannel)
 local addFilter = ChatFrame_AddMessageEventFilter or (ChatFrameUtil and ChatFrameUtil.AddMessageEventFilter)
 
-local function hideChannel(code)
+-- Up to v0.7.2 every join took the channel OFF all chat windows to keep it out of sight. In
+-- Forever such a channel stayed "disabled" (a slot, but InvalidChannel on every send), while a
+-- channel left on a window worked. So the channel stays on the chat window now; the notice filter
+-- below keeps its join/leave lines out of chat, and addon messages never show there. This puts a
+-- channel back on the main window for characters that still carry the old removal.
+local function showChannel(code)
     local name = Protocol.ChannelName(code)
-    if removeChannel and NUM_CHAT_WINDOWS then
-        for i = 1, NUM_CHAT_WINDOWS do
-            local f = _G["ChatFrame" .. i]
-            if f then pcall(removeChannel, f, name) end
-        end
-    end
+    local f = _G.DEFAULT_CHAT_FRAME or _G.ChatFrame1
+    if addChannel and f then pcall(addChannel, f, name) end
 end
 
 -- Keep "you joined/left" and other-player notices for our hidden channels out of chat.
@@ -217,9 +218,10 @@ local function rejoinIfStuck(code)
     if t - disabledSince[code] < DISABLED_GRACE then return false end
     disabledSince[code] = nil
     dbg(nil, "channel %s (slot %s) is listed but disabled; leaving it and joining again", name, id)
+    showChannel(code)
     if LeaveChannelByName then pcall(LeaveChannelByName, name) end
     local function join()
-        if joined[code] and JoinTemporaryChannel then pcall(JoinTemporaryChannel, name); hideChannel(code) end
+        if joined[code] and JoinTemporaryChannel then pcall(JoinTemporaryChannel, name); showChannel(code) end
     end
     if C_Timer and C_Timer.After then C_Timer.After(1.5, join) else join() end
     return true
@@ -234,7 +236,6 @@ local function tryJoin(code)
     attempts[code] = (attempts[code] or 0) + 1
     if rejoinIfStuck(code) then return false end
     if JoinTemporaryChannel then pcall(JoinTemporaryChannel, Protocol.ChannelName(code)) end
-    hideChannel(code)   -- the join is asynchronous; the notice event below hides it again
     return channelId(code) > 0
 end
 
@@ -433,9 +434,6 @@ f:SetScript("OnEvent", function(_, event, a1, ...)
     if event == "CHAT_MSG_CHANNEL_NOTICE" then
         -- First argument is the notice type. Once a channel is up, hide it from chat windows.
         dbg(nil, "channel notice: %s", a1)
-        if a1 == "YOU_JOINED" or a1 == "YOU_CHANGED" then
-            for code in pairs(joined) do hideChannel(code) end
-        end
         return
     end
     -- Chat channels are not ready the instant the world loads; the player's own channels (General,
