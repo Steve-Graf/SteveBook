@@ -106,7 +106,13 @@ local function dbg(msgType, fmt, ...)
     for i = 1, select("#", ...) do args[i] = tostring(args[i]) end
     local ok, line = pcall(fmt.format, fmt, unpack(args))
     if not ok then line = fmt end
-    netLog(line)
+    if line:find("^echo of my own") or line:find("^duplicate ") then
+        -- half of the first record was these; count them instead of using up the log
+        local kind = line:sub(1, 4) == "echo" and "echoes" or "duplicates"
+        if db then db.netCounts = db.netCounts or {}; db.netCounts[kind] = (db.netCounts[kind] or 0) + 1 end
+    else
+        netLog(line)
+    end
     if not (db and db.debug) or (msgType and QUIET[msgType]) then return end
     say("|cff9d9d9d[debug]|r " .. line)
 end
@@ -256,8 +262,9 @@ function Comm.NetReport()
             local why = {}
             for code, n in pairs(st.codes) do why[#why + 1] = ("%s x%d"):format(resultName(code), n) end
             table.sort(why)
-            lines[#lines + 1] = ("%s: %d accepted by the game, %d refused%s."):format(label, st.ok, st.fail,
-                st.fail > 0 and (" (" .. table.concat(why, ", ") .. ", last " .. math.floor(clock() - (st.lastAt or 0)) .. " s ago)") or "")
+            lines[#lines + 1] = ("%s: %d accepted by the game, %d refused%s%s."):format(label, st.ok, st.fail,
+                st.fail > 0 and (" (" .. table.concat(why, ", ") .. ", last " .. math.floor(clock() - (st.lastAt or 0)) .. " s ago)") or "",
+                (st.waitN and st.waitN > 0) and (" Waited in the queue: %.1f s on average, %.1f s at most"):format(st.waitSum / st.waitN, st.waitMax or 0) or "")
         end
     end
     return lines
@@ -425,6 +432,7 @@ end
 -- counted per path, a refusal is announced in chat (at most once a minute per kind) and the transient
 -- kinds are sent again. /book net shows the totals.
 local lastWarn = {}
+local sendingType                    -- the message type Comm.Send is handing to transmit right now (for the delay record)
 local MAX_RESENDS = 2
 
 local function statFor(dist)
@@ -444,7 +452,15 @@ local transmit
 -- Record one real send. `code` is the game's answer when known (a number; 0 is success), else nil.
 local function record(arg, ok, code)
     local s = statFor(arg.dist)
-    if ok then s.ok = s.ok + 1; return end
+    if ok then
+        s.ok = s.ok + 1
+        -- how long it waited between being handed over and actually leaving: the game's limit shows up here
+        local wait = clock() - (arg.at or clock())
+        s.waitSum, s.waitN = (s.waitSum or 0) + wait, (s.waitN or 0) + 1
+        if wait > (s.waitMax or 0) then s.waitMax = wait end
+        if wait >= 3 then netLog(("SLOW %s by %s: left after %.1f s"):format(tostring(arg.type), arg.dist, wait)) end
+        return
+    end
     local why = code or "unknown"
     s.fail = s.fail + 1
     s.codes[why] = (s.codes[why] or 0) + 1
@@ -485,6 +501,8 @@ end
 
 -- One real send on one path. arg = { dist = "GUILD"|"CHANNEL", code, text, prio, tries }.
 function transmit(arg)
+    arg.type = arg.type or sendingType
+    arg.at = arg.at or clock()
     local target
     if arg.dist == "CHANNEL" then
         target = channelId(arg.code)
@@ -559,7 +577,7 @@ end
 -- they always go both ways, and so does a resend (`both`).
 local PEER_WINDOW = 600
 local BOTH_WAYS = {
-    JOIN_REQ = true, JOIN_OK = true, JOIN_DENY = true, SYNC_REQ = true, PING = true, PONG = true,
+    JOIN_REQ = true, JOIN_OK = true, JOIN_DENY = true, SYNC_REQ = true,       -- (PING/PONG repeat every 30 s: not here)
     LOBBY_ASK = true, LOBBY_TABLE = true, LOBBY_BOOKS = true,
     TBL_JOIN = true, TBL_JOIN_OK = true, TBL_JOIN_DENY = true, TBL_LEAVE = true, TBL_SYNC_REQ = true,
 }
@@ -671,9 +689,11 @@ function Comm.Send(msgType, payload, bookCode, target, both)
     local prio = PRIORITY[msgType]
     local wire = pack(text)
     local useGuild, useChannel = pathsFor(msgType, bookCode, env.to, both)
-    dbg(msgType, "send %s book %s to %s by %s (%d bytes, %d on the wire)", msgType, bookCode, env.to or "everyone",
+    sendingType = msgType
+    local why = type(payload) == "table" and payload.reason and (" reason=" .. tostring(payload.reason)) or ""
+    dbg(msgType, "send %s book %s to %s by %s (%d bytes, %d on the wire)%s", msgType, bookCode, env.to or "everyone",
         useGuild and (useChannel and ("guild and channel #" .. tostring(channelId(bookCode))) or "guild only")
-            or ("channel #" .. tostring(channelId(bookCode))), #text, #wire)
+            or ("channel #" .. tostring(channelId(bookCode))), #text, #wire, why)
     if Comm.LoopbackActive(bookCode) then loopback(text, msgType, bookCode, env.to) end
     text = wire
     local viaGuild = useGuild and guildSend(text, prio)

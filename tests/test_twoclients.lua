@@ -277,4 +277,33 @@ local function lagTest()
 end
 lagTest()
 
+-- Background chatter: what a host sends while nobody is playing. In the first real session about 80% of the
+-- host's outgoing messages were this (lobby listings, presence pings, heartbeats for leftover test tables),
+-- and the game lets an addon send only about one message a second, so it delayed the real play.
+local function idleTest()
+    local label = "idle host"
+    local host = newClient("Steve", "Steve")
+    local friend = newClient("Tester", "Tester")
+    host.cursor, friend.cursor = 0, 0
+    local Casino, CNh = host.ns.Casino, host.ns.CasinoNet
+    -- three leftover test tables with someone seated, and a listed sportsbook book
+    for i = 1, 3 do
+        local t = assert(CNh.Create({ game = "blackjack", name = "Old " .. i, minBet = 100, maxBet = 10000 }))
+        Casino.RequestJoin(t, "Ghost" .. i, 1000); Casino.Admit(t, "Ghost" .. i, 5000, 1000)
+    end
+    local book = assert(host.ns.Model.CreateBook(host.db, "Lines", "Steve", 1000))
+    run(host, friend, 30)                                     -- settle in
+    local before = sent(host)
+    -- the friend keeps the list of tables open, which asks the lobby every 6 s for a minute
+    for _ = 1, 10 do
+        friend.ns.CasinoNet.AskLobby(); friend.ns.BookLobby.Ask()
+        run(host, friend, 6)
+    end
+    run(host, friend, 60)
+    local used = sent(host) - before
+    realPrint(("  [%s] 120 s with nobody playing: the host sent %d messages (%.1f per second)"):format(label, used, used / 120))
+    check(used <= 60, label .. ": background chatter stays small (" .. used .. " in 120 s)")
+end
+idleTest()
+
 if fails == 0 then realPrint("twoclients: all passed") else os.exit(1) end

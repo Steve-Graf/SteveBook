@@ -92,4 +92,34 @@ do
     eq(#t5.log, 6, "the log keeps the last six rounds"); eq(t5.log[1].round, 8, "newest first"); eq(t5.log[1].total, 19, "dealer total"); eq(t5.log[1].nets[1].net, 800, "who won what")
 end
 
+-- the host's table-wide state settles my waiting wager and gives me my chips
+do
+    local st = K.Ensure({})
+    local t6 = K.RequestJoin(st, "bjk-aaaa", 100)
+    t6.status = "seated"; t6.balance = 5000
+    K.NewPending(st, "BJK-AAAA", "ref1", { kind = "wager", amount = 500 }, 100)
+    K.NewPending(st, "BJK-AAAA", "ref2", { kind = "double", amount = 500 }, 100)
+    -- state in the betting phase with my wager in it
+    local p = { seats = { { name = "Me", balance = 4500 }, { name = "Zed", balance = 100 } },
+        bj = { phase = "betting", hands = { { name = "Me", hands = { { bet = 500 } } } } } }
+    eq(K.ReconcileFromState(t6, "Me", p), 1, "a state that lists my wager settles the waiting wager")
+    eq(t6.pending.ref1, nil, "the waiting wager is gone"); eq(t6.pending.ref2 ~= nil, true, "other kinds of bet are left alone")
+    eq(t6.balance, 4500, "my chips come from my seat")
+    eq(#t6.bets, 1, "the host's wager is recorded as mine"); eq(t6.bets[1].amount, 500, "with its amount")
+    eq(K.ReconcileFromState(t6, "Me", p), 0, "doing it again changes nothing"); eq(#t6.bets, 1, "and does not duplicate the wager")
+    -- a wager the round moved on without (I am not in the hands, betting is over)
+    t6.pending = {}; t6.bets = {}
+    K.NewPending(st, "BJK-AAAA", "ref3", { kind = "wager", amount = 500 }, 100)
+    local p2 = { seats = { { name = "Zed", balance = 100 } }, bj = { phase = "playing", hands = { { name = "Zed", hands = { { bet = 100 } } } } } }
+    eq(K.ReconcileFromState(t6, "Me", p2), 1, "a round that started without my wager drops it")
+    -- still betting and I am not in the hands yet: the wager is not settled
+    K.NewPending(st, "BJK-AAAA", "ref4", { kind = "wager", amount = 500 }, 100)
+    local p3 = { seats = { { name = "Me", balance = 5000 } }, bj = { phase = "betting", hands = {} } }
+    eq(K.ReconcileFromState(t6, "Me", p3), 0, "betting is open and I am not listed yet: keep waiting")
+    -- names with a second word match
+    local p4 = { seats = { { name = "Me lol", balance = 4000 } }, bj = { phase = "betting", hands = { { name = "Me lol", hands = { { bet = 500 } } } } } }
+    eq(K.ReconcileFromState(t6, "Me", p4), 1, "a seat name with a second word is still me")
+    eq(K.ReconcileFromState(nil, "Me", p4), 0, "no table: nothing happens")
+end
+
 if fails == 0 then print("casino_client: all passed") else os.exit(1) end

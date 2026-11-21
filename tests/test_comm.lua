@@ -718,8 +718,10 @@ do
     g, c = count("MARKET", "Chan")
     check(g == 1 and c == 0, "...but a message to the proven one is still guild only")
     hear("Late-Realm", "GUILD", "p04")
+    g, c = count("JOIN_REQ")
+    check(g == 1 and c == 1, "handshake messages always go both ways")
     g, c = count("PING")
-    check(g == 1 and c == 1, "handshake and presence messages always go both ways")
+    check(g == 1 and c == 0, "presence pings repeat every 30 s, so they follow the normal rule (guild only for proven peers)")
     g, c = count("MARKET", nil, true)
     check(g == 1 and c == 1, "a resend (both = true) goes both ways")
     IsInGuild = function() return false end

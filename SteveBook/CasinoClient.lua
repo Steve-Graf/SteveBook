@@ -216,6 +216,38 @@ function Client.MyTurn(t, myName)
     return bj.turnHand or 1
 end
 
+-- The table-wide state is the host's own record, and it can arrive long before the addressed answers do
+-- (those wait in the same congested queue). It shows my seat's chips and, in blackjack, who has a wager.
+-- So: take my chips from it; and a wager of mine still waiting for its TBL_BET_OK is settled by it: either
+-- the host holds it (I am in the hands) or the round moved on without it (it was too late). Returns how
+-- many waiting wagers this settled.
+function Client.ReconcileFromState(t, myName, p)
+    if not (t and p) then return 0 end
+    local function same(a, b)
+        return type(a) == "string" and type(b) == "string" and a:match("^([^%-%s]+)") == b:match("^([^%-%s]+)")
+    end
+    for _, s in ipairs(p.seats or {}) do
+        if same(s.name, myName) and type(s.balance) == "number" then t.balance = s.balance end
+    end
+    local bj = p.bj
+    if not (bj and bj.hands) then return 0 end
+    local mine
+    for _, h in ipairs(bj.hands) do if same(h.name, myName) then mine = h end end
+    local settled = 0
+    for ref, pb in pairs(t.pending or {}) do
+        if pb.bet and pb.bet.kind == "wager" and (mine or bj.phase ~= "betting") then
+            t.pending[ref] = nil
+            settled = settled + 1
+        end
+    end
+    if mine and bj.phase == "betting" and mine.hands and mine.hands[1] and mine.hands[1].bet then
+        local have = false
+        for _, b in ipairs(t.bets or {}) do if b.kind == "wager" then have = true end end
+        if not have then t.bets = t.bets or {}; t.bets[#t.bets + 1] = { kind = "wager", amount = mine.hands[1].bet } end
+    end
+    return settled
+end
+
 -- Blackjack: a decision I sent that the table has not answered yet (its state revision has not moved
 -- past the one I sent it against), or nil. The window greys the buttons meanwhile, so one click is
 -- one action, and CasinoNet resends it with the same ref until the host answers.

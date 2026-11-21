@@ -258,6 +258,16 @@ messages.
 - **Fewer messages.** The host combines table-wide state broadcasts that fall within 0.6 s into one
   (`queueState`), skips the heartbeat broadcast when one just went out, and resends back off
   (4 s, then 8 s more) instead of piling onto a congested limit.
+- **Background chatter (v0.8.9, from the first real session's record).** About 80% of what a host queued
+  was not play: lobby listings (every 15 s, plus one per "who is hosting?" ask, and a window re-asks every 6 s),
+  presence pings sent both ways, and a full state broadcast every 15 s for every table with a seated player,
+  including leftover test tables. Now: listings every 30 s and answered at most every 10 s, PING/PONG follow the
+  normal path rule, and heartbeats are 15 s for a table with recent activity, 40 s otherwise (the player window
+  warns after 45 s of silence, and a silent host is asked for a sync only after 60 s, then every 15 s). The
+  host's table-wide state also settles a player's waiting wager and gives them their chips
+  (`CasinoClient.ReconcileFromState`), so a confirmation stuck in the queue no longer causes resends.
+  The record (`SteveBookDB.netLog`) counts echoes and duplicates instead of logging each, logs how long each
+  message waited before it left (`SLOW ...`), and shows the reason on a rejection.
 - **Seeing refusals.** Short messages go straight to ChatThrottleLib so the game's own result code
   survives (AceComm's callback wrapper drops it). Every result is counted per path; a refusal is
   announced in chat (once a minute per kind), `ChannelThrottle`/`GeneralError` are sent again, and

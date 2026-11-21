@@ -15,7 +15,8 @@ local BL = {}
 ns.BookLobby = BL
 
 local ROOM_TTL = 100                 -- a listing disappears this long after the last announcement
-local ANNOUNCE_EVERY = 15
+local ANNOUNCE_EVERY = 30             -- was 15: with the game allowing ~1 message a second these listings were a quarter of the host's traffic
+local ASK_REPLY_GAP = 10               -- answer a "who is hosting?" at most this often (a window re-asks every 6 s)
 local rooms = {}                     -- code -> { entry, seen }
 local lastAnnounce = 0
 local listeners = {}
@@ -89,7 +90,7 @@ end
 local handlers = {}
 
 function handlers.LOBBY_ASK()
-    if now() - lastAnnounce >= 2 then BL.Announce() end
+    if now() - lastAnnounce >= ASK_REPLY_GAP then BL.Announce() end
 end
 
 function handlers.LOBBY_BOOKS(sender, p)

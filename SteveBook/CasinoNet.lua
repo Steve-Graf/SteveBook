@@ -37,6 +37,7 @@ end
 
 -- Send a list of { type, payload, to } for one table.
 local stateSentAt = {}                   -- code -> when a table-wide TBL_STATE last went out
+local activeAt = {}                      -- code -> when a player last sent this table anything
 local function send(code, msgs)
     for _, m in ipairs(msgs) do
         if m.type == "TBL_STATE" and not m.to then stateSentAt[code] = GetServerTime() end
@@ -65,6 +66,7 @@ local function onPlayerMessage(msgType)
     return function(sender, payload, code)
         local t = hosted(code)
         if not t or sender == t.hostName then return end
+        activeAt[code] = now()
         local rev = t.rev
         local out, events = Casino.Handle(t, sender, msgType, payload, now())
         send(code, out)
@@ -298,7 +300,10 @@ end
 ------------------------------------------------------------------------------------------
 
 local ROOM_TTL = 100                     -- a listing disappears this long after the host's last announcement
-local ANNOUNCE_EVERY = 15                -- hosts repeat their listing this often (a missed message costs only 15 s)
+local ANNOUNCE_EVERY = 30                -- hosts repeat their listing this often (ROOM_TTL is 100 s, so a missed one costs nothing)
+local ASK_REPLY_GAP = 10                 -- answer a "who is hosting?" at most this often (a window re-asks every 6 s)
+local HEARTBEAT_ACTIVE, HEARTBEAT_IDLE = 15, 40   -- seconds; the player window warns after 45 s of silence
+local ACTIVE_WINDOW = 120                -- a table is "active" this long after a player last did anything
 local rooms = {}                         -- code -> { entry, seen }
 local lastAnnounce = 0
 local lastHeard = nil                    -- when any host's listing (table or book) last reached me
@@ -331,10 +336,13 @@ function CasinoNet.Heartbeat()
     local d = db()
     if not d then return end
     for _, t in ipairs(Casino.List(d)) do
-        -- the heartbeat is a full table broadcast; skip it when one just went out
-        if t.hostName == me() and t.status ~= "closed" and #Casino.Seated(t) > 0
-            and now() - (stateSentAt[t.code] or 0) >= 12 then
-            send(t.code, { stateMsg(t) })
+        -- the heartbeat is a full table broadcast: every 15 s while players are doing things, every 40 s for
+        -- a table nobody has touched for two minutes (leftover test tables were a quarter of the host's traffic)
+        if t.hostName == me() and t.status ~= "closed" and #Casino.Seated(t) > 0 then
+            local active = now() - (activeAt[t.code] or 0) < ACTIVE_WINDOW or t.status == "playing" or t.status == "dealer"
+            if now() - (stateSentAt[t.code] or 0) >= (active and HEARTBEAT_ACTIVE - 3 or HEARTBEAT_IDLE - 3) then
+                send(t.code, { stateMsg(t) })
+            end
         end
     end
 end
@@ -430,7 +438,7 @@ end
 function lobbyHandlers.LOBBY_ASK(sender, p)
     hear(sender, p)
     dbg(("lobby: %s is asking who is hosting%s"):format(tostring(sender), p and p.ver and (" (v" .. p.ver .. ")") or ""))
-    if now() - lastAnnounce >= 2 then CasinoNet.Announce() end
+    if now() - lastAnnounce >= ASK_REPLY_GAP then CasinoNet.Announce() end
 end
 
 function lobbyHandlers.LOBBY_BOOKS(sender, p)                    -- only to know the lobby is alive
@@ -532,7 +540,10 @@ function handlers.TBL_STATE(sender, p, code)
     local tc = tableFor(code, sender)
     if not (tc and tc.status == "seated") then return end
     local before = tc.state and tc.state.status
-    if Client.ApplyState(db().casinoCache, code, p) then alertIfNeeded(tc, code, before, p) end
+    if Client.ApplyState(db().casinoCache, code, p) then
+        Client.ReconcileFromState(tc, tc.me or me(), p)
+        alertIfNeeded(tc, code, before, p)
+    end
 end
 
 function handlers.TBL_PLAYER(sender, p, code)
@@ -668,7 +679,7 @@ end
 -- Resends back off (4 s, then 8 s more...): the game allows only about one message a second per addon, so a
 -- slow answer is usually congestion, and resending quickly would only add to it.
 local ACT_RETRY_SECONDS, ACT_TRIES = 4, 3
-local SYNC_EVERY, QUIET_SYNC = 3, 40
+local SYNC_EVERY, QUIET_SYNC, QUIET_SYNC_EVERY = 3, 60, 15      -- no table at all: ask every 3 s; a silent host: after 60 s, every 15 s
 function CasinoNet.RetryActs()
     local d = db()
     if not (d and d.casinoCache) then return end
@@ -684,7 +695,7 @@ function CasinoNet.RetryActs()
             end
             -- seated but the table never arrived, or the host has been silent a long while: ask again
             local silent = not tc.state or (tc.lastHeard and t0 - tc.lastHeard >= QUIET_SYNC)
-            if silent and t0 - (tc.syncAt or 0) >= SYNC_EVERY then
+            if silent and t0 - (tc.syncAt or 0) >= (tc.state and QUIET_SYNC_EVERY or SYNC_EVERY) then
                 tc.syncAt = t0
                 ns.Comm.Send("TBL_SYNC_REQ", { rev = tc.rev or 0 }, tc.code)
             end
@@ -772,7 +783,8 @@ local function register()
         C_Timer.NewTicker(TICK_SECONDS, tick)
         C_Timer.NewTicker(1, blackjackTick)
         C_Timer.NewTicker(1, CasinoNet.RetryActs)
-        C_Timer.NewTicker(ANNOUNCE_EVERY, function() CasinoNet.Announce(); CasinoNet.Heartbeat() end)   -- list + heartbeat
+        C_Timer.NewTicker(ANNOUNCE_EVERY, function() CasinoNet.Announce() end)                          -- the lobby listing
+        C_Timer.NewTicker(10, function() CasinoNet.Heartbeat() end)                                      -- table heartbeats (see Heartbeat for how often a table gets one)
     end
 end
 
