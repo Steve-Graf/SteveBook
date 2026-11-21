@@ -72,6 +72,16 @@ local function currentBook()
     return list[1]
 end
 
+-- A book I run myself, seen from my own bettor window. This client never hears its own messages, so
+-- no PONG can ever come back and a bet could not reach me: it would show "offline" for ever. (With
+-- /book loopback on, Comm hands the messages straight back, so it works like any other book.)
+local function ownBook(code)
+    local d = SteveBookDB
+    if not d or d.loopback == true then return false end
+    local book = ns.Model and ns.Model.FindByCode and ns.Model.FindByCode(d, code)
+    return book ~= nil and book.ownerName == UnitName("player")
+end
+
 local function bookTitle(b) return (b.name and b.name ~= "" and b.name or "Book") .. " (" .. b.code .. ")" end
 
 -- Markets of the shown book, for the slip.
@@ -96,6 +106,7 @@ local function requestJoin(code)
     code = Cache.NormalizeCode(code)
     if code == "" then return say("Enter a join code first.") end
     if not Cache.IsValidCode(code) then return say("That doesn't look like a join code (like NFL-K7Q2).") end
+    if ownBook(code) then return say("That is your own book: you run it from /bookie. (To test it alone, turn on /book loopback.)") end
     local st = store()
     Cache.RequestJoin(st, code)
     st.selected = code
@@ -133,7 +144,9 @@ local function tick()
     if not st then return end
     local t = now()
     for _, b in ipairs(Cache.ListBooks(st)) do
-        if b.status == "active" then
+        if ownBook(b.code) then
+            -- nothing to ask: I am the bookie, and no answer could reach me
+        elseif b.status == "active" then
             send("PING", {}, b.code)
             Cache.ExpirePending(st, b.code, t)
         elseif b.status == "requested" then
@@ -1119,6 +1132,7 @@ function Bettor.Refresh()
     if b and b.status == "active" then
         local bal = b.balance or 0
         local dot = Cache.IsOnline(st, b.code, t) and (GREEN .. "online|r") or (RED .. "offline|r")
+        if ownBook(b.code) then dot = GREY .. "your own book|r" end
         ui.status:SetText("Balance " .. (bal == 0 and money(0) or colorMoney(bal)) .. "  |  " .. dot)
         ui.tabs.bets:SetText("My Bets (" .. #Cache.MyBets(st, b.code).open .. ")")
     else

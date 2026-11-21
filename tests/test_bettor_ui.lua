@@ -672,5 +672,50 @@ do
     ns.Comm.Health = nil
 end
 
+-- My own book in my own bettor window: nothing can ever answer a ping (a client does not hear its
+-- own messages), so it must not read "offline", must not be pinged, and cannot be joined by code.
+do
+    local OWN = "OWN-1234"
+    ns.Model = { FindByCode = function(d, code) return d.books and d.books[code] end }
+    SteveBookDB.books = { [OWN] = { code = OWN, ownerName = "Me" } }
+    Cache.RequestJoin(SteveBookDB.cache, OWN)
+    Cache.SetMembership(SteveBookDB.cache, OWN, true, "Mine", "Me")       -- left over from an earlier test
+    SteveBookDB.cache.selected = OWN
+    B.Show()
+    local n = #sent
+    ticker(30).fn()
+    local pinged = false
+    for i = n + 1, #sent do if sent[i].t == "PING" and sent[i].code == OWN then pinged = true end end
+    check(not pinged, "my own book is not pinged")
+    check(frameWithTextContaining("your own book") ~= nil, "my own book is labelled, not 'offline'")
+    check(not (frameWithTextContaining("Balance") and frameWithTextContaining("Balance")._text:find("offline", 1, true)),
+        "my own book does not say offline")
+
+    -- with loopback on it behaves like any other book (Comm hands the messages back)
+    SteveBookDB.loopback = true
+    n = #sent
+    ticker(30).fn()
+    pinged = false
+    for i = n + 1, #sent do if sent[i].t == "PING" and sent[i].code == OWN then pinged = true end end
+    check(pinged, "with loopback on my own book is pinged like any other")
+    SteveBookDB.loopback = nil
+
+    -- and typing my own code on the join screen is refused
+    Cache.Forget(SteveBookDB.cache, OWN)
+    SteveBookDB.cache.selected = nil
+    B.Refresh()
+    local codeBox
+    for _, f in ipairs(frames) do
+        local sc = rawget(f, "_scripts")
+        if sc and sc.OnEnterPressed and not sc.OnTextChanged then codeBox = f end
+    end
+    n = #sent
+    codeBox:SetText(OWN)
+    findButton("Request to join"):Click()
+    check(#sent == n and lastPrint():find("your own book"), "my own code is not sent as a join request")
+    SteveBookDB.books = nil
+    ns.Model = nil
+end
+
 print = print_real
 if fails == 0 then print("test_bettor_ui: all passed") else print(fails .. " FAILED"); os.exit(1) end
