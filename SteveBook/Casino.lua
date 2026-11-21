@@ -440,6 +440,10 @@ function Casino.Handle(t, sender, msgType, payload, now)
     local m = t.members[sender]
     local function deny(reason) reply("TBL_JOIN_DENY", { ownerName = t.hostName, reason = reason }) end
     local function seatedWelcome()
+        -- The welcome is three messages. A player who asks again while the first set is still waiting in the
+        -- (rate-limited) queue would only add three more behind it, so answer a repeat only after a while.
+        if m and m.welcomeAt and now - m.welcomeAt < 8 then return end
+        if m then m.welcomeAt = now end
         reply("TBL_JOIN_OK", { game = t.game, name = t.name, ownerName = t.hostName, rev = t.rev })
         reply("TBL_STATE", Casino.StateMessage(t))
         reply("TBL_PLAYER", Casino.PlayerMessage(t, sender))

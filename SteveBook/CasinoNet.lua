@@ -106,6 +106,7 @@ function CasinoNet.Admit(t, name, chips)
         stateMsg(t),
         { type = "TBL_PLAYER", to = name, payload = Casino.PlayerMessage(t, name) },
     })
+    m.welcomeAt = now()                  -- a retry in the next few seconds is not answered again (see Casino.Handle)
     CasinoNet.Announce()
     changed(t.code)
     return m
@@ -695,9 +696,17 @@ function CasinoNet.RetryActs()
             end
             -- seated but the table never arrived, or the host has been silent a long while: ask again
             local silent = not tc.state or (tc.lastHeard and t0 - tc.lastHeard >= QUIET_SYNC)
-            if silent and t0 - (tc.syncAt or 0) >= (tc.state and QUIET_SYNC_EVERY or SYNC_EVERY) then
-                tc.syncAt = t0
-                ns.Comm.Send("TBL_SYNC_REQ", { rev = tc.rev or 0 }, tc.code)
+            if silent then
+                -- every ask makes the host queue a full set of replies, and the first set is probably still in the
+                -- queue (first real session: waits of 9, 22, 28 s as 3 s retries piled up), so ask less and less often
+                local gap = math.min(30, (tc.state and QUIET_SYNC_EVERY or SYNC_EVERY) * 2 ^ (tc.syncTries or 0))
+                if t0 - (tc.syncAt or 0) >= gap then
+                    tc.syncAt = t0
+                    tc.syncTries = (tc.syncTries or 0) + 1
+                    ns.Comm.Send("TBL_SYNC_REQ", { rev = tc.rev or 0 }, tc.code)
+                end
+            else
+                tc.syncTries = 0
             end
         end
         local p = tc.status == "seated" and Client.ActPending(tc) or nil
