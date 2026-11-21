@@ -511,4 +511,42 @@ do
     eq(#stub.errors, before, "and raise no errors")
 end
 
+------------------------------------------------------------------------------------------
+-- 12. a channel the game lists as disabled is not "joined": leave it and join again
+------------------------------------------------------------------------------------------
+do
+    local code = "STU-CK01"
+    local chan = Protocol.ChannelName(code)
+    local disabled = {}
+    GetChannelList = function()
+        local t = {}
+        for name, id in pairs(stub.channels) do t[#t + 1] = id; t[#t + 1] = name; t[#t + 1] = disabled[name] == true end
+        return unpack(t)
+    end
+    stub.channels[chan] = 7; disabled[chan] = true       -- a slot, but the server never let us in
+    joinCalls = {}; stub.addonMessages = {}; stub.afters = {}
+    local ok, how = Comm.Send("MARKET", { rev = 1, market = { id = 1 } }, code)
+    eq(how, "queued", "a disabled channel is not ready, so the message is queued")
+    eq(Comm.IsJoined(code), false, "IsJoined says no for a disabled channel")
+    local id, dis = Comm.ChannelState(code)
+    eq(id, 7, "ChannelState reports the slot"); eq(dis, true, "...and that it is disabled")
+    local named = false
+    for _, line in ipairs(Comm.NetReport()) do
+        if line:find(chan, 1, true) and line:find("DISABLED", 1, true) then named = true end
+    end
+    check(named, "/book net names the problem")
+    tick(12)
+    check(stub.channels[chan] == nil, "after a few seconds disabled the channel was left")
+    for _, a in ipairs(stub.afters) do a.fn() end
+    check(joinsFor(chan) >= 1, "...and joined again")
+    stub.channels[chan] = 8; disabled[chan] = false      -- this time the join took
+    tick(3)
+    local sent = {}
+    for _, m in ipairs(stub.addonMessages) do if m.chatType == "CHANNEL" then sent[#sent + 1] = m end end
+    eq(#sent, 1, "the queued message went out once the channel was enabled")
+    eq(sent[1] and sent[1].target, 8, "...to the new slot")
+    Comm.LeaveBook(code)
+    GetChannelList = nil
+end
+
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end

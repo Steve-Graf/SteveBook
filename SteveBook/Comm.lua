@@ -125,10 +125,34 @@ end
 -- ---------------------------------------------------------------------------------------
 -- Channel handling
 
+-- GetChannelList() returns id, name, disabled for every channel. A channel the game lists as
+-- disabled has a slot number but the server never let us in: every send to it fails with
+-- InvalidChannel and nobody hears it. (Seen in Forever: GetChannelName still returned the slot.)
+local function listedDisabled(name)
+    if not GetChannelList then return false end
+    local ok, t = pcall(function() return { GetChannelList() } end)
+    if not ok or type(t) ~= "table" then return false end
+    for i = 1, #t, 3 do
+        if t[i + 1] == name then return t[i + 2] == true end
+    end
+    return false
+end
+
+-- The slot of a channel we can really use: 0 when we are not in it, or it is listed but disabled.
 local function channelId(code)
     if not GetChannelName then return 0 end
-    local id = GetChannelName(Protocol.ChannelName(code))
-    return id or 0
+    local name = Protocol.ChannelName(code)
+    local id = GetChannelName(name)
+    if not id or id <= 0 then return 0 end
+    if listedDisabled(name) then return 0 end
+    return id
+end
+
+-- (slot, disabled) for /book net and /book lobby.
+function Comm.ChannelState(code)
+    local name = Protocol.ChannelName(code)
+    local id = GetChannelName and GetChannelName(name) or 0
+    return id or 0, (id or 0) > 0 and listedDisabled(name) or false
 end
 
 -- The chat API moved in some client versions; use whichever name exists.
@@ -159,13 +183,56 @@ end
 
 function Comm.IsJoined(code) return channelId(code) > 0 end
 
+-- /book net: one line per hidden channel this client wants to be in.
+function Comm.NetReport()
+    local lines = {}
+    local codes = {}
+    for code in pairs(joined) do codes[#codes + 1] = code end
+    table.sort(codes)
+    for _, code in ipairs(codes) do
+        local id, disabled = Comm.ChannelState(code)
+        local state
+        if id == 0 then state = "NOT JOINED"
+        elseif disabled then state = ("slot %d but DISABLED (the game has not let you in; it is retried every few seconds)"):format(id)
+        else state = ("slot %d, working"):format(id) end
+        lines[#lines + 1] = ("%s: %s"):format(Protocol.ChannelName(code), state)
+    end
+    if #lines == 0 then lines[1] = "No SteveBook channels are wanted right now (open /casino or join a book)." end
+    return lines
+end
+
+-- A channel can sit in the list as disabled and stay that way (the join was refused, for instance
+-- while the client was still loading). Joining a name we already hold does nothing, so leave it and
+-- join again, once it has been disabled for DISABLED_GRACE seconds (a fresh join may show as
+-- disabled for a moment).
+local DISABLED_GRACE = 4
+local disabledSince = {}            -- code -> clock() when first seen disabled
+
+local function rejoinIfStuck(code)
+    local name = Protocol.ChannelName(code)
+    local id = GetChannelName and GetChannelName(name) or 0
+    if not (id and id > 0 and listedDisabled(name)) then disabledSince[code] = nil; return false end
+    local t = clock()
+    disabledSince[code] = disabledSince[code] or t
+    if t - disabledSince[code] < DISABLED_GRACE then return false end
+    disabledSince[code] = nil
+    dbg(nil, "channel %s (slot %s) is listed but disabled; leaving it and joining again", name, id)
+    if LeaveChannelByName then pcall(LeaveChannelByName, name) end
+    local function join()
+        if joined[code] and JoinTemporaryChannel then pcall(JoinTemporaryChannel, name); hideChannel(code) end
+    end
+    if C_Timer and C_Timer.After then C_Timer.After(1.5, join) else join() end
+    return true
+end
+
 -- One real join attempt, at most once per JOIN_RETRY_SECONDS per channel.
 local function tryJoin(code)
-    if channelId(code) > 0 then attempts[code] = nil; return true end
+    if channelId(code) > 0 then attempts[code] = nil; disabledSince[code] = nil; return true end
     local t = clock()
     if lastTry[code] and t - lastTry[code] < JOIN_RETRY_SECONDS then return false, "waiting" end
     lastTry[code] = t
     attempts[code] = (attempts[code] or 0) + 1
+    if rejoinIfStuck(code) then return false end
     if JoinTemporaryChannel then pcall(JoinTemporaryChannel, Protocol.ChannelName(code)) end
     hideChannel(code)   -- the join is asynchronous; the notice event below hides it again
     return channelId(code) > 0
@@ -366,7 +433,7 @@ f:SetScript("OnEvent", function(_, event, a1, ...)
     if event == "CHAT_MSG_CHANNEL_NOTICE" then
         -- First argument is the notice type. Once a channel is up, hide it from chat windows.
         dbg(nil, "channel notice: %s", a1)
-        if a1 == "YOU_JOINED" then
+        if a1 == "YOU_JOINED" or a1 == "YOU_CHANGED" then
             for code in pairs(joined) do hideChannel(code) end
         end
         return

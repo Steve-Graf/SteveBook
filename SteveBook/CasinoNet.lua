@@ -374,9 +374,11 @@ local peers = {}                         -- who has said anything in the lobby: 
 -- are only a player's own slot: two players in the same channel usually have different numbers.)
 function CasinoNet.LobbyReport()
     local name = ns.Protocol.ChannelName(ns.Protocol.LOBBY_CODE)
-    local id = GetChannelName and GetChannelName(name) or 0
+    local id, disabled = ns.Comm.ChannelState(ns.Protocol.LOBBY_CODE)
     local lines = {}
-    if id and id > 0 then
+    if id and id > 0 and disabled then
+        lines[1] = ("The lobby channel %s has slot /%d but the game lists it as DISABLED, so nothing is sent or heard. SteveBook retries joining it every few seconds; run /book net to watch."):format(name, id)
+    elseif id and id > 0 then
         lines[1] = ("In the lobby channel %s as /%d. The number is just your own slot: everyone is reached by the channel name, so a friend on another number is fine."):format(name, id)
     else
         lines[1] = "Not in the lobby channel (" .. name .. ") yet. Open /casino to join it."
