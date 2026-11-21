@@ -199,6 +199,13 @@ check(rawget(place, "_enabled") == false, "Place Bet disabled when no recent PON
 Cache.MarkPong(SteveBookDB.cache, CODE, T, "Bookie")
 B.Refresh()
 check(rawget(place, "_enabled") == true, "Place Bet re-enabled by PONG")
+-- any message from the bookie proves they are online, not only the answer to our ping
+b.lastPong = T - 1000
+handlers.BALANCE("Stranger", { rev = 1, balance = 0 }, CODE)
+check(not Cache.IsOnline(SteveBookDB.cache, CODE, GetServerTime()), "a message from someone else does not mark the bookie online")
+handlers.BALANCE("Bookie", { rev = 1, balance = 0 }, CODE)
+check(Cache.IsOnline(SteveBookDB.cache, CODE, GetServerTime()), "a message from the bookie marks them online without a PONG")
+b.lastHeard = nil; b.lastPong = T                          -- leave the book as the later tests expect
 place:Click()
 local bp = lastSent("BET_PLACE")
 check(bp and bp.p.stake == 2000 and bp.p.odds == -110 and bp.p.marketId == 1 and bp.p.selectionId == 1 and bp.p.legs == nil and type(bp.p.ref) == "string", "single BET_PLACE payload is flat")
@@ -455,6 +462,7 @@ do
     -- Offline: never ask. Online again: ask straight away.
     r0 = nReq()
     b.lastPong = T - 1000
+    b.lastHeard = nil                                       -- the bookie's own messages above also count as life signs
     T = T + 40
     ticker(5).fn()
     check(nReq() == r0, "nothing is sent while the book is offline")

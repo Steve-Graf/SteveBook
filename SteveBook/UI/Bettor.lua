@@ -302,7 +302,7 @@ function handlers.PONG(sender, p, code)
     local st = store()
     local b = st and Cache.Book(st, code)
     if not b or b.status ~= "active" then return end
-    local wasOnline = Cache.IsOnline(st, code, now())
+    local wasOnline = Cache.IsPongRecent(st, code, now())      -- by pings only: other messages do not stand in for a re-sync
     if not Cache.MarkPong(st, code, now(), sender) then return end
     if not wasOnline then
         groupReqAt = nil                       -- back online: ask for the group's bets again if that tab is open
@@ -316,6 +316,15 @@ local function register()
     registered = true
     for msgType, fn in pairs(handlers) do
         ns.Comm.Register(msgType, function(sender, payload, code)
+            -- Anything the bookie sends proves they are online. Waiting for the answer to our own ping
+            -- showed "offline" whenever that one answer was late (the game limits how fast we can send).
+            if msgType ~= "PONG" and msgType ~= "JOIN_DENY" and msgType ~= "SYNC" then
+                local st = store()
+                local b = st and Cache.Book(st, code)
+                if b and b.status == "active" and b.owner and baseName(sender) == baseName(b.owner) then
+                    Cache.MarkHeard(st, code, now(), b.owner)
+                end
+            end
             fn(sender, payload, code)
             if shown() then Bettor.Refresh() end
         end)

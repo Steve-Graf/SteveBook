@@ -235,9 +235,24 @@ end
 -- Queries (everything the UI shows comes through here)
 ------------------------------------------------------------------------------------------
 
-function Cache.IsOnline(store, code, now)
+-- Any message from the bookie (not only the answer to our ping) is a sign they are online. Kept apart
+-- from lastPong, which alone decides when to ask for a fresh sync after a silence.
+function Cache.MarkHeard(store, code, now, sender)
+    local b = Cache.Book(store, code, false)
+    if not b or (b.owner and sender and sender ~= b.owner) then return nil end
+    b.lastHeard = now
+    return b
+end
+
+function Cache.IsPongRecent(store, code, now)
     local b = Cache.Book(store, code, false)
     return b ~= nil and b.lastPong ~= nil and now - b.lastPong <= PONG_TTL
+end
+
+function Cache.IsOnline(store, code, now)
+    local b = Cache.Book(store, code, false)
+    if not b then return false end
+    return (b.lastPong ~= nil and now - b.lastPong <= PONG_TTL) or (b.lastHeard ~= nil and now - b.lastHeard <= PONG_TTL)
 end
 
 -- Can I place a bet on this market right now? Returns ok, reason.
