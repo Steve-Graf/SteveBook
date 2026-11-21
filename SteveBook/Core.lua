@@ -120,7 +120,9 @@ f:SetScript("OnEvent", function(_, _, name)
     if ns.CasinoNet then ns.CasinoNet.Init() end
     if ns.BookLobby then ns.BookLobby.Init() end
     if ns.UI and ns.UI.Minimap then ns.UI.Minimap.Apply() end
-    math.randomseed(GetServerTime() + floor(GetTime() * 1000))
+    -- Seed the random numbers (shuffles, ids). The bare global `floor` is nil on this client, which threw
+    -- an error on every login (Core.lua, ADDON_LOADED), so use math.floor and never let this line fail.
+    pcall(function() math.randomseed((GetServerTime() or 0) + math.floor((GetTime() or 0) * 1000)) end)
     f:UnregisterEvent("ADDON_LOADED")
 end)
 

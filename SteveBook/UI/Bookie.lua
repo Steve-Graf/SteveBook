@@ -152,7 +152,8 @@ local function tip(frameWithTip, lines)
     frameWithTip:EnableMouse(true)
     frameWithTip:SetScript("OnEnter", function(self)
         if not GameTooltip then return end
-        local l = type(lines) == "function" and lines(self) or lines
+        local l = lines
+        if type(lines) == "function" then l = lines(self) end      -- not "and ... or": a nil result must stay nil
         if not l or #l == 0 then return end
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:SetText(l[1])

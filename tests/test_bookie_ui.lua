@@ -372,6 +372,13 @@ do
     local joinedLines = table.concat(GameTooltip.lines, "|")
     check(joinedLines:find("PHI odds", 1, true), "odds box tooltip names the side: " .. joinedLines)
     check(joinedLines:find("Book result if", 1, true) and joinedLines:find("PHI wins", 1, true), "At risk tooltip shows the book's result per outcome: " .. joinedLines)
+    -- a tooltip function that has nothing to say (no bets on the market yet) must not raise: the first
+    -- version indexed the function itself ("attempt to get length of local 'l'" in the real game)
+    local savedRow = r.row
+    r.row = false                                           -- (the stub frame answers a missing field with a function)
+    local quietOk, quietErr = pcall(r.riskHit._scripts.OnEnter, r.riskHit)
+    check(quietOk, "hovering a tooltip with nothing to show does not raise: " .. tostring(quietErr))
+    r.row = savedRow
     GameTooltip = nil
 end
 

@@ -143,7 +143,7 @@ function stub.install()
     G.GetFramerate = function() return 60 end
     G.UnitName = function() return stub.player end
     G.GetNormalizedRealmName = function() return "Realm" end
-    G.floor = math.floor
+    -- no bare `floor`: the real client has none (an addon calling it threw "attempt to call a nil value" on every login)
     G.date = os.date
     G.strsplit = function(sep, s) local out = {}; for p in (s .. sep):gmatch("(.-)" .. sep:gsub("%p", "%%%0")) do out[#out + 1] = p end; return unpack(out) end
     G.wipe = function(t) for k in pairs(t) do t[k] = nil end return t end
