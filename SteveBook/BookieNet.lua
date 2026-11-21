@@ -136,14 +136,39 @@ BookieNet.EditMarket = marketOp(function(book, id, changes) return Bookie.EditMa
 BookieNet.LockMarket = marketOp(Bookie.Lock)                        -- (book, marketId)
 BookieNet.UnlockMarket = marketOp(function(book, id) return Bookie.Unlock(book, id, now()) end)
 
+-- Settle several markets at once (a pasted slate of results). Same effects as Settle for each, but
+-- the bettors hear it with ONE message per market for everybody plus ONE sync per affected bettor
+-- (not one per market): the game lets a client send about a message a second.
+-- list = { { marketId, result }, ... }. Returns the number settled and a list of "reason" strings
+-- for the ones that failed.
+function BookieNet.SettleMany(book, list)
+    local all, done, failed = {}, {}, {}
+    for _, s in ipairs(list) do
+        local results, err = Bookie.Settle(book, s.marketId, s.result, now())
+        if results then
+            done[#done + 1] = s.marketId
+            for _, r in ipairs(results) do all[#all + 1] = r end
+        else
+            failed[#failed + 1] = tostring(err)
+        end
+    end
+    local msgs = {}
+    for _, id in ipairs(done) do msgs[#msgs + 1] = Bookie.MarketMessage(book, book.markets[id]) end
+    for _, m in ipairs(Bookie.SyncMessages(book, Bookie.AffectedBettors(all), now())) do msgs[#msgs + 1] = m end
+    send(book, msgs)
+    if #done > 0 then changed(book) end
+    return #done, failed
+end
+
 -- Import (SPEC §7): re-plan the pasted text against the book as it is NOW (so a stale preview can't
--- post duplicates or touch a market that closed meanwhile), then add the new markets and update the
--- odds (and, for a moved spread or total line, the line) of the matching open market. Each change
--- is broadcast as a MARKET like any other edit.
--- Returns { added = n, updated = n, failed = { "line 3: message", ... }, plan = plan }.
+-- post duplicates or touch a market that closed meanwhile), then add the new markets, update the
+-- odds (and, for a moved spread or total line, the line) of the matching open market, and settle
+-- the games the FINAL lines give a score for. Each change is broadcast like any other edit.
+-- Returns { added = n, updated = n, settled = n, failed = { "line 3: message", ... }, plan = plan }.
 function BookieNet.ApplyImport(book, text)
     local plan = ns.Import.Plan(book, text, now())
-    local r = { added = 0, updated = 0, failed = {}, plan = plan }
+    local r = { added = 0, updated = 0, settled = 0, failed = {}, plan = plan }
+    local toSettle = {}
     for _, it in ipairs(plan.items) do
         if it.status == "ok" then
             local m, err = BookieNet.AddMarket(book, it.spec)
@@ -152,7 +177,14 @@ function BookieNet.ApplyImport(book, text)
             local m, err = BookieNet.EditMarket(book, it.marketId,
                 { odds = next(it.changes) and it.changes or nil, line = it.newLine })
             if m then r.updated = r.updated + 1 else r.failed[#r.failed + 1] = ("line %d: %s"):format(it.line, tostring(err)) end
+        elseif it.status == "settle" then
+            for _, st in ipairs(it.settles) do toSettle[#toSettle + 1] = { marketId = st.marketId, result = st.result } end
         end
+    end
+    if #toSettle > 0 then
+        local n, failed = BookieNet.SettleMany(book, toSettle)
+        r.settled = n
+        for _, why in ipairs(failed) do r.failed[#r.failed + 1] = "could not settle a market: " .. why end
     end
     return r
 end

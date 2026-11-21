@@ -584,7 +584,7 @@ check(rowText(1):find("Players owe you"), "switching tabs leaves the history vie
 -- Import panel ------------------------------------------------------------------------------
 local function count(t) local n = 0; for _ in pairs(t) do n = n + 1 end; return n end
 local P = W.panel
-local function sumText() local t = {}; for i = 1, 5 do t[i] = P.sum[i]:GetText() end; return table.concat(t, "\n") end
+local function sumText() local t = {}; for i = 1, 6 do t[i] = P.sum[i]:GetText() end; return table.concat(t, "\n") end
 
 W.tabs.markets:Click()
 check(P:IsShown(), "the panel sits beside the Markets table")
@@ -929,5 +929,36 @@ UI.Toggle()
 check(W.frame:IsShown(), "Toggle opens it")
 UI.Toggle()
 check(not W.frame:IsShown(), "Toggle closes it")
+
+-- Results: a FINAL line in the Import panel settles the game ------------------------------------------------
+do
+    UI.Show()
+    W.tabs.markets:Click()
+    P.clear:Click()
+    local mk = assert(Bookie.AddMarket(book, { sport = "NBA", event = "SET @ TLE", type = "moneyline", closesAt = T + 60,
+        selections = { { label = "SET", odds = -110 }, { label = "TLE", odds = -110 } } }, T))
+    drain(); chatText()
+    local FINAL = "FINAL|NBA|SET @ TLE|SET:101|TLE:99"
+    P.box:SetText(FINAL)
+    check(sumText():find("0 to settle") and sumText():find("1 skipped|r: duplicate, or nothing to settle") and not P.go:IsEnabled(),
+          "before the game starts there is nothing to settle: " .. sumText():gsub("\n", " / "))
+    T = T + 120
+    P.box:SetText(FINAL)
+    check(sumText():find("1 to settle") and sumText():find("from 1 final score") and P.go:GetText() == "Settle 1 market" and P.go:IsEnabled(),
+          "after it starts the line is ready to settle: " .. sumText():gsub("\n", " / ") .. " / " .. P.go:GetText())
+    W.tabs.import:Click()
+    check(rowText(1):find("SETTLE") and rowText(1):find("SET 101 %- TLE 99"), "the preview shows the score: " .. rowText(1))
+    P.go:Click()
+    eq(mk.status, "settled", "the market was settled")
+    eq(mk.result, 1, "...SET won, 101-99")
+    check(chatText():find("Settled 1 market%."), "chat reports the settlement")
+    s = drain()
+    check(#s == 1 and s[1].type == "MARKET" and s[1].payload.market.status == "settled", "the settlement is broadcast")
+    check(P.box:GetText() == "", "the box is cleared after a clean settle")
+    P.box:SetText("FINAL|NBA|SET @ TLE|SET:101|TLE:99\nFINAL|NBA|SET @ TLE|Sets:101|Tles:99")
+    check(sumText():find("0 to settle") and sumText():find("2 skipped|r: duplicate, or nothing to settle") and not P.go:IsEnabled(), "pasting it again settles nothing: " .. sumText():gsub("\n", " / "))
+    P.clear:Click()
+    T = T - 120
+end
 
 if fails == 0 then realprint("bookie_ui: all tests passed") else os.exit(1) end

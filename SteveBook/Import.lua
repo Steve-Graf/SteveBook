@@ -3,6 +3,7 @@
 --   ML|NFL|PHI @ DAL|2026-11-26T16:30-05:00|PHI:-150|DAL:+130
 --   SPREAD|NFL|PHI @ DAL|2026-11-26T16:30-05:00|-3.5|PHI:-110|DAL:-110     (line is for side 1)
 --   TOTAL|NFL|PHI @ DAL|2026-11-26T16:30-05:00|47.5|Over:-110|Under:-110
+--   FINAL|NFL|PHI @ DAL|2026-11-26T16:30-05:00|PHI:24|DAL:20          (a result: see "Results" below)
 -- Bad lines are reported, never imported. A spec returned here has the same shape as the
 -- spec Bookie.AddMarket takes, which still does the final validation.
 -- Importing is also how lines are UPDATED (Plan, status "update"). Which existing market an
@@ -22,6 +23,12 @@
 -- mismatch is an error, not a guess. Identical lines are duplicates.
 -- Times are converted with date arithmetic (days-from-civil), never os.time, so the result
 -- does not depend on the machine's timezone.
+-- Results: a FINAL line carries the final score and settles every market of that game that is still
+-- waiting: the moneyline (higher score wins, a tie is a push), each spread (the line belongs to the
+-- first-listed side of that market, like everywhere else) and each total (Over/Under against the sum;
+-- landing exactly on the line is a push). The close time may be left out (5 fields) when the game is
+-- posted once. Nothing already settled or void is ever touched (correct those by hand), and a game
+-- that has not started is not settled.
 local ADDON, ns = ...
 ns = ns or {}
 local Odds = ns.Odds
@@ -103,14 +110,47 @@ local KINDS = {
     TOTAL = { type = "total", fields = 7 },
 }
 
--- One line -> spec, or nil, message. (Whether the game has started is Parse's business.)
-local function parseMarketLine(line)
+-- "PHI:24" -> label, score (split on the LAST colon). Scores are whole numbers.
+local function parseScore(s)
+    local label, n = trim(s):match("^(.-)%s*:%s*(%d+)$")
+    if not label or label == "" then return nil, ('score "%s" should look like NAME:104'):format(trim(s)) end
+    return label, tonumber(n)
+end
+
+-- FINAL|sport|event|[time|]A:score|B:score -> { sport, event, closesAt|nil, scores = { {label, score}, {label, score} } }
+local function parseFinalLine(f)
+    if #f ~= 5 and #f ~= 6 then
+        return nil, ("FINAL lines need 5 or 6 |-separated fields (the close time is optional), found %d"):format(#f)
+    end
+    if f[3] == "" then return nil, "event is empty" end
+    local closesAt, idx = nil, 4
+    if #f == 6 then
+        local err
+        closesAt, err = Import.ParseTime(f[4])
+        if not closesAt then return nil, err end
+        idx = 5
+    end
+    local l1, s1 = parseScore(f[idx])
+    if not l1 then return nil, s1 end
+    local l2, s2 = parseScore(f[idx + 1])
+    if not l2 then return nil, s2 end
+    if l1:lower() == l2:lower() then return nil, "the two sides need different names" end
+    return { sport = f[2], event = f[3], closesAt = closesAt, scores = { { label = l1, score = s1 }, { label = l2, score = s2 } } }
+end
+
+local function splitFields(line)
     local f = {}
     for piece in (line .. "|"):gmatch("([^|]*)|") do f[#f + 1] = trim(piece) end
+    return f
+end
+
+-- One line -> spec, or nil, message. (Whether the game has started is Parse's business.)
+local function parseMarketLine(line)
+    local f = splitFields(line)
 
     local kind = KINDS[f[1]:upper()]
     if not kind then
-        return nil, ('unknown market type "%s" (use ML, SPREAD or TOTAL)'):format(f[1])
+        return nil, ('unknown line type "%s" (use ML, SPREAD, TOTAL or FINAL)'):format(f[1])
     end
     if #f ~= kind.fields then
         return nil, ("%s lines need %d |-separated fields, found %d"):format(f[1]:upper(), kind.fields, #f)
@@ -152,13 +192,15 @@ function Import.Parse(text, now)
         n = n + 1
         local line = trim(raw)
         if line ~= "" and line:sub(1, 1) ~= "#" then
-            local spec, err
+            local spec, err, final
             if line:sub(1, 4):upper() == "GB1:" then
                 err = "encoded (GB1:) import strings are not supported yet; paste the plain lines"
+            elseif line:match("^[Ff][Ii][Nn][Aa][Ll]%s*|") then
+                final, err = parseFinalLine(splitFields(line))
             else
                 spec, err = parseMarketLine(line)
             end
-            items[#items + 1] = { line = n, text = line, spec = spec, err = err,
+            items[#items + 1] = { line = n, text = line, spec = spec, final = final, err = err,
                                   started = (spec and now and spec.closesAt <= now) or nil }
         end
     end
@@ -190,6 +232,91 @@ local function pairSides(market, spec)
     end
 end
 
+
+local function signedLine(n) return (n > 0 and "+" or "") .. ("%g"):format(n) end
+
+local function sideScore(final, label)
+    for _, sc in ipairs(final.scores) do if sameLabel(sc.label, label) then return sc.score end end
+end
+
+-- Who won market `m` given the final score: returns the winning selection id or "push", then the
+-- pick that won as text ("BOS ML", "LAL +5.5", "Over 231.5", or "ML push"). nil, reason if the
+-- score's side names do not fit the market.
+local function gradeMarket(m, final)
+    local a, b = m.selections[1], m.selections[2]
+    local result
+    if m.type == "total" then
+        local over, under
+        for id = 1, 2 do
+            local l = trim(m.selections[id].label):lower()
+            if l == "over" then over = id elseif l == "under" then under = id end
+        end
+        if not (over and under) then return nil, "its sides are not Over and Under" end
+        local sum = final.scores[1].score + final.scores[2].score
+        result = sum > m.line and over or sum < m.line and under or "push"
+    else
+        local s1, s2 = sideScore(final, a.label), sideScore(final, b.label)
+        if not (s1 and s2) then
+            return nil, ("its sides are %s / %s but the score names %s / %s"):format(
+                a.label, b.label, final.scores[1].label, final.scores[2].label)
+        end
+        local d = s1 - s2
+        if m.type == "spread" then d = d + m.line end            -- the line belongs to selection 1
+        result = d > 0 and 1 or d < 0 and 2 or "push"
+    end
+    local what = m.type == "moneyline" and "ML" or m.type == "spread" and "spread" or "total"
+    if result == "push" then return result, what .. " push" end
+    local sel = m.selections[result]
+    if m.type == "moneyline" then return result, sel.label .. " ML" end
+    if m.type == "spread" then return result, sel.label .. " " .. signedLine(result == 1 and m.line or -m.line) end
+    return result, sel.label .. " " .. ("%g"):format(m.line)
+end
+
+-- A FINAL line against the book. Sets item.status: "settle" (item.settles = { { marketId, result, pick,
+-- type } }, item.skipped = number of this game's markets left alone), "none" (item.why), or "error".
+local function planFinal(book, item, ids, now, taken)
+    local f = item.final
+    local cands, times, nTimes = {}, {}, 0
+    local found, already, early, dup = 0, 0, 0, 0
+    for _, id in ipairs(ids) do
+        local m = book.markets[id]
+        if sameLabel(m.event, f.event) and (not f.closesAt or m.closesAt == f.closesAt) then
+            found = found + 1
+            if m.status == "settled" or m.status == "void" then already = already + 1
+            elseif taken[m.id] then dup = dup + 1
+            elseif m.status == "open" and now and now < m.closesAt then early = early + 1
+            else
+                cands[#cands + 1] = m
+                if not times[m.closesAt] then times[m.closesAt] = true; nTimes = nTimes + 1 end
+            end
+        end
+    end
+    if #cands == 0 then
+        item.status = "none"
+        item.why = found == 0 and "no market on this game in this book"
+            or dup > 0 and "listed twice in this paste"
+            or early > 0 and "the game has not started yet"
+            or "already settled"
+        return
+    end
+    if nTimes > 1 then
+        item.status = "error"
+        item.err = "this game is posted at more than one time; add the close time to the FINAL line"
+        return
+    end
+    local settles = {}
+    for _, m in ipairs(cands) do
+        local result, pick = gradeMarket(m, f)
+        if result == nil then
+            item.status, item.err = "error", ("%s market: %s"):format(m.type, pick)
+            return
+        end
+        settles[#settles + 1] = { marketId = m.id, result = result, pick = pick, type = m.type }
+    end
+    for _, st in ipairs(settles) do taken[st.marketId] = true end
+    item.status, item.settles, item.skipped = "settle", settles, already + early
+end
+
 -- Parse and classify against a book (see the matching rules at the top of this file). Each item
 -- gets a status:
 --   "ok"         a new market
@@ -200,9 +327,16 @@ end
 --   "started"    the game has already started, or it matches a market that is locked, settled or
 --                void (item.why says which). Never touched.
 --   "error"      unreadable, or it matches an existing market but the side names differ
--- Returns { items, ok = new, updated, duplicate, started, errors } (counts per status).
+-- A FINAL (result) line gets one of:
+--   "settle"     item.settles = { { marketId, result, pick, type } }: this game's markets that are waiting
+--   "none"       nothing to settle; item.why says why (not in this book, already settled, not started...)
+--   "error"      unreadable, the sides do not fit, or the game is posted at more than one time
+-- Returns { items, ok = new, updated, duplicate, started, errors, settle = FINAL lines that settle,
+-- markets = markets they settle, none = FINAL lines with nothing to do } (counts per status).
 function Import.Plan(book, text, now)
-    local plan = { items = Import.Parse(text, now), ok = 0, updated = 0, duplicate = 0, started = 0, errors = 0 }
+    local plan = { items = Import.Parse(text, now), ok = 0, updated = 0, duplicate = 0, started = 0, errors = 0,
+                  settle = 0, markets = 0, none = 0 }
+    local taken = {}                     -- markets an earlier FINAL line of this paste settles
 
     local function bettable(m) return m.status == "open" and (not now or now < m.closesAt) end
     local ids = {}
@@ -236,7 +370,9 @@ function Import.Plan(book, text, now)
     local moved = {}                     -- markets an earlier line of this paste already moved
     for _, item in ipairs(plan.items) do
         local spec = item.spec
-        if not spec then
+        if item.final then
+            planFinal(book, item, ids, now, taken)
+        elseif not spec then
             item.status = "error"
         elseif item.started then
             item.status, item.why = "started", "the game has already started"
@@ -279,8 +415,10 @@ function Import.Plan(book, text, now)
             end
             if item.status == "ok" or item.status == "update" or m then seen[k] = true end
         end
-        local field = ({ ok = "ok", update = "updated", duplicate = "duplicate", started = "started", error = "errors" })[item.status]
+        local field = ({ ok = "ok", update = "updated", duplicate = "duplicate", started = "started", error = "errors",
+                         settle = "settle", none = "none" })[item.status]
         plan[field] = plan[field] + 1
+        if item.status == "settle" then plan.markets = plan.markets + #item.settles end
     end
     return plan
 end

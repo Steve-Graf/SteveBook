@@ -29,6 +29,14 @@ named **Loopback** in `/bookie`. Turn it off again (`/book loopback`) for real p
 `/book ratio` toggles the bettor window and chat between American odds (-110, +150, the default) and
 ratios (profit per 1 staked: -500 is 0.2x, +150 is 1.5x). The bookie window always uses American odds.
 
+## Settling from a paste
+
+In `/bookie`, the Import panel also settles. Run `python3 tools/nba_lines.py --results` (it prints one
+`FINAL|NBA|LAL @ BOS|<time>|LAL:104|BOS:109` line per finished game), paste the output into the panel
+and press **Settle N markets**: each game's moneyline, spreads and totals are settled from the score.
+Games that are not in your book, already settled, or not started yet are skipped, so pasting the same
+block twice is harmless. You can type a line by hand too (the close time may be left out). Format: SPEC §7.
+
 ## Minimap icon
 
 A coin button on the minimap: left-click opens the bet window, right-click the bookie window, drag
@@ -67,7 +75,7 @@ prints the slot and a result (0 is success, 7 is `InvalidChannel`).
 
 ## Casino (roulette and blackjack)
 
-`/casino` opens the casino (also the Casino button in the bet window). Pick a game and **Host a
+`/casino` opens the casino (also the Casino button in the bet window). Every casino window opens in the middle of the screen (drag it if you like). Pick a game and **Host a
 table**, or **Join a table** from the list of open tables (a code still works for a table that is not
 listed). Players sit down only when the host lets them in, and they have no chips until the host adds
 some (for example after they pay in gold). Chips are the table's own credit, separate from the

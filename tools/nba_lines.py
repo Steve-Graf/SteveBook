@@ -4,8 +4,13 @@
     python3 tools/nba_lines.py              # next 3 days
     python3 tools/nba_lines.py --days 1     # just today (US Eastern date used by ESPN)
     python3 tools/nba_lines.py --date 20261125
+    python3 tools/nba_lines.py --results    # FINAL scores of finished games (today and yesterday)
+    python3 tools/nba_lines.py --results --days 3
 
-Paste the output into the bookie window's Import tab, press Preview, then Import.
+Paste the output into the bookie window's Import panel and press the button. Lines (ML / SPREAD /
+TOTAL) post markets or update the odds of open ones; with --results the FINAL lines settle every
+market of those games (moneyline, spreads, totals) in one go. Games you never posted are skipped,
+and a game that is already settled is left alone, so pasting the same results twice is harmless.
 
 Source: ESPN's public scoreboard feed (unofficial, no key). Lines are what it carries from its
 odds provider, usually only for games within about a day of tip-off, so run this close to game
@@ -32,6 +37,8 @@ def odds(x):
     if not x:
         return None
     x = str(x).strip().upper()
+    if x in ("OFF", "N/A", "NA", "--"):
+        return None                                   # the book has taken that price down
     if x in ("EVEN", "EV", "PK"):
         return "+100"
     return x if x[:1] in "+-" else "+" + x
@@ -47,16 +54,35 @@ def close(side):
     return ((side or {}).get("close")) or {}
 
 
+def game_id(ev):
+    """('LAL @ BOS', '2026-11-26T19:30-05:00', away abbreviation, home abbreviation): the same
+    event name and close time the lines were posted under, so a FINAL line matches its markets."""
+    comp = ev["competitions"][0]
+    teams = {c["homeAway"]: c["team"]["abbreviation"] for c in comp["competitors"]}
+    away, home = teams["away"], teams["home"]
+    utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
+    when = utc.astimezone(EASTERN).strftime("%Y-%m-%dT%H:%M%z")
+    when = when[:-2] + ":" + when[-2:]                # -0500 -> -05:00
+    return f"{away} @ {home}", when, away, home
+
+
+def final_line(ev):
+    """FINAL|NBA|AWAY @ HOME|time|AWAY:score|HOME:score for a finished game, else None."""
+    comp = ev["competitions"][0]
+    if not comp["status"]["type"].get("completed"):
+        return None                                   # not played yet, under way, or postponed
+    name, when, away, home = game_id(ev)
+    score = {c["homeAway"]: c.get("score") for c in comp["competitors"]}
+    if not (str(score.get("away", "")).isdigit() and str(score.get("home", "")).isdigit()):
+        return None
+    return f"FINAL|{SPORT}|{name}|{when}|{away}:{score['away']}|{home}:{score['home']}"
+
+
 def game_lines(ev):
     comp = ev["competitions"][0]
     if comp["status"]["type"]["name"] != "STATUS_SCHEDULED":
         return []                                     # started or finished: not bettable
-    teams = {c["homeAway"]: c["team"]["abbreviation"] for c in comp["competitors"]}
-    away, home = teams["away"], teams["home"]
-    name = f"{away} @ {home}"
-    utc = datetime.strptime(ev["date"], "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
-    when = utc.astimezone(EASTERN).strftime("%Y-%m-%dT%H:%M%z")
-    when = when[:-2] + ":" + when[-2:]                # -0500 -> -05:00
+    name, when, away, home = game_id(ev)
     o = (comp.get("odds") or [None])[0]
     if not o:
         return [f"# {name} {when}: no lines yet"]
@@ -81,13 +107,19 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--days", type=int, default=3, help="how many days to fetch, starting today (default 3)")
     ap.add_argument("--date", help="one specific day, YYYYMMDD")
+    ap.add_argument("--results", action="store_true",
+                    help="print FINAL scores of finished games instead of lines (--days counts back from today, default 2)")
     args = ap.parse_args()
     if args.date:
         days = [args.date]
     else:
         # ESPN buckets games by US Eastern date; UTC-5 is close enough for picking days.
         start = datetime.now(timezone.utc) - timedelta(hours=5)
-        days = [(start + timedelta(days=i)).strftime("%Y%m%d") for i in range(args.days)]
+        if args.results:
+            n = args.days if args.days != 3 else 2     # the default of 3 days ahead is for lines
+            days = [(start - timedelta(days=i)).strftime("%Y%m%d") for i in range(n)]
+        else:
+            days = [(start + timedelta(days=i)).strftime("%Y%m%d") for i in range(args.days)]
     seen, lines = set(), []
     for d in days:
         try:
@@ -99,8 +131,13 @@ def main():
             if ev["id"] in seen:
                 continue
             seen.add(ev["id"])
-            lines += game_lines(ev)
-    print(f"# NBA lines from ESPN, fetched {datetime.now(EASTERN):%Y-%m-%d %I:%M %p} Eastern")
+            if args.results:
+                f = final_line(ev)
+                if f:
+                    lines.append(f)
+            else:
+                lines += game_lines(ev)
+    print(f"# NBA {'results' if args.results else 'lines'} from ESPN, fetched {datetime.now(EASTERN):%Y-%m-%d %I:%M %p} Eastern")
     print("\n".join(lines))
 
 

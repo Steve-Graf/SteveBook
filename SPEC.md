@@ -346,6 +346,24 @@ TOTAL|NFL|PHI @ DAL|2026-11-26T16:30-05:00|47.5|Over:-110|Under:-110
   duplicates; locked, settled, void or started markets are never touched. Games that have already
   started are skipped, not errors. Same game but different side names is an error (not guessed).
   The preview reports new / updated / skipped (started or closed) / duplicate / errors.
+- **Results (settling from a paste).** A `FINAL` line gives a game's final score and settles every
+  market of that game that is still waiting, in one go:
+  ```
+  FINAL|NBA|LAL @ BOS|2026-11-26T19:30-05:00|LAL:104|BOS:109
+  FINAL|NBA|LAL @ BOS|LAL:104|BOS:109          (close time optional)
+  ```
+  Moneyline: higher score wins, a tie is a push. Spread: the line belongs to the first-listed side of
+  that market, as everywhere else (LAL +5.5 covers a loss of 5 or less); landing exactly on the line is
+  a push. Total: Over/Under against the sum of both scores; exactly on the line is a push. Alternate
+  lines settle too. Sides are matched by name (an ML or spread whose sides do not match the score's
+  names makes the whole line an error, nothing guessed). Without a close time the game must be posted
+  once; two games of the same name at different times need the time. Never touched: markets already
+  settled or void (correct those by hand with Re-settle), and a game that has not started yet. A FINAL
+  line for a game that is not in the book is skipped, so a script can paste a whole slate. Pasting
+  the same results twice settles nothing the second time. Market lines and FINAL lines can share
+  one paste. A confirmed paste sends one MARKET broadcast per settled market and one SYNC per affected
+  bettor (not per market), because the game limits a client to about one message a second.
+  `python3 tools/nba_lines.py --results` prints FINAL lines for finished NBA games (ESPN).
 - Optionally wrap the whole block with a `GB1:` prefix + base64 later, if pasting raw text proves
   fragile. Not supported yet: such a block is reported as unsupported.
 

@@ -96,7 +96,7 @@ local function bad(line, want, label, now)
     local it = Import.Parse(line, now == nil and NOW or now)[1]
     check(it and it.spec == nil and it.err and it.err:find(want, 1, true), label .. ": " .. tostring(it and it.err))
 end
-bad("PARLAY|NFL|x|2026-11-26T16:30Z|a:-110|b:-110", 'unknown market type "PARLAY"', "unknown type")
+bad("PARLAY|NFL|x|2026-11-26T16:30Z|a:-110|b:-110", 'unknown line type "PARLAY"', "unknown type")
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-150", "need 6", "ML missing a field")
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|-3.5|PHI:-150|DAL:+130", "need 6", "ML with a line field")
 bad("SPREAD|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-110|DAL:-110", "need 7", "spread without a line")
@@ -124,7 +124,7 @@ bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:abc|DAL:+130", "should look like", "
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-150|PHI:+130", "different names", "same side twice")
 bad("ML|NFL|PHI @ DAL|2026-11-26T16:30Z|PHI:-150|DAL:+130|", "need 6", "trailing separator")
 bad("GB1:abcdef", "not supported yet", "encoded string")
-bad("|||", "unknown market type", "separators only")
+bad("|||", "unknown line type", "separators only")
 -- without a `now`, nothing counts as started (callers that don't know the time)
 check(Import.Parse("ML|NFL|PHI @ DAL|2026-11-19T16:30Z|PHI:-150|DAL:+130", nil)[1].started == nil, "no `now`: nothing is started")
 
@@ -436,5 +436,131 @@ eq(#dbl, 2, "doubled pipes: two lines")
 check(dbl[1].spec ~= nil, "doubled pipes: ML parses: " .. tostring(dbl[1].err))
 check(dbl[2].spec ~= nil, "doubled pipes: total parses: " .. tostring(dbl[2].err))
 eq(dbl[1].text, "ML|NFL|PHI @ DAL|2026-11-26T16:30-05:00|PHI:-150|DAL:+130", "doubled pipes: shown with single pipes")
+
+-- FINAL lines: settle a game from its score ---------------------------------------------------------------
+do
+    local fbook = Model.CreateBook(Model.NewDB(), "F", "Steve", NOW)
+    local T1 = P("2026-11-26T16:30-05:00")
+    local LATER = P("2026-11-27T00:00:00Z")                       -- after the game has started
+    local function add(kind, event, closes, line, l1, o1, l2, o2)
+        return assert(Bookie.AddMarket(fbook, { sport = "NBA", event = event, type = kind, line = line, closesAt = closes,
+            selections = { { label = l1, odds = o1 }, { label = l2, odds = o2 } } }, NOW))
+    end
+    local ml = add("moneyline", "LAL @ BOS", T1, nil, "LAL", 150, "BOS", -170)
+    local sp = add("spread", "LAL @ BOS", T1, 5.5, "LAL", -110, "BOS", -110)        -- LAL +5.5
+    local to = add("total", "LAL @ BOS", T1, 231.5, "Over", -110, "Under", -110)
+    local when = "2026-11-26T16:30-05:00"
+    local function final(game, a, sa, b, sb, time)
+        return ("FINAL|NBA|%s|%s%s:%d|%s:%d"):format(game, time and (time .. "|") or "", a, sa, b, sb)
+    end
+    local function settles(text, now)
+        local plan = Import.Plan(fbook, text, now or LATER)
+        return plan, plan.items[1]
+    end
+    local function byType(item)
+        local r = {}
+        for _, st in ipairs(item.settles or {}) do r[st.type] = st end
+        return r
+    end
+
+    -- BOS wins 109-104: BOS ML; LAL +5.5 covers a 5-point loss (104+5.5 > 109); 213 is under 231.5
+    local plan, it = settles(final("LAL @ BOS", "LAL", 104, "BOS", 109, when))
+    eq(it.status, "settle", "a final score settles the game")
+    eq(plan.settle, 1, "one FINAL line settles"); eq(plan.markets, 3, "...three markets")
+    local r = byType(it)
+    eq(r.moneyline.result, 2, "ML: the higher score wins (BOS is selection 2)")
+    eq(r.moneyline.pick, "BOS ML", "ML pick text")
+    eq(r.spread.result, 1, "spread: LAL +5.5 covers a 5-point loss")
+    eq(r.spread.pick, "LAL +5.5", "spread pick text")
+    eq(r.total.result, 2, "total: 213 is under 231.5")
+    eq(r.total.pick, "Under 231.5", "total pick text")
+
+    -- the same game without the close time, and with the two sides in the other order
+    _, it = settles(final("LAL @ BOS", "BOS", 109, "LAL", 104))
+    eq(it.status, "settle", "the close time is optional")
+    eq(byType(it).moneyline.result, 2, "...and the order of the sides does not matter")
+    eq(byType(it).spread.result, 1, "...for the spread either")
+    _, it = settles(final("lal @ bos", "lal", 104, "bos", 109))
+    eq(it.status, "settle", "names are matched without regard to case")
+
+    -- the spread: LAL +5.5 loses a 7-point loss (BOS 111 LAL 104); a push on a whole-number line
+    _, it = settles(final("LAL @ BOS", "LAL", 104, "BOS", 111))
+    eq(byType(it).spread.result, 2, "spread: LAL +5.5 does not cover a 7-point loss, BOS wins it")
+    eq(byType(it).spread.pick, "BOS -5.5", "...and the winning pick reads from the other side")
+    local sp2 = add("spread", "LAL @ BOS", T1, 6, "LAL", -110, "BOS", -110)         -- LAL +6: alternate line
+    _, it = settles(final("LAL @ BOS", "LAL", 104, "BOS", 110))
+    local pushed
+    for _, st in ipairs(it.settles) do if st.marketId == sp2.id then pushed = st end end
+    check(pushed and pushed.result == "push" and pushed.pick == "spread push", "a score landing on the spread line is a push")
+    eq(#it.settles, 4, "every spread of the game settles, alternates too")
+
+    -- totals: over, and exactly on the line is a push
+    _, it = settles(final("LAL @ BOS", "LAL", 120, "BOS", 120))
+    eq(byType(it).total.result, 1, "total: 240 is over 231.5")
+    eq(byType(it).moneyline.result, "push", "a tied score pushes the moneyline")
+    local to2 = add("total", "LAL @ BOS", T1, 230, "Over", -110, "Under", -110)
+    _, it = settles(final("LAL @ BOS", "LAL", 115, "BOS", 115))
+    local tp
+    for _, st in ipairs(it.settles) do if st.marketId == to2.id then tp = st end end
+    eq(tp and tp.result, "push", "a total landing on the line is a push")
+
+    -- nothing is guessed or touched that should not be
+    plan, it = settles(final("LAL @ BOS", "LAL", 104, "BOS", 110), T1 - 60)
+    eq(it.status, "none", "a game that has not started is not settled")
+    check(it.why:find("not started"), "...with the reason: " .. tostring(it.why))
+    plan, it = settles(final("PHI @ DAL", "PHI", 1, "DAL", 0))
+    eq(it.status, "none", "a game that is not in this book is skipped, not an error")
+    eq(plan.errors, 0, "...and not counted as an error")
+    plan, it = settles(final("LAL @ BOS", "Lakers", 104, "Celtics", 110))
+    eq(it.status, "error", "side names that do not fit the market are an error")
+    check(it.err:find("LAL / BOS"), "...naming the market's sides: " .. tostring(it.err))
+    _, it = settles(final("LAL @ BOS", "LAL", 104, "BOS", 110, "2026-11-26T17:30-05:00"))
+    eq(it.status, "none", "a FINAL line for another close time does not match")
+    _, it = settles("FINAL|NBA|LAL @ BOS|LAL:abc|BOS:110")
+    eq(it.status, "error", "a score that is not a number is an error")
+    _, it = settles("FINAL|NBA|LAL @ BOS|LAL:104")
+    eq(it.status, "error", "too few fields is an error")
+    _, it = settles("FINAL|NBA|LAL @ BOS|LAL:104|LAL:110")
+    eq(it.status, "error", "the two sides need different names")
+
+    -- listed twice in one paste: the second finds nothing left
+    plan = Import.Plan(fbook, final("LAL @ BOS", "LAL", 104, "BOS", 110) .. "\n" .. final("LAL @ BOS", "LAL", 104, "BOS", 110), LATER)
+    eq(plan.items[1].status, "settle", "twice: the first line settles")
+    eq(plan.items[2].status, "none", "twice: the second has nothing left")
+    check(plan.items[2].why:find("twice"), "...because it is listed twice")
+
+    -- already settled by hand, or void: never touched
+    assert(Bookie.Settle(fbook, ml.id, 1, NOW))
+    assert(Bookie.VoidMarket(fbook, to.id, NOW))
+    _, it = settles(final("LAL @ BOS", "LAL", 104, "BOS", 110))
+    local ids = {}
+    for _, st in ipairs(it.settles) do ids[st.marketId] = true end
+    check(not ids[ml.id] and not ids[to.id] and ids[sp.id], "a settled or void market is left alone")
+    eq(it.skipped, 2, "...and counted as skipped")
+    for _, st in ipairs(it.settles) do assert(Bookie.Settle(fbook, st.marketId, st.result, NOW)) end
+    plan, it = settles(final("LAL @ BOS", "LAL", 104, "BOS", 110))
+    eq(it.status, "none", "pasting the results again settles nothing")
+    check(it.why:find("already settled"), "...because it is already settled")
+
+    -- the same game posted at two times and no close time on the line: ask for one
+    local tbook = Model.CreateBook(Model.NewDB(), "T", "Steve", NOW)
+    for _, t in ipairs({ T1, T1 + 86400 }) do
+        assert(Bookie.AddMarket(tbook, { sport = "NBA", event = "LAL @ BOS", type = "moneyline", closesAt = t,
+            selections = { { label = "LAL", odds = 150 }, { label = "BOS", odds = -170 } } }, NOW))
+    end
+    local tp2 = Import.Plan(tbook, final("LAL @ BOS", "LAL", 104, "BOS", 110), T1 + 90000)
+    eq(tp2.items[1].status, "error", "two games of the same name and no close time is an error")
+    check(tp2.items[1].err:find("close time"), "...asking for the close time")
+    tp2 = Import.Plan(tbook, final("LAL @ BOS", "LAL", 104, "BOS", 110, when), T1 + 90000)
+    eq(tp2.items[1].status, "settle", "...and the close time picks the game")
+    eq(#tp2.items[1].settles, 1, "...settling just that one")
+
+    -- a mixed paste: market lines and results together
+    local mixed = Import.Plan(fbook, "ML|NBA|NYK @ MIA|2026-12-01T00:00Z|NYK:-120|MIA:+100\n" .. final("LAL @ BOS", "LAL", 104, "BOS", 110) .. "\n# note", NOW)
+    eq(mixed.ok, 1, "a mixed paste still posts new markets"); eq(#mixed.items, 2, "...and the comment is skipped")
+    -- doubled pipes (WoW edit boxes) work for FINAL lines too
+    local dbl2 = Import.Parse("FINAL||NBA||LAL @ BOS||LAL:104||BOS:110", NOW)
+    check(dbl2[1].final ~= nil, "doubled pipes: FINAL parses: " .. tostring(dbl2[1].err))
+end
 
 if fails == 0 then print("import: all tests passed") else os.exit(1) end

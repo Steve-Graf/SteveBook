@@ -836,18 +836,24 @@ local function refreshPanel(book)
     curPlan = plan
     if not plan then
         p.sum[1]:SetText(GREY .. "Nothing pasted yet.|r")
-        for i = 2, 5 do p.sum[i]:SetText("") end
+        for i = 2, 6 do p.sum[i]:SetText("") end
         p.go:SetText("Import")
         p.go:SetEnabled(false)
         return
     end
-    local n = plan.ok + plan.updated
+    local n = plan.ok + plan.updated + plan.markets
     p.sum[1]:SetText(("%s%d new|r %s ready"):format(plan.ok > 0 and GREEN or GREY, plan.ok, plan.ok == 1 and "market" or "markets"))
     p.sum[2]:SetText(("%s%d updated|r (new odds on open markets)"):format(plan.updated > 0 and GOLD or GREY, plan.updated))
-    p.sum[3]:SetText(("%s%d skipped|r: already started or closed"):format(plan.started > 0 and GOLD or GREY, plan.started))
-    p.sum[4]:SetText(("%s%d skipped|r: duplicate"):format(GREY, plan.duplicate))
-    p.sum[5]:SetText(("%s%d %s|r"):format(plan.errors > 0 and RED or GREY, plan.errors, plan.errors == 1 and "error" or "errors"))
-    p.go:SetText(("Import %d"):format(n))
+    p.sum[3]:SetText(("%s%d to settle|r%s"):format(plan.markets > 0 and GREEN or GREY, plan.markets,
+        plan.settle > 0 and (" (from " .. plural(plan.settle, "final score") .. ")") or " (FINAL lines)"))
+    p.sum[4]:SetText(("%s%d skipped|r: already started or closed"):format(plan.started > 0 and GOLD or GREY, plan.started))
+    p.sum[5]:SetText(("%s%d skipped|r: duplicate, or nothing to settle"):format(GREY, plan.duplicate + plan.none))
+    p.sum[6]:SetText(("%s%d %s|r"):format(plan.errors > 0 and RED or GREY, plan.errors, plan.errors == 1 and "error" or "errors"))
+    if plan.markets > 0 and plan.ok + plan.updated == 0 then
+        p.go:SetText(("Settle %s"):format(plural(plan.markets, "market")))
+    else
+        p.go:SetText(("Import %d"):format(n))
+    end
     p.go:SetEnabled(n > 0)
 end
 
@@ -857,8 +863,14 @@ local function confirmImport()
     local book = currentBook()
     if not book then return end
     local r = Net.ApplyImport(book, ui.panel.box:GetText())
-    local text = ("Imported %s"):format(plural(r.added, "new market"))
-    if r.updated > 0 then text = text .. (" and updated the odds of %s"):format(plural(r.updated, "market")) end
+    local text
+    if r.settled > 0 and r.added == 0 and r.updated == 0 then
+        text = ("Settled %s"):format(plural(r.settled, "market"))
+    else
+        text = ("Imported %s"):format(plural(r.added, "new market"))
+        if r.updated > 0 then text = text .. (" and updated the odds of %s"):format(plural(r.updated, "market")) end
+        if r.settled > 0 then text = text .. (" and settled %s"):format(plural(r.settled, "market")) end
+    end
     say(text .. ".")
     for _, f in ipairs(r.failed) do say("Skipped " .. f) end
     if #r.failed == 0 and r.plan.errors == 0 then
@@ -874,12 +886,23 @@ local function importEntries(book)
     local plan = curPlan
     if not plan then
         return { { text = GREY .. "Paste lines into the Import box on the right. Each line is checked here as you paste.|r" },
-                 { text = GREY .. "Format: ML||NFL||PHI @ DAL||2026-11-26T16:30-05:00||PHI:-150||DAL:+130   (also SPREAD and TOTAL)|r" } }
+                 { text = GREY .. "Format: ML||NFL||PHI @ DAL||2026-11-26T16:30-05:00||PHI:-150||DAL:+130   (also SPREAD and TOTAL)|r" },
+                 { text = GREY .. "To settle: FINAL||NFL||PHI @ DAL||PHI:24||DAL:20   (the final score: settles that game's moneyline, spreads and totals)|r" } }
     end
     local entries = {}
     for _, it in ipairs(plan.items) do
         local s = it.spec
-        if it.status == "ok" then
+        if it.status == "settle" then
+            local f = it.final
+            local picks = {}
+            for _, st in ipairs(it.settles) do picks[#picks + 1] = esc(st.pick) end
+            local skipped = it.skipped > 0 and (" (" .. it.skipped .. " already settled or not started: left alone)") or ""
+            entries[#entries + 1] = { h = 40, text = ("%sSETTLE|r  %s   %s %d - %s %d"):format(GREEN, esc(f.event),
+                esc(f.scores[1].label), f.scores[1].score, esc(f.scores[2].label), f.scores[2].score),
+                sub = short(table.concat(picks, ", ") .. skipped, 110) }
+        elseif it.status == "none" then
+            entries[#entries + 1] = { h = 22, text = ("%sSKIP|r  %s%s: %s|r"):format(GREY, GREY, esc(it.final.event), it.why) }
+        elseif it.status == "ok" then
             local lineText = s.type == "spread" and ("  " .. esc(s.selections[1].label) .. " " .. signed(s.line))
                           or s.type == "total" and ("  " .. ("%g"):format(s.line)) or ""
             entries[#entries + 1] = { h = 22, text = ("%sNEW|r  %s  %s%s   %s %s / %s %s   closes %s"):format(GREEN,
@@ -1000,16 +1023,16 @@ local function buildImportPanel()
     p.help = label(p, "GameFontHighlight")
     p.help:SetPoint("TOPLEFT", 10, -28)
     p.help:SetWidth(PANEL_W - 20)
-    p.help:SetText(GREY .. "Paste lines from your line-pulling script, one market per line. Lines that match an open market with different odds update it.|r")
+    p.help:SetText(GREY .. "Paste lines from your script, one per line. Market lines post new markets or update the odds of open ones. FINAL lines (a final score) settle that game.|r")
 
     -- multi-line paste box inside a scroll frame
     p.boxBg = p:CreateTexture(nil, "BACKGROUND")
     p.boxBg:SetPoint("TOPLEFT", 8, -92)
-    p.boxBg:SetPoint("BOTTOMRIGHT", -8, 148)
+    p.boxBg:SetPoint("BOTTOMRIGHT", -8, 165)
     p.boxBg:SetColorTexture(0, 0, 0, 0.4)
     p.scroll = CreateFrame("ScrollFrame", nil, p)
     p.scroll:SetPoint("TOPLEFT", 12, -96)
-    p.scroll:SetPoint("BOTTOMRIGHT", -12, 152)
+    p.scroll:SetPoint("BOTTOMRIGHT", -12, 169)
     p.box = CreateFrame("EditBox", nil, p.scroll)
     p.box:SetMultiLine(true)
     p.box:SetFontObject("GameFontHighlight")
@@ -1024,12 +1047,12 @@ local function buildImportPanel()
     p.sumBg = p:CreateTexture(nil, "BACKGROUND")
     p.sumBg:SetPoint("BOTTOMLEFT", 8, 46)
     p.sumBg:SetPoint("BOTTOMRIGHT", -8, 46)
-    p.sumBg:SetHeight(96)
+    p.sumBg:SetHeight(113)
     p.sumBg:SetColorTexture(0.1, 0.2, 0.1, 0.35)
     p.sum = {}
-    for i = 1, 5 do
+    for i = 1, 6 do
         p.sum[i] = label(p, "GameFontHighlight")
-        p.sum[i]:SetPoint("BOTTOMLEFT", 14, 46 + (5 - i) * 17 + 6)
+        p.sum[i]:SetPoint("BOTTOMLEFT", 14, 46 + (6 - i) * 17 + 6)
         p.sum[i]:SetWidth(PANEL_W - 28)
         p.sum[i]:SetWordWrap(false)
     end

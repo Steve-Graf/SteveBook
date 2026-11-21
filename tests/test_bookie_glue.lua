@@ -366,4 +366,52 @@ handlers.PING("Bob", {}, book.code)
 check(chatText():find("could not send PONG: boom"), "send failure reported in chat")
 ns.Comm.Send = realSend
 
+-- settling a slate from pasted FINAL lines, through the glue -------------------------------------------------
+do
+    local sbook = assert(Net.CreateBook("Slate"))
+    for _, who in ipairs({ "Ann", "Cal", "Dee" }) do
+        handlers.JOIN_REQ(who, {}, sbook.code); assert(Net.Approve(sbook, who))
+    end
+    local function market(event, kind, line, l1, l2)
+        return assert(Net.AddMarket(sbook, { sport = "NBA", event = event, type = kind, line = line, closesAt = T + 100,
+            selections = { { label = l1, odds = -110 }, { label = l2, odds = -110 } } }))
+    end
+    local ml1, to1 = market("AAA @ BBB", "moneyline", nil, "AAA", "BBB"), market("AAA @ BBB", "total", 200.5, "Over", "Under")
+    local ml2 = market("CCC @ DDD", "moneyline", nil, "CCC", "DDD")
+    local ml3 = market("EEE @ FFF", "moneyline", nil, "EEE", "FFF")             -- no result pasted for this one
+    drain(); chatText()
+    local function bet(who, ref, mk, sel, stake)
+        handlers.BET_PLACE(who, { ref = ref, marketId = mk.id, selectionId = sel, stake = stake, odds = -110, line = mk.line }, sbook.code)
+    end
+    bet("Ann", "s1", ml1, 1, 10000); bet("Ann", "s2", to1, 1, 10000); bet("Cal", "s3", ml1, 2, 10000)
+    bet("Cal", "s4", ml2, 1, 10000); bet("Dee", "s5", ml3, 1, 10000)
+    drain(); chatText()
+
+    local text = "FINAL|NBA|AAA @ BBB|AAA:110|BBB:101\nFINAL|NBA|CCC @ DDD|CCC:90|DDD:95\nFINAL|NBA|XXX @ YYY|XXX:1|YYY:0"
+    T = T + 200                                                          -- the games have started
+    local r = Net.ApplyImport(sbook, text)
+    eq(r.settled, 3, "three markets settled by the paste")
+    eq(#r.failed, 0, "...none failed")
+    eq(sbook.markets[ml1.id].status, "settled", "AAA @ BBB moneyline settled")
+    eq(sbook.markets[ml1.id].result, 1, "...AAA won")
+    eq(sbook.markets[to1.id].result, 1, "...the total went over (211 > 200.5)")
+    eq(sbook.markets[ml2.id].result, 2, "DDD won the other game")
+    eq(sbook.markets[ml3.id].status, "open", "a game with no result pasted is untouched")
+    eq(Bookie.Balance(sbook, "Ann"), 9090 + 9090, "Ann won both her bets (10000 at -110 pays 9090)")
+    eq(Bookie.Balance(sbook, "Cal"), -10000 - 10000, "Cal lost both")
+    local s = drain()
+    local markets, syncs, to = 0, 0, {}
+    for _, m in ipairs(s) do
+        if m.type == "MARKET" then markets = markets + 1; check(m.to == nil, "MARKET is a broadcast") end
+        if m.type == "SYNC" then syncs = syncs + 1; to[m.to] = (to[m.to] or 0) + 1 end
+    end
+    eq(markets, 3, "one MARKET per settled market")
+    eq(syncs, 2, "one SYNC per affected bettor, not one per market (Ann and Cal)")
+    check(to.Ann == 1 and to.Cal == 1 and not to.Dee, "...to Ann and Cal only; Dee's market was not settled")
+
+    r = Net.ApplyImport(sbook, text)
+    eq(r.settled, 0, "pasting the same results again settles nothing")
+    eq(#drain(), 0, "...and sends nothing")
+end
+
 if fails == 0 then realprint("bookie_glue: all tests passed") else os.exit(1) end
