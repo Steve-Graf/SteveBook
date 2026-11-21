@@ -218,6 +218,47 @@ function Comm.NetReport()
     return lines
 end
 
+-- /book net test: send one tiny addon message down each path and print the game's own answer. The
+-- normal send path (AceComm) never reports failures, so this is the only place they show up.
+local function resultName(r)
+    local e = Enum and Enum.SendAddonMessageResult
+    if type(r) == "boolean" then return r and "accepted" or "REFUSED" end
+    if e then
+        for k, v in pairs(e) do if v == r then return ("%s (%s)"):format(tostring(r), k) end end
+    end
+    return tostring(r)
+end
+
+function Comm.SendTest()
+    local lines = {}
+    local send = C_ChatInfo and C_ChatInfo.SendAddonMessage
+    if not send then return { "C_ChatInfo.SendAddonMessage does not exist on this client." } end
+    local reg = C_ChatInfo.IsAddonMessagePrefixRegistered
+    if reg then
+        local okr, r = pcall(reg, PREFIX)
+        lines[#lines + 1] = "Prefix \"" .. PREFIX .. "\" registered: " .. tostring(okr and r)
+    end
+    local gname = GetGuildInfo and GetGuildInfo("player")
+    lines[#lines + 1] = "Guild: " .. (gname and ("<" .. gname .. ">") or "none") ..
+        (Comm.GuildState() == "off" and " (guild messages are switched OFF with /book guild)" or "")
+    local okg, rg = pcall(send, PREFIX, "net-test", "GUILD")
+    lines[#lines + 1] = "Test send to GUILD: " .. (okg and resultName(rg) or ("error: " .. tostring(rg)))
+    local codes = {}
+    for code in pairs(joined) do codes[#codes + 1] = code end
+    table.sort(codes)
+    for _, code in ipairs(codes) do
+        local id = channelId(code)
+        if id > 0 then
+            local ok, r = pcall(send, PREFIX, "net-test", "CHANNEL", id)
+            lines[#lines + 1] = ("Test send to %s (slot %d): %s"):format(Protocol.ChannelName(code), id,
+                ok and resultName(r) or ("error: " .. tostring(r)))
+        else
+            lines[#lines + 1] = ("Test send to %s: not possible, the channel is not working"):format(Protocol.ChannelName(code))
+        end
+    end
+    return lines
+end
+
 -- A channel can sit in the list as disabled and stay that way (the join was refused, for instance
 -- while the client was still loading). Joining a name we already hold does nothing, so leave it and
 -- join again, once it has been disabled for DISABLED_GRACE seconds (a fresh join may show as

@@ -16,7 +16,7 @@ local function help()
     say("/book bet (or /bet)        open the bettor window")
     say("/book loopback     test alone: let this character be bookie and bettor of its own book")
     say("/book lobby        check the lobby channel the lists of tables and books use")
-    say("/book net          show whether each SteveBook channel is really working")
+    say("/book net          show whether each SteveBook channel is really working (/book net test also sends a test message down each path)")
     say("/book guild        turn the guild-chat second path on or off (on by default)")
     say("/book hide         hide the active book from (or show it in) the list of books")
     say("/casino            open the casino (roulette tables)")
@@ -72,6 +72,9 @@ local function handle(msg)
             or "Guild messages ON: every message also goes through guild chat (guild members only).")
     elseif cmd == "net" then
         for _, line in ipairs(ns.Comm.NetReport()) do say(line) end
+        if rest and rest:lower():match("^test") then
+            for _, line in ipairs(ns.Comm.SendTest()) do say(line) end
+        end
     elseif cmd == "hide" then
         local b = Model.ActiveBook(db)
         if not b then return say("No active book. /book use <# or code> first.") end

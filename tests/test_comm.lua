@@ -642,4 +642,24 @@ do
     drainSeen()
 end
 
+-- 16. /book net test: reports the game's own answer for each path
+do
+    local sent = {}
+    local realSend = C_ChatInfo.SendAddonMessage
+    C_ChatInfo.SendAddonMessage = function(prefix, text, kind, target) sent[#sent + 1] = kind; return 11 end
+    IsInGuild = function() return true end
+    local lines = Comm.SendTest()
+    local joinedText = table.concat(lines, "\n")
+    check(joinedText:find("GUILD", 1, true) ~= nil, "test line for guild: " .. joinedText)
+    check(sent[1] == "GUILD", "a test message really goes to GUILD")
+    C_ChatInfo.SendAddonMessage = function() return 0 end
+    joinedText = table.concat(Comm.SendTest(), "\n")
+    check(joinedText:find("Test send to GUILD: 0", 1, true) ~= nil, "success code shown: " .. joinedText)
+    C_ChatInfo.SendAddonMessage = function() error("boom") end
+    joinedText = table.concat(Comm.SendTest(), "\n")
+    check(joinedText:find("error", 1, true) ~= nil, "a throwing send is reported, not raised")
+    C_ChatInfo.SendAddonMessage = realSend
+    IsInGuild = nil
+end
+
 if fails == 0 then out_("comm: all tests passed") else os.exit(1) end
