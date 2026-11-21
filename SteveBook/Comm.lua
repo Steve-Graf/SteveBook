@@ -73,6 +73,9 @@ local PRIORITY = {
     JOIN_OK = "ALERT", JOIN_DENY = "ALERT", BET_ACK = "ALERT", BET_REJECT = "ALERT",
     PING = "ALERT", PONG = "ALERT", SYNC = "BULK", BETS = "BULK",
     TBL_JOIN_OK = "ALERT", TBL_JOIN_DENY = "ALERT", TBL_BET_OK = "ALERT", TBL_BET_REJECT = "ALERT",
+    -- a click and its answer should not wait behind the bulk table state
+    TBL_JOIN = "ALERT", TBL_SYNC_REQ = "ALERT", TBL_BET = "ALERT", TBL_BET_CLEAR = "ALERT", TBL_ACT = "ALERT",
+    TBL_PLAYER = "ALERT",
 }
 
 local function say(msg) print("|cffffd100SteveBook:|r " .. msg) end
@@ -413,17 +416,12 @@ local function duplicate(sender, env)
     return false
 end
 
--- Who has been heard on which path, per book/table: peers[code][name] = { chan = t, guild = t }.
--- Sending everything twice doubles the traffic and the game rate-limits addon messages, so a table
--- with a lot of chatter (blackjack) lagged. Gameplay messages go by guild only when the channel is
--- down or the player being talked to has only been heard by guild; handshakes always go both ways.
+-- Who has been heard on which path, per book/table: peers[code][name] = { chan = t, guild = t }
+-- (for Comm.Health). Every message goes by BOTH paths. v0.8.3 tried sending table traffic by the channel
+-- only when the other side had been heard there, but a channel can receive and still fail to send, so
+-- a player looked healthy while his bets never arrived. Redundancy beats bandwidth; the receiver
+-- drops the second copy (see duplicate()), and clicks are sent at a higher priority (PRIORITY).
 local peers = {}
-local PEER_WINDOW = 600
-local BOTH_WAYS = {
-    JOIN_REQ = true, JOIN_OK = true, JOIN_DENY = true, SYNC_REQ = true, PING = true, PONG = true,
-    LOBBY_ASK = true, LOBBY_TABLE = true, LOBBY_BOOKS = true,
-    TBL_JOIN = true, TBL_JOIN_OK = true, TBL_JOIN_DENY = true, TBL_LEAVE = true, TBL_SYNC_REQ = true,
-}
 
 local function notePeer(code, sender, via)
     local c = peers[code]
@@ -433,21 +431,7 @@ local function notePeer(code, sender, via)
     if via == "GUILD" then p.guild = clock() else p.chan = clock() end
 end
 
-local function guildOnly(p, t)
-    return p ~= nil and p.guild ~= nil and t - p.guild < PEER_WINDOW and not (p.chan and t - p.chan < PEER_WINDOW)
-end
-
-local function needGuild(msgType, code, to)
-    if not guildReady() then return false end
-    if channelId(code) <= 0 or BOTH_WAYS[msgType] then return true end
-    local c, t = peers[code], clock()
-    if to then
-        local p = c and c[normalize(to)]
-        return p == nil or guildOnly(p, t)          -- someone never heard yet: use both
-    end
-    if c then for _, p in pairs(c) do if guildOnly(p, t) then return true end end end
-    return false
-end
+local function needGuild() return guildReady() end
 
 -- What was last heard on each transport (for /book net): { CHANNEL = time, GUILD = time }.
 function Comm.Heard() return heardVia, heardFrom end
@@ -537,7 +521,7 @@ function Comm.Send(msgType, payload, bookCode, target)
     if not sok then return false, tostring(text) end
     local prio = PRIORITY[msgType]
     local wire = pack(text)
-    local useGuild = needGuild(msgType, bookCode, env.to)
+    local useGuild = needGuild()
     dbg(msgType, "send %s book %s to %s on channel #%s%s (%d bytes, %d on the wire)", msgType, bookCode,
         env.to or "everyone", channelId(bookCode), useGuild and " and guild" or "", #text, #wire)
     if Comm.LoopbackActive(bookCode) then loopback(text, msgType, bookCode, env.to) end

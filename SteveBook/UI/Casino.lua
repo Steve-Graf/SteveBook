@@ -1787,9 +1787,11 @@ local function refreshBlackjack()
         B.hit:Hide(); B.stand:Hide(); B.double:Hide(); B.split:Hide()
         B.timer:SetText(""); B.barTrack:Hide(); B.barFill:Hide()
         local mineBetting = Client.Staked(tc) > 0
+        local confirmed = 0
+        for _, b in ipairs(tc.bets or {}) do confirmed = confirmed + b.amount end
         local noChips = tc.status == "seated" and (tc.balance or 0) + Client.Staked(tc) == 0
         B.waiting:SetText(noChips and (MUTED .. "You have no chips yet. Ask the host to add some, then you can bet.|r")
-            or (canBet and (mineBetting and (MUTED .. "Your bet is in. The host deals when everyone is ready.|r") or (GOLD .. "Place a bet to be dealt in.|r"))
+            or (canBet and (mineBetting and (confirmed > 0 and (MUTED .. "Your bet is in. The host deals when everyone is ready.|r") or (GOLD .. "Sending your bet to the host...|r")) or (GOLD .. "Place a bet to be dealt in.|r"))
             or (pub and pub.turn and (MUTED .. "Waiting for " .. pub.turn .. " to play...|r") or "")))
     end
 

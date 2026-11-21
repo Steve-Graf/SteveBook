@@ -242,11 +242,11 @@ Rules:
 
 ### Transports (v0.8.0)
 
-Handshake messages (join, lobby, presence, sync requests; `BOTH_WAYS` in Comm.lua) go out on two paths
-and a receiver acts on the first copy. Gameplay messages (table state, bets, actions) go by the channel
-only, plus guild when the channel is not working or the player addressed (or, for a broadcast, any
-player at that table) has been heard by guild and not by channel in the last 10 minutes (v0.8.3: sending
-everything twice made blackjack lag, because the game rate-limits addon messages per prefix).
+Every message goes out on both paths and is heard on both; a receiver acts on the first copy. (v0.8.3
+sent table traffic by one path only when the other side had been heard on it; v0.8.6 reverted that: a
+channel can receive but fail to send, so a player looked healthy while his bets never arrived.
+Redundancy beats bandwidth. Lag is handled by priority instead: clicks and their answers are `ALERT`,
+the bulk table state is not.)
 
 - **Hidden channel** (`SBN` + code, see `Protocol.ChannelName`): reaches any player, but a join can fail
   silently. In Forever a channel can hold a slot and be listed as disabled by `GetChannelList`
@@ -436,6 +436,10 @@ messages.
   No insurance and no surrender. Players who sat out a round simply are not dealt in. A fresh
   shoe is shuffled when fewer than 60 cards remain. Every wager, double and split is a stack in the
   player's `bets` list, so kicking, leaving, closing or a reload returns exactly what is on the table.
+- **Safety nets (v0.8.6):** bets the host has not answered are resent with the same `ref` (both engines
+  already ignore a repeated ref) every 2 s up to 4 times; a seated player who never received the table,
+  or has not heard the host for 40 s, sends `TBL_SYNC_REQ` every 3 s; the player window says "Sending
+  your bet to the host..." until a bet is confirmed instead of claiming it is in.
 - **Reliable decisions (v0.8.6):** a blackjack decision (`TBL_ACT`) carries a unique `ref`. The host
   remembers each player's last one (`member.lastAct`) and a repeat only restates the table (`TBL_PLAYER`
   + `TBL_STATE`), so a resend never acts twice. The client keeps the decision pending

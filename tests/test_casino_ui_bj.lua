@@ -100,6 +100,26 @@ do
 end
 settle()
 check(Client.ActPending(tc) == nil, "the host's answer clears it")
+eq(t.round, 2, "the round finished after the bust")
+check(tc.lastResult and tc.lastResult.results[1].hands[1].outcome == "bust", "the result says bust")
+check(textOf("Round 1") ~= nil, "the table log lists the finished round")
+check(textOf("BUST") ~= nil or textOf("|cffff5050BUST|r") ~= nil, "the seat shows the bust")
+do   -- bets the host has not answered are resent; a seat with no table asks again
+    local seatedBefore = tc.status
+    tc.pending = tc.pending or {}
+    tc.pending["betX"] = { bet = { kind = "wager", amount = 100 }, placedAt = GetServerTime() - 3, round = tc.state.round }
+    CN.RetryActs()
+    eq(tc.pending["betX"].tries, 2, "an unanswered bet is resent")
+    eq(tc.pending["betX"].round, tc.state.round, "for its own round")
+    tc.pending["betX"] = nil
+    local keep = tc.state
+    tc.state = nil
+    tc.syncAt = nil
+    CN.RetryActs()
+    check(tc.syncAt ~= nil, "seated without a table: asks the host again")
+    tc.state = keep
+    settle()
+end
 do   -- an unanswered action is resent with the same ref, then given up
     local p = { ref = "actX", action = "stand", round = tc.state.round, rev = tc.state.rev, at = GetServerTime() - 3, tries = 1 }
     tc.actPending = p
@@ -110,10 +130,6 @@ do   -- an unanswered action is resent with the same ref, then given up
     tc.actPending = nil
 end
 settle()
-eq(t.round, 2, "the round finished after the bust")
-check(tc.lastResult and tc.lastResult.results[1].hands[1].outcome == "bust", "the result says bust")
-check(textOf("Round 1") ~= nil, "the table log lists the finished round")
-check(textOf("BUST") ~= nil or textOf("|cffff5050BUST|r") ~= nil, "the seat shows the bust")
 -- a double and a split through the buttons
 click(allByText("Place bet")[1]); settle()
 t.bj.shoe = { "8S", "9H", "8D", "TC", "3H", "KD", "2C", "5S" }; t.bj.pos = 1

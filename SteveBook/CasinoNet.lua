@@ -604,6 +604,7 @@ function CasinoNet.PlaceBet(code, bet)
         for i, n in ipairs(bet.numbers) do copy.numbers[i] = n end
     end
     Client.NewPending(db().casinoCache, code, ref, copy, now())
+    cache(code).pending[ref].round = st.round
     ns.Comm.Send("TBL_BET", { ref = ref, round = st.round, bet = copy }, code)
     changed(code)
     return true
@@ -623,6 +624,7 @@ function CasinoNet.Wager(code, amount)
     local ref = ("%d-%04d-%d"):format(now(), math.random(0, 9999), seq)
     local bet = { kind = "wager", amount = amount }
     Client.NewPending(db().casinoCache, code, ref, bet, now())
+    cache(code).pending[ref].round = st.round
     ns.Comm.Send("TBL_BET", { ref = ref, round = st.round, bet = bet }, code)
     changed(code)
     return true
@@ -643,11 +645,27 @@ end
 
 -- Resend a decision the host has not answered (same ref, so the host never acts on it twice), then give up.
 local ACT_RETRY_SECONDS, ACT_TRIES = 2, 4
+local SYNC_EVERY, QUIET_SYNC = 3, 40
 function CasinoNet.RetryActs()
     local d = db()
     if not (d and d.casinoCache) then return end
     local t0 = now()
     for _, tc in ipairs(Client.List(d.casinoCache)) do
+        if tc.status == "seated" then
+            -- bets the host has not answered: send again with the same ref (the host never takes one twice)
+            for ref, pb in pairs(tc.pending or {}) do
+                if t0 - (pb.sentAt or pb.placedAt) >= ACT_RETRY_SECONDS and (pb.tries or 1) < 4 and pb.round then
+                    pb.tries, pb.sentAt = (pb.tries or 1) + 1, t0
+                    ns.Comm.Send("TBL_BET", { ref = ref, round = pb.round, bet = pb.bet }, tc.code)
+                end
+            end
+            -- seated but the table never arrived, or the host has been silent a long while: ask again
+            local silent = not tc.state or (tc.lastHeard and t0 - tc.lastHeard >= QUIET_SYNC)
+            if silent and t0 - (tc.syncAt or 0) >= SYNC_EVERY then
+                tc.syncAt = t0
+                ns.Comm.Send("TBL_SYNC_REQ", { rev = tc.rev or 0 }, tc.code)
+            end
+        end
         local p = tc.status == "seated" and Client.ActPending(tc) or nil
         if p and t0 - p.at >= ACT_RETRY_SECONDS then
             if p.tries >= ACT_TRIES then
