@@ -120,9 +120,12 @@ f:SetScript("OnEvent", function(_, _, name)
     if ns.CasinoNet then ns.CasinoNet.Init() end
     if ns.BookLobby then ns.BookLobby.Init() end
     if ns.UI and ns.UI.Minimap then ns.UI.Minimap.Apply() end
-    -- Seed the random numbers (shuffles, ids). The bare global `floor` is nil on this client, which threw
-    -- an error on every login (Core.lua, ADDON_LOADED), so use math.floor and never let this line fail.
-    pcall(function() math.randomseed((GetServerTime() or 0) + math.floor((GetTime() or 0) * 1000)) end)
+    -- Seed the random numbers if this client lets us. It does not: `math.randomseed` is nil here (checked in
+    -- game with /run print(type(math.randomseed))), and calling it threw "attempt to call a nil value" on every
+    -- login. `floor` and `GetServerTime` exist. The pcall keeps this line from ever failing again.
+    if math.randomseed then
+        pcall(function() math.randomseed((GetServerTime() or 0) + math.floor((GetTime() or 0) * 1000)) end)
+    end
     f:UnregisterEvent("ADDON_LOADED")
 end)
 
