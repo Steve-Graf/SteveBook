@@ -21,7 +21,7 @@ ns.House = House
 
 local Casino = ns.Casino
 
-House.GAMES = { "roulette", "blackjack", "dice" }
+House.GAMES = { "roulette", "blackjack", "dice", "rocket" }
 House.FLOAT_BETS = 5              -- before each round a player's chips are topped up to this many maximum bets
 House.MAX_WIN_RATIO = 49          -- no honest total wins more than 49 times what was wagered (dice at its lowest target pays 49x)
 House.STEP = 100                  -- stakes are whole silver (Odds.STAKE_STEP)
@@ -162,6 +162,10 @@ function House.Heard(db, host, p, now)
     local rec = House.Record(db, host)
     local changed = rec.minBet ~= p.minBet or rec.maxBet ~= p.maxBet
     rec.on, rec.minBet, rec.maxBet, rec.seen = p.on == true, p.minBet, p.maxBet, now
+    if type(p.seed) == "number" then
+        if rec.seed ~= p.seed then changed = true end
+        rec.seed = p.seed
+    end
     return rec, changed
 end
 
@@ -207,6 +211,14 @@ function House.RecordRound(rec, game, entry, net)
     g.rounds = g.rounds + 1
     g.wagered = g.wagered + House.Staked(entry)
     g.net = net
+    return g
+end
+
+-- A result that is not a table round (the rocket): `staked` was wagered and the player's net moved by `delta`.
+function House.RecordPlain(rec, game, staked, delta)
+    local g = rec.games[game]
+    if not g then g = newGame(); rec.games[game] = g end
+    g.rounds, g.wagered, g.net = g.rounds + 1, g.wagered + staked, g.net + delta
     return g
 end
 

@@ -120,6 +120,7 @@ f:SetScript("OnEvent", function(_, _, name)
     SteveBookDB.cache = SteveBookDB.cache or ns.Cache.NewStore()   -- bettor-side cache (Cache.lua)
     ns.Odds.SetView(SteveBookDB.ratio and "ratio" or "american")
     if ns.CasinoNet then ns.CasinoNet.Init() end
+    if ns.RocketNet then ns.RocketNet.Init() end
     if ns.BookLobby then ns.BookLobby.Init() end
     if ns.UI and ns.UI.Minimap then ns.UI.Minimap.Apply() end
     -- Seed the random numbers if this client lets us. It does not: `math.randomseed` is nil here (checked in

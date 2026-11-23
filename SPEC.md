@@ -583,3 +583,42 @@ button).
 - **Window.** Target box with - / + and quick targets (10, 25, 50, 75, 90), stake box with quick stakes, a line with the chance and
   multiplier of the bet in the boxes, a **Roll** button (glows when ready), the last roll with WIN / LOSE, and the player's last rolls.
 
+---
+
+## 11c. The rocket
+
+A shared game for a house (§11a): one rocket launches, climbs and explodes, over and over, for everyone at the house, whether
+or not the bookie is online. Players bet before the launch and **bail** while it climbs; a player who has not bailed when it
+explodes loses the stake. `Rocket.lua` is the pure maths, `RocketNet.lua` the glue, `UI/Rocket.lua` the window. Like dice
+(`Casino.GAMES.rocket` is `houseOnly` and `noTable`) it is only a house button in the casino window.
+
+- **Everyone sees the same rocket, with no host.** The rocket is a pure function of a **seed** and the **server clock**. The seed
+  is the bookie's (`SteveBookDB.houseBook.seed`, made when the house is first announced and sent in `LOBBY_HOUSE.seed`; players
+  keep it in `SteveBookDB.houses[bookie].seed`). So every client that knows the seed works out the same rocket at the same moment,
+  continuously, with no messages during a round and nothing the bookie has to run. `RocketNet.Now()` turns the whole-second
+  `GetServerTime()` into a fraction of a second (the offset from `GetTime()` is the largest value seen), so two clients agree to
+  well under a second.
+- **The schedule.** Time is cut into eras of 30 minutes (`Rocket.ERA`). In an era the rounds follow one another: a 10 s betting
+  window (`Rocket.PAUSE`, which is also the pause after an explosion), the flight, the explosion, the next window. A round that
+  would not be over before the era ends is not flown (the end of an era is idle: about 86 rounds fit). Round ids are
+  `era * 1000 + k`. The multiplier is `e^(0.08 * t)` (2x after 8.7 s, 10x after 29 s, 50x after 49 s).
+- **The crash point.** From a hash of the seed and the round id (`Rocket.Crash100`, exact integer maths so it is the same in
+  every Lua): it reaches x with probability `0.98 / x` (so about 3% explode at once at 1.00x, and bailing anywhere returns about
+  98% on average), and never passes 50.00x. Multipliers are integers in hundredths ("m100", 250 = 2.50x). A bail at m100 wins
+  `floor(stake * m100 / 100)` (stake included) and only counts below the crash point.
+- **A bet** is one per launch, in the betting window, whole silver within the house's limits, with an optional **auto bail** (a
+  multiplier to bail at by itself). It lives in `SteveBookDB.rocket.bet` and survives a reload: the bet is settled when the round
+  is over (`Rocket.Settle`); a player who is away without having bailed loses the stake, but an auto-bail order still works. There
+  are no chips: the player's result is added to the house report (`games.rocket`, via `House.RecordPlain`) and goes to the bookie
+  like the other games.
+- **Seeing the others** (`ROCKET_BET {house, id, amount}`, `ROCKET_BAIL {house, id, m100}`, in the lobby channel, sent when a
+  player bets and when they bail). They only decorate the board: every client checks a bail claim against the crash point it can
+  compute (a claim at or past it is not believed), accepts only rounds that are recent, the first message of a player per round,
+  stakes within the limits, and at most 12 players a round. The window shows **This round** (who bet, who has bailed and where) and
+  **Last round** (the crash point, who bailed where and who crashed, with what they won or lost), plus the last explosions.
+- **Trust.** Every client can compute the crash point of a round in advance, so a modified client could always bail just in time.
+  This is the price of a rocket that needs no host; the other players' bails are public, which makes a perfect record visible. The
+  bookie's client only rejects totals that cannot be true (`House.Plausible`).
+- **Exposure.** A winning bail can pay up to 49.99x the stake, so the most one bet can cost the bookie is about 49x the house's
+  maximum bet.
+

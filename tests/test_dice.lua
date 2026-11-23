@@ -198,7 +198,7 @@ local dtext = textOf("Roll under a number you pick")
 check(dtext ~= nil, "the casino window explains dice")
 local hostBtns = allByText("Host a table"); check(not hostBtns[3]:IsEnabled(), "dice has no Host button")
 check(allByText("Join a table")[3] ~= nil and not allByText("Join a table")[3]:IsEnabled(), "nor a Join button")
-check(#allByText("Play vs Steve") == 3, "but a house button")
+check(#allByText("Play vs Steve") == 4, "but a house button")
 
 math.random = realRandom
 eq(#stub.errors, 0, "no errors: " .. table.concat(stub.errors, "; "))

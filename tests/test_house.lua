@@ -314,10 +314,10 @@ db.houseBook.players = {}
 fromWire("Steve lol", "LOBBY_HOUSE", LOBBY, { on = true, minBet = 100, maxBet = 10000 })
 UI.Show(); settle()
 local plays = allByText("Play vs Steve")
-eq(#plays, 3, "each game offers Steve's house")
+eq(#plays, 4, "each game offers Steve's house")
 eq(plays[1]:IsEnabled(), true, "the button is live")
 fromWire("Steve lol", "LOBBY_HOUSE", LOBBY, { on = false, minBet = 100, maxBet = 10000 }); UI.Refresh()
-check(#allByText("House closed") == 3 and not allByText("House closed")[1]:IsEnabled(), "a closed house cannot be started")
+check(#allByText("House closed") == 4 and not allByText("House closed")[1]:IsEnabled(), "a closed house cannot be started")
 fromWire("Steve lol", "LOBBY_HOUSE", LOBBY, { on = true, minBet = 100, maxBet = 10000 }); UI.Refresh()
 click(allByText("Play vs Steve")[1]); settle()
 local spin = allByText("Spin")[1]

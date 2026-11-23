@@ -25,12 +25,13 @@ Casino.GAMES = {
     roulette  = { title = "Roulette",  prefix = "RLT", ready = true },
     blackjack = { title = "Blackjack", prefix = "BJK", ready = true },
     dice      = { title = "Dice",      prefix = "DCE", ready = true, houseOnly = true },    -- only against a house (SPEC §11b)
+    rocket    = { title = "Rocket",    prefix = "RKT", ready = true, houseOnly = true, noTable = true },   -- no table at all (SPEC §11c)
 }
 -- Per-game round logic (everything except roulette, which lives in this file): a game registers
 -- Casino.Engines[game] = { Init, PlaceBet, ClearBets, OnRemoved, OnClosed, Recover, Public, ... }.
 Casino.Engines = {}
 local function engine(t) return Casino.Engines[t.game] end
-Casino.GAME_ORDER = { "roulette", "blackjack", "dice" }
+Casino.GAME_ORDER = { "roulette", "blackjack", "dice", "rocket" }
 Casino.MAX_SEATS = { roulette = 12, blackjack = 5, dice = 1 }       -- seats per table (blackjack shows five rows)
 Casino.HISTORY_KEEP = 12
 Casino.SPIN_SECONDS = 3
@@ -87,6 +88,7 @@ function Casino.Create(db, spec, hostName, now, rand)
     local game = Casino.GAMES[spec.game]
     if not game then return nil, "Unknown game." end
     if not game.ready then return nil, game.title .. " is not available yet." end
+    if game.noTable then return nil, game.title .. " has no table." end
     if game.houseOnly and not spec.house then return nil, game.title .. " is only played against a house." end
     local zero
     if spec.game == "roulette" then

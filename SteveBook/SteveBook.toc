@@ -16,6 +16,7 @@ Model.lua
 Casino.lua
 BlackjackTable.lua
 Dice.lua
+Rocket.lua
 House.lua
 Bookie.lua
 Import.lua
@@ -26,8 +27,10 @@ Comm.lua
 BookieNet.lua
 BookLobby.lua
 CasinoNet.lua
+RocketNet.lua
 UI\Bookie.lua
 UI\Bettor.lua
 UI\Minimap.lua
 UI\Casino.lua
+UI\Rocket.lua
 Core.lua

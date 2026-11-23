@@ -453,7 +453,7 @@ end
 
 local function buildLauncher()
     local L = launcher
-    local f = newWindow("SteveBookCasinoFrame", 560, 500, "SteveBook Casino")
+    local f = newWindow("SteveBookCasinoFrame", 560, 540, "SteveBook Casino")
     L.frame = f
 
     -- home: games and tables
@@ -470,7 +470,8 @@ local function buildLauncher()
         row.note = label(L.home, "GameFontHighlightSmall"); at(row.note, L.home, 0, y + 20)
         row.note:SetText(GREY .. (({ roulette = "Everyone bets on the same wheel. The host spins.",
             blackjack = "Everyone plays the dealer at the same table. Blackjack pays 3:2.",
-            dice = "Roll under a number you pick: the lower, the more it pays. Against a house only." })[id] or "") .. "|r")
+            dice = "Roll under a number you pick: the lower, the more it pays. Against a house only.",
+            rocket = "One rocket for everyone: bail before it explodes. Against a house only." })[id] or "") .. "|r")
         row.host = button(L.home, "Host a table", 110, function() setMode("host", id) end)
         at(row.host, L.home, 170, y - 2)
         row.join = button(L.home, "Join a table", 110, function() setMode("join", id) end)
@@ -587,6 +588,13 @@ local function refreshLauncher()
         elseif house and house.on ~= false then
             g.house:SetText("Play vs " .. house.host); g.house:Enable()
             g.house:SetScript("OnClick", function()
+                if Casino.GAMES[g.id].noTable then                              -- the rocket has no table: its own window
+                    local ok, err = ns.RocketNet.Open(house.host)
+                    if not ok then return say(err) end
+                    UI.Hide()
+                    ns.UI.Rocket.Show()
+                    return
+                end
                 local t, err = CN.PlayHouse(house.host, g.id)
                 if not t then return say(err) end
                 UI.OpenTable(t.code)
@@ -2270,6 +2278,11 @@ end
 function UI.Toggle()
     if launcher.frame and launcher.frame:IsShown() then UI.Hide() else UI.Show() end
 end
+
+-- The widgets and colours of this file, for the rocket window (UI/Rocket.lua).
+UI.Kit = { button = button, label = label, editBox = editBox, paint = paint, at = at, panel = panel, playerWindow = playerWindow,
+    glow = glow, COL = COL, MUTED = MUTED, GOLD = GOLD, GREEN = GREEN, RED = RED, GREY = GREY, money = money, say = say,
+    STAKE_BUTTONS = STAKE_BUTTONS, houseNote = function(host) return houseNote({ house = host }) end }
 
 CN.Subscribe(function() UI.Refresh() end)
 

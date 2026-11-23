@@ -106,6 +106,15 @@ lower**, so a low number is unlikely and pays a lot (49 pays 2x, 10 pays 9.8x, 2
 number). The dice roll the moment you press Roll. The most a single roll can cost the bookie is 49 times the house's maximum
 bet, so keep that limit modest.
 
+**The rocket (against a house only).** One rocket for everyone at the house: it launches, climbs and explodes, pauses 10
+seconds, and launches again, all the time, whether or not the bookie is online. Open it with the house button next to
+**Rocket** in the casino window. Bet in the pause before a launch (optionally with an **auto bail** multiplier) and press
+**Bail** while it climbs: you win your stake times the multiplier. If it explodes first you lose the stake. The window shows who
+is on the rocket and where they bailed, and after the explosion who crashed. Every client works out the same rocket from a number
+the bookie's house announces (and the server clock), so nothing is sent while it flies. The price is that a modified client could
+see the explosion coming; the others' bails are public. A winning bail can pay up to about 49 times the stake, so keep the house's
+maximum bet modest. The bookie's client needs this version once, so that the house announces its rocket number.
+
 ## Tests
 
 Pure-logic modules are tested outside the game with plain Lua:

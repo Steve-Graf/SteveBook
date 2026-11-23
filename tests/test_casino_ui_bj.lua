@@ -52,9 +52,9 @@ E.RESHUFFLE_BELOW = 0
 -- ---- hosting blackjack from the launcher
 UI.Show()
 local hostButtons = allByText("Host a table")
-eq(#hostButtons, 3, "each game has a Host button")
+eq(#hostButtons, 4, "each game has a Host button")
 check(hostButtons[1]:IsEnabled() and hostButtons[2]:IsEnabled(), "roulette and blackjack can be hosted")
-check(not hostButtons[3]:IsEnabled(), "dice cannot: it is only played against a house")
+check(not hostButtons[3]:IsEnabled() and not hostButtons[4]:IsEnabled(), "dice and the rocket cannot: they are only played against a house")
 click(hostButtons[2])                                       -- Blackjack
 check(textOf("Host a blackjack table") ~= nil, "the form says blackjack")
 local create = allByText("Create table")[1]

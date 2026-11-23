@@ -86,7 +86,12 @@ Protocol.Spec = {
     -- results coming back. All three travel in the lobby channel; the last two are addressed (`to`).
     LOBBY_HOUSE    = { dir = "any", fields = {         -- the bookie: "my house is open" (on) or closed, and its bet limits (copper)
         on = "boolean", minBet = "number", maxBet = "number", ver = "string?",
+        seed = "number?",       -- the number the house's rocket is drawn from (SPEC §11c); every player of the house sees the same rocket
     } },
+    -- The rocket (SPEC §11c): what a player does, told to everyone so they can see who is on the rocket. Nothing here
+    -- decides money: every client can work out the rocket itself and checks the claims against it.
+    ROCKET_BET     = { dir = "any", fields = { house = "string", id = "number", amount = "number" } },     -- bet on round `id`
+    ROCKET_BAIL    = { dir = "any", fields = { house = "string", id = "number", m100 = "number" } },       -- bailed at m100 (250 = 2.50x)
     HOUSE_REPORT   = { dir = "any", fields = {         -- player -> bookie: my TOTALS so far (the latest replaces the earlier ones)
         rounds = "number", wagered = "number",
         net = "number",         -- copper, positive = the player is up

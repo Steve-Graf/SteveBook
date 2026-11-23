@@ -564,8 +564,9 @@ function CasinoNet.AnnounceHouse(force, reply)
     if not force and now() - houseAnnounceAt < 20 then return end
     houseAnnounceAt = now()
     ns.Comm.JoinBook(lobby())
+    book.seed = book.seed or math.random(1, 2147483646)         -- the number the house's rocket is drawn from
     ns.Comm.Send("LOBBY_HOUSE", { on = book.enabled == true, minBet = book.minBet, maxBet = book.maxBet,
-        ver = ns.Comm.Version() }, lobby())
+        ver = ns.Comm.Version(), seed = book.seed }, lobby())
 end
 
 function CasinoNet.SetHouse(on)
@@ -652,6 +653,8 @@ local function reportSoon(host)
     local function go() reportPending[host] = nil; sendReport(host) end
     if C_Timer and C_Timer.After then C_Timer.After(3, go) else go() end
 end
+
+CasinoNet.ReportSoon = function(host) reportSoon(host) end        -- the rocket reports its results the same way
 
 function lobbyHandlers.LOBBY_HOUSE(sender, p)
     lastHeard = now()
