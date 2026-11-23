@@ -2,6 +2,7 @@
 --   Launcher  (/casino): the list of games, Host / Join, and your tables.
 --   Host window:   the table's code, players and their chips, Admit / chips / Kick, limits, Spin.
 --   Table window:  the roulette board for a player: chips, bets, the last result.
+--   Dice window:   roll under a target (SPEC §11b), only at a house table.
 --   House window:  a bookie's books for "play against the house" (SPEC §11a): who played, who owes whom, Settle.
 -- Only draws and wires: the rules live in ns.Roulette / ns.Casino / ns.CasinoClient and the
 -- messages in ns.CasinoNet.
@@ -467,8 +468,9 @@ local function buildLauncher()
         local row = { id = id }
         row.name = label(L.home, "GameFontHighlightLarge"); at(row.name, L.home, 0, y); row.name:SetText(g.title)
         row.note = label(L.home, "GameFontHighlightSmall"); at(row.note, L.home, 0, y + 20)
-        row.note:SetText(GREY .. (id == "roulette" and "Everyone bets on the same wheel. The host spins."
-            or "Everyone plays the dealer at the same table. Blackjack pays 3:2.") .. "|r")
+        row.note:SetText(GREY .. (({ roulette = "Everyone bets on the same wheel. The host spins.",
+            blackjack = "Everyone plays the dealer at the same table. Blackjack pays 3:2.",
+            dice = "Roll under a number you pick: the lower, the more it pays. Against a house only." })[id] or "") .. "|r")
         row.host = button(L.home, "Host a table", 110, function() setMode("host", id) end)
         at(row.host, L.home, 170, y - 2)
         row.join = button(L.home, "Join a table", 110, function() setMode("join", id) end)
@@ -476,6 +478,7 @@ local function buildLauncher()
         row.house = button(L.home, "No house yet", 126, function() end)       -- play alone against a bookie's bank (SPEC §11a)
         at(row.house, L.home, 402, y - 2)
         if not g.ready then row.host:Disable(); row.join:Disable(); row.house:Disable() end
+        if g.houseOnly then row.host:Disable(); row.join:Disable() end                -- dice: a house is the only way to play
         L.games[#L.games + 1] = row
         y = y + 46
     end
@@ -1937,6 +1940,146 @@ local function refreshBlackjack()
 end
 
 ------------------------------------------------------------------------------------------
+-- Player window: dice, roll under (SPEC §11b)
+------------------------------------------------------------------------------------------
+
+local D = {}
+local diceCode
+local DICE_TARGETS = { 10, 25, 50, 75, 90 }
+
+local function diceTable() return diceCode and db() and db().casinoCache and Client.Table(db().casinoCache, diceCode) end
+
+local function diceTarget()
+    local n = tonumber(D.targetBox:GetText() or "")
+    if n and n == math.floor(n) then return n end
+end
+
+function UI.SetTarget(n)
+    n = math.max(ns.Dice.MIN_TARGET, math.min(ns.Dice.MAX_TARGET, math.floor(n)))
+    if D.targetBox then D.targetBox:SetText(tostring(n)) end
+    UI.Refresh()
+end
+
+function UI.SetDiceStake(copper)
+    if D.amountBox then D.amountBox:SetText(money(copper)) end
+    UI.Refresh()
+end
+
+local function diceMessage(text) D.message = text or ""; if D.msg then D.msg:SetText(D.message) end end
+
+function UI.DiceRoll()
+    local stake = Odds.ParseMoney(D.amountBox:GetText() or "")
+    if not stake or stake <= 0 then return diceMessage(RED .. "Enter a stake like 5s.|r") end
+    local ok, err = CN.DiceBet(diceCode, stake, diceTarget())
+    diceMessage(ok and "" or (RED .. err .. "|r"))
+    UI.Refresh()
+end
+
+local function buildDice()
+    local f, body = playerWindow("SteveBookCasinoDiceFrame", 520, 420, "SteveBook Casino")
+    D.frame, D.body = f, body
+    D.head = label(body, "GameFontNormalLarge"); at(D.head, body, 14, 8); D.head:SetWidth(260)
+    D.status = label(body, "GameFontHighlight"); at(D.status, body, 14, 32); D.status:SetWidth(490)
+    D.balance = label(body, "GameFontHighlight", "RIGHT"); at(D.balance, body, 200, 10); D.balance:SetWidth(300)
+
+    local tl = label(body, "GameFontNormal"); at(tl, body, 14, 70); tl:SetText("Roll under")
+    D.minus = button(body, "-", 26, function() UI.SetTarget((diceTarget() or 50) - 1) end, 22); at(D.minus, body, 100, 66)
+    D.targetBox = editBox(body, 44, "49", 3); at(D.targetBox, body, 132, 66)
+    D.targetBox:SetScript("OnTextChanged", function(_, userInput) if userInput then UI.Refresh() end end)
+    D.plus = button(body, "+", 26, function() UI.SetTarget((diceTarget() or 50) + 1) end, 22); at(D.plus, body, 182, 66)
+    local qx = 222
+    for _, v in ipairs(DICE_TARGETS) do
+        local b = button(body, tostring(v), 40, function() UI.SetTarget(v) end, 22)
+        at(b, body, qx, 66); qx = qx + 44
+    end
+    D.info = label(body, "GameFontHighlight"); at(D.info, body, 14, 98); D.info:SetWidth(490)
+
+    local sl = label(body, "GameFontNormal"); at(sl, body, 14, 138); sl:SetText("Stake")
+    D.amountBox = editBox(body, 70, money(Odds.STAKE_STEP), 12); at(D.amountBox, body, 100, 134)
+    D.amountBox:SetScript("OnTextChanged", function(_, userInput) if userInput then UI.Refresh() end end)
+    qx = 176
+    for _, v in ipairs(STAKE_BUTTONS) do
+        local b = button(body, money(v), 46, function() UI.SetDiceStake(v) end, 22)
+        at(b, body, qx, 134); qx = qx + 50
+    end
+
+    D.roll = button(body, "Roll", 200, function() UI.DiceRoll() end, 36); at(D.roll, body, 14, 176)
+    D.msg = label(body, "GameFontHighlight"); at(D.msg, body, 226, 184); D.msg:SetWidth(280); D.msg:SetWordWrap(true)
+
+    local lp = panel(body, 14, 232, 236, 140, COL.panel, COL.line)
+    local ll = label(lp, "GameFontNormal"); at(ll, lp, 10, 8); ll:SetText("Last roll")
+    D.number = label(lp, "GameFontNormalHuge", "LEFT"); at(D.number, lp, 10, 30)
+    D.numberNote = label(lp, "GameFontHighlightSmall"); at(D.numberNote, lp, 80, 38); D.numberNote:SetWidth(150); D.numberNote:SetWordWrap(true)
+    D.verdict = label(lp, "GameFontHighlightSmall"); at(D.verdict, lp, 10, 84); D.verdict:SetWidth(216); D.verdict:SetWordWrap(true)
+    local hp = panel(body, 260, 232, 234, 140, COL.panel, COL.line)
+    local hl = label(hp, "GameFontNormal"); at(hl, hp, 10, 8); hl:SetText("Your last rolls")
+    D.history = label(hp, "GameFontHighlightSmall"); at(D.history, hp, 10, 30); D.history:SetWidth(216)
+    D.history:SetWordWrap(true); D.history:SetJustifyV("TOP"); D.history:SetHeight(104)
+
+    f:SetScript("OnShow", function()
+        if diceCode then CN.Sync(diceCode) end
+        UI.Refresh()
+    end)
+end
+
+local function refreshDice()
+    if not (D.frame and D.frame:IsShown()) then return end
+    local tc = diceTable()
+    if not tc then D.frame:Hide(); return end
+    local st, Dice = tc.state, ns.Dice
+    D.head:SetText(tc.name or "Dice")
+    local statusText
+    if not st then statusText = GOLD .. "Waiting for the table...|r"
+    elseif st.status == "rolling" then statusText = GOLD .. "Rolling...|r"
+    else
+        statusText = GREEN .. "Place your bet|r" .. MUTED .. ("   Round %d   %s to %s   roll 1-%d, %d%% house edge"):format(
+            st.round, money(st.minBet), money(st.maxBet), Dice.SIDES, Dice.EDGE) .. "|r"
+    end
+    D.status:SetText(statusText)
+    D.balance:SetText(("Chips %s%s|r   %son the table %s|r"):format(GOLD, money(tc.balance or 0), MUTED, money(Client.Staked(tc)))
+        .. (tc.house and ("   " .. houseNote(tc)) or ""))
+
+    -- what the bet in the boxes would do
+    local target = diceTarget()
+    local stake = Odds.ParseMoney(D.amountBox:GetText() or "")
+    local valid = target ~= nil and Dice.ValidTarget(target)
+    if not valid then
+        D.info:SetText(GOLD .. ("Roll under a whole number from %d to %d."):format(Dice.MIN_TARGET, Dice.MAX_TARGET) .. "|r")
+    else
+        local win = stake and stake > 0 and (Dice.Payout(stake, target) - stake) or nil
+        D.info:SetText(("Wins on %s%d or less|r: %s%d%%|r chance, pays %s%.2fx|r%s"):format(
+            GOLD, target, GOLD, math.floor(Dice.Chance(target) * 100 + 0.5), GOLD, Dice.Multiplier(target),
+            win and ("   win " .. GREEN .. "+" .. money(win) .. "|r") or ""))
+    end
+
+    -- the last roll and mine
+    local last = tc.lastResult
+    if last and last.number then
+        local mine = Client.MyResult(tc, myName(tc))
+        local b = mine and mine.bets and mine.bets[1]
+        local won = mine and mine.net > 0
+        D.number:SetText((mine and (won and GREEN or RED) or "|cffdddddd") .. last.number .. "|r")
+        D.numberNote:SetText(mine and (won and (GREEN .. "WIN +" .. money(mine.net) .. "|r") or (RED .. "LOSE " .. money(-mine.net) .. "|r")) or "")
+        D.verdict:SetText(b and (MUTED .. ("You needed %d or less."):format(b.pick) .. "|r") or "")
+    else
+        D.number:SetText(GREY .. "-|r"); D.numberNote:SetText(""); D.verdict:SetText("")
+    end
+    local lines = {}
+    for _, r in ipairs(tc.rolls or {}) do
+        lines[#lines + 1] = ("%s%d|r under %s   %s"):format(r.net > 0 and GREEN or RED, r.roll, tostring(r.target or "?"), signed(r.net))
+    end
+    D.history:SetText(#lines > 0 and table.concat(lines, "\n") or (GREY .. "no rolls yet|r"))
+
+    local can = Client.CanBet(tc) and Client.Staked(tc) == 0 and valid and stake ~= nil and stake > 0
+    if can then D.roll:Enable() else D.roll:Disable() end
+    glow(D.roll, can)
+    local hint = ""
+    if (D.message or "") ~= "" then hint = D.message
+    elseif tc.status == "seated" and st and st.status == "betting" then hint = MUTED .. "Pick a target and a stake, then press Roll. The dice roll as soon as you do.|r" end
+    D.msg:SetText(hint)
+end
+
+------------------------------------------------------------------------------------------
 -- House window: the bookie's books for "play against the house" (SPEC §11a)
 ------------------------------------------------------------------------------------------
 
@@ -2071,6 +2214,7 @@ function UI.Refresh()
     refreshHost()
     refreshTable()
     refreshBlackjack()
+    refreshDice()
     refreshHouse()
 end
 
@@ -2085,7 +2229,12 @@ end
 function UI.OpenTable(code)
     code = ns.Protocol.CanonicalCode(code)
     UI.Hide()                                  -- the launcher steps aside
-    if gameOfCode(code) == "blackjack" then
+    if gameOfCode(code) == "dice" then
+        if not D.frame then buildDice() end
+        diceCode = code
+        diceMessage("")
+        D.frame:Show()
+    elseif gameOfCode(code) == "blackjack" then
         if not bj.frame then buildBlackjack() end
         bjCode = code
         bjMessage("")
@@ -2129,4 +2278,5 @@ CN.Subscribe(function() UI.Refresh() end)
 CN.SetWindowCheck(function(code)
     code = ns.Protocol.CanonicalCode(code)
     return (bjCode == code and bj.frame ~= nil and bj.frame:IsShown()) or (playCode == code and play.frame ~= nil and play.frame:IsShown())
+        or (diceCode == code and D.frame ~= nil and D.frame:IsShown())
 end)

@@ -186,6 +186,16 @@ function Client.ApplyResult(store, code, p)
         table.insert(t.log, 1, { round = p.round, total = p.dealer.total, bust = p.dealer.bust, blackjack = p.dealer.blackjack, nets = nets })
         while #t.log > LOG_KEEP do table.remove(t.log) end
     end
+    if t.game == "dice" and p.number then                  -- dice: my last few rolls, newest first
+        t.rolls = t.rolls or {}
+        for _, r in ipairs(p.results) do
+            if r.name == t.me then
+                local b = r.bets and r.bets[1]
+                table.insert(t.rolls, 1, { roll = p.number, target = b and b.pick, amount = b and b.amount, net = r.net })
+            end
+        end
+        while #t.rolls > LOG_KEEP + 4 do table.remove(t.rolls) end
+    end
     t.bets = {}
     t.pending = {}
     for _, r in ipairs(p.results) do

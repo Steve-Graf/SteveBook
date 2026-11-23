@@ -182,6 +182,29 @@ function CasinoNet.Spin(t)
     return true
 end
 
+-- Dice: the dice tumble for Dice.ROLL_SECONDS, then the number is drawn and paid (a house table only: the
+-- automatic rules start it as soon as the bet is in).
+local function finishRoll(code)
+    local t = hosted(code)
+    if not (t and t.status == "rolling") then return end
+    local r = ns.Dice.Finish(t, nil, now())
+    if not r then return end
+    send(code, { { type = "TBL_RESULT", payload = Casino.ResultMessage(t) }, stateMsg(t) })
+    if t.house then CasinoNet.HouseRound(t, r) end
+    changed(code)
+end
+
+function CasinoNet.Roll(t)
+    local ok, err = ns.Dice.Roll(t, now())
+    if not ok then return nil, err == "not_betting" and "The dice are already rolling." or (err == "no_bets" and "Nobody has bet yet." or err) end
+    send(t.code, { stateMsg(t) })
+    changed(t.code)
+    local code = t.code
+    if C_Timer and C_Timer.After then C_Timer.After(ns.Dice.ROLL_SECONDS, function() finishRoll(code) end)
+    else finishRoll(code) end
+    return true
+end
+
 function CasinoNet.CloseTable(t)
     Casino.Close(t)
     send(t.code, { stateMsg(t) })
@@ -319,7 +342,9 @@ function CasinoNet.AutoCheck(t)
         changed(t.code)
     elseif act == "start" then
         local ok, err
-        if t.game == "blackjack" then ok, err = CasinoNet.Deal(t) else ok, err = CasinoNet.Spin(t) end
+        if t.game == "blackjack" then ok, err = CasinoNet.Deal(t)
+        elseif t.game == "dice" then ok, err = CasinoNet.Roll(t)
+        else ok, err = CasinoNet.Spin(t) end
         if not ok then
             t.autoAt = nil                             -- do not retry every second: the next bet starts a new countdown
             say(("%s: the automatic round could not start (%s)."):format(t.name, tostring(err)))
@@ -837,7 +862,9 @@ function handlers.TBL_RESULT(sender, p, code)
     if not (tc and tc.status == "seated") then return end
     Client.ApplyResult(db().casinoCache, code, p)
     local label
-    if p.number then
+    if tc.game == "dice" and p.number then
+        label = "Rolled " .. p.number
+    elseif p.number then
         label = Roulette.Label(p.number) .. " " .. Roulette.Color(p.number)
     elseif p.dealer then
         label = ("Dealer %d%s"):format(p.dealer.total or 0, p.dealer.bust and " (bust)" or (p.dealer.blackjack and " (blackjack)" or ""))
@@ -922,6 +949,29 @@ function CasinoNet.Wager(code, amount)
     seq = seq + 1
     local ref = ("%d-%04d-%d"):format(now(), math.random(0, 9999), seq)
     local bet = { kind = "wager", amount = amount }
+    Client.NewPending(db().casinoCache, code, ref, bet, now())
+    cache(code).pending[ref].round = st.round
+    ns.Comm.Send("TBL_BET", { ref = ref, round = st.round, bet = bet }, code)
+    changed(code)
+    return true
+end
+
+-- Dice: roll under `target` with `amount` at stake. A house table rolls as soon as the bet is in.
+function CasinoNet.DiceBet(code, amount, target)
+    local tc = cache(code)
+    if not Client.CanBet(tc) then return nil, "Betting is closed right now." end
+    local st, Dice = tc.state, ns.Dice
+    if not Dice.ValidTarget(target) then
+        return nil, ("Roll under a whole number from %d to %d."):format(Dice.MIN_TARGET, Dice.MAX_TARGET)
+    end
+    if type(amount) ~= "number" or amount % Odds.STAKE_STEP ~= 0 or amount <= 0 then return nil, "Bets are whole silver." end
+    if amount < st.minBet then return nil, "The minimum bet is " .. money(st.minBet) .. "." end
+    if amount > st.maxBet then return nil, "The maximum bet is " .. money(st.maxBet) .. "." end
+    if amount > (tc.balance or 0) then return nil, "You only have " .. money(tc.balance or 0) .. " in chips." end
+    if Client.Staked(tc) > 0 then return nil, "Your roll is already on its way." end
+    seq = seq + 1
+    local ref = ("%d-%04d-%d"):format(now(), math.random(0, 9999), seq)
+    local bet = { kind = "roll", amount = amount, pick = target }
     Client.NewPending(db().casinoCache, code, ref, bet, now())
     cache(code).pending[ref].round = st.round
     ns.Comm.Send("TBL_BET", { ref = ref, round = st.round, bet = bet }, code)

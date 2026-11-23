@@ -21,9 +21,9 @@ ns.House = House
 
 local Casino = ns.Casino
 
-House.GAMES = { "roulette", "blackjack" }
+House.GAMES = { "roulette", "blackjack", "dice" }
 House.FLOAT_BETS = 5              -- before each round a player's chips are topped up to this many maximum bets
-House.MAX_WIN_RATIO = 35          -- no honest total wins more than 35 times what was wagered (a straight roulette bet)
+House.MAX_WIN_RATIO = 49          -- no honest total wins more than 49 times what was wagered (dice at its lowest target pays 49x)
 House.STEP = 100                  -- stakes are whole silver (Odds.STAKE_STEP)
 
 local function base(name) return type(name) == "string" and name:match("^([^%-%s]+)") or name end
@@ -55,7 +55,7 @@ function House.SetLimits(book, minBet, maxBet)
 end
 
 -- A report is believable if its numbers are whole, not negative where they cannot be, and the total is not
--- better than the best possible luck (35:1) or worse than losing everything staked.
+-- better than the best possible luck (a 2% dice roll pays 49x) or worse than losing everything staked.
 function House.Plausible(p)
     if type(p) ~= "table" then return false, "no report" end
     if not (isInt(p.rounds) and isInt(p.wagered) and isInt(p.net)) then return false, "the numbers are not whole" end
@@ -240,8 +240,8 @@ function House.FindTable(db, host, game)
 end
 
 -- The player's table against `host` for `game`, made if it is not there yet. `hostName` is the player's own
--- character (they host it). Limits follow the bookie's announcement. Blackjack deals by itself the moment
--- a wager is in; roulette waits for the player's own Spin.
+-- character (they host it). Limits follow the bookie's announcement. Blackjack and dice go by themselves the
+-- moment a bet is in; roulette waits for the player's own Spin.
 function House.NewTable(db, host, game, hostName, now, rand)
     host = base(host)
     local rec = House.Record(db, host)
@@ -253,11 +253,11 @@ function House.NewTable(db, host, game, hostName, now, rand)
     end
     local label = host .. "'s house"
     local t, err = Casino.Create(db, { game = game, name = label, zero = game == "roulette" and "single" or nil,
-                                       minBet = rec.minBet, maxBet = rec.maxBet }, hostName, now, rand)
+                                       minBet = rec.minBet, maxBet = rec.maxBet, house = true }, hostName, now, rand)
     if not t then return nil, err end
     t.house = host
     t.maxSeats = 1
-    if game == "blackjack" then t.auto = true; t.autoSeconds = 0 end
+    if game == "blackjack" or game == "dice" then t.auto = true; t.autoSeconds = 0 end
     return t
 end
 

@@ -101,7 +101,8 @@ Protocol.Spec = {
     TBL_JOIN_DENY  = { dir = "bookie", fields = { ownerName = "string", reason = "string?" } },
     TBL_STATE      = { dir = "bookie", fields = {      -- public table state, broadcast (join, chips, spin, result)
         rev = "number", game = "string", name = "string",
-        status = "string",      -- "betting" | "spinning" | "closed" (roulette); "betting" | "playing" | "dealer" | "results" | "closed" (blackjack)
+        status = "string",      -- "betting" | "spinning" | "closed" (roulette); "betting" | "playing" | "dealer" | "results" | "closed" (blackjack);
+                                --   "betting" | "rolling" | "closed" (dice)
         round = "number",
         minBet = "number", maxBet = "number",           -- copper per bet
         zero = "string?",       -- roulette wheel: "single" | "double" | "none"
@@ -121,7 +122,7 @@ Protocol.Spec = {
     } },
     TBL_RESULT     = { dir = "bookie", fields = {      -- broadcast after a spin
         rev = "number", round = "number",
-        number = "number?",     -- roulette: the pocket (37 = 00)
+        number = "number?",     -- roulette: the pocket (37 = 00); dice: the roll (1..100)
         dealer = "table?",      -- blackjack: the dealer's final { cards, total, bust, blackjack }
         results = "table",      -- list of { name, net, balance, bets = list of { ..bet, win } } (roulette)
                                 --   or { name, net, balance, hands = list of { cards, bet, outcome, win } } (blackjack)

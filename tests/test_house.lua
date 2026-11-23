@@ -60,7 +60,9 @@ do
     eq(book.players.Ann.net, -500, "the player went the other way"); eq(House.Owed(book.players.Ann), -500, "so they owe the bookie")
 
     -- reports that cannot be true
-    eq((House.Apply(book, "Mal", { rounds = 1, wagered = 100, net = 100 * 36 }, 1)), "rejected", "more than 35:1")
+    eq((House.Apply(book, "Mal", { rounds = 1, wagered = 100, net = 100 * 50 }, 1)), "rejected", "more than 49:1")
+eq((House.Apply(book, "Lucky", { rounds = 1, wagered = 100, net = 100 * 49 }, 1)), "new", "49:1 is a 2% dice win: allowed")
+House.Forget(book, "Lucky")
     eq((House.Apply(book, "Mal", { rounds = 1, wagered = 100, net = -101 }, 1)), "rejected", "lost more than was staked")
     eq((House.Apply(book, "Mal", { rounds = 1, wagered = 100.5, net = 0 }, 1)), "rejected", "fractions")
     eq((House.Apply(book, "Mal", { rounds = -1, wagered = 0, net = 0 }, 1)), "rejected", "negative rounds")
@@ -312,10 +314,10 @@ db.houseBook.players = {}
 fromWire("Steve lol", "LOBBY_HOUSE", LOBBY, { on = true, minBet = 100, maxBet = 10000 })
 UI.Show(); settle()
 local plays = allByText("Play vs Steve")
-eq(#plays, 2, "each game offers Steve's house")
+eq(#plays, 3, "each game offers Steve's house")
 eq(plays[1]:IsEnabled(), true, "the button is live")
 fromWire("Steve lol", "LOBBY_HOUSE", LOBBY, { on = false, minBet = 100, maxBet = 10000 }); UI.Refresh()
-check(#allByText("House closed") == 2 and not allByText("House closed")[1]:IsEnabled(), "a closed house cannot be started")
+check(#allByText("House closed") == 3 and not allByText("House closed")[1]:IsEnabled(), "a closed house cannot be started")
 fromWire("Steve lol", "LOBBY_HOUSE", LOBBY, { on = true, minBet = 100, maxBet = 10000 }); UI.Refresh()
 click(allByText("Play vs Steve")[1]); settle()
 local spin = allByText("Spin")[1]

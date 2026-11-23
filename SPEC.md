@@ -539,7 +539,7 @@ while the bookie is offline. (`House.lua` is the pure logic; the glue is the "ho
   is never announced in the lobby, and it has no heartbeat. All the existing engines, messages and windows are reused.
   Because the host side is the player's own client this is **trust-based**: a modified client could report false results.
   The bookie's client only rejects totals that cannot be true (`House.Plausible`: whole numbers, no loss beyond the amount
-  wagered, no win beyond 35:1). Bet limits are enforced by the player's client.
+  wagered, no win beyond 49:1). Bet limits are enforced by the player's client.
 - **Rounds.** Blackjack: `t.auto = true` with `t.autoSeconds = 0`, so `Casino.AutoTick` returns `start` as soon as a wager
   is in (the hand is dealt at once). Roulette: the player's own **Spin** button (`CasinoNet.HouseSpin`, once a bet is on
   the table). The roulette wheel has a single zero. After a round betting reopens as usual (blackjack after the 5 s results).
@@ -561,3 +561,25 @@ while the bookie is offline. (`House.lua` is the pure logic; the glue is the "ho
   owes the bookie. The House window (`/casino house`) lists players with rounds, wagered, the house's result and the balance, and
   **Settle** (two clicks) sets `paid = net` and tells the player (`HOUSE_ACK`). Gold moves by trade, as everywhere.
 - **Not in v1:** partial settlements, replay-verified rounds (the seed and actions are not kept), a per-player credit limit.
+
+---
+
+## 11b. Dice (roll under)
+
+A solo game for a house (§11a): `Dice.lua` is the rules and the engine (`Casino.Engines.dice`; `Casino.GAMES.dice` is
+`houseOnly`, so it cannot be hosted as a table or joined, and it appears in the casino window only as the **Play vs <bookie>**
+button).
+
+- **The bet.** The player picks a target (2 to 95) and a stake (whole silver between the house's limits). The die has 100 sides, like
+  `/roll`: the bet wins when the roll is the target **or lower**. A win returns `floor(stake * (100 - 2) / target)` copper, stake
+  included (`Dice.Payout`): the house keeps 2% at every target, a lower target is less likely and pays more (49 pays 2.00x, 10 pays
+  9.80x, 2 pays 49x). A bet is `{ kind = "roll", amount, pick = target }`; one per roll (`pick` carries the target so that
+  `TBL_PLAYER` and the result list it).
+- **The round.** A house table is automatic with no delay (`t.auto`, `t.autoSeconds = 0`): the moment the bet is in the dice roll
+  (`CasinoNet.Roll`, status `rolling` for `Dice.ROLL_SECONDS` = 1.2 s), then the number is drawn, the bet is paid and betting reopens.
+  `TBL_RESULT.number` is the roll. The result also counts in the house report (`games.dice`). A reload mid-roll returns the stake.
+- **Exposure.** The most one roll can cost the bookie is `49 * maximum bet` (target 2), so keep the house's maximum bet modest;
+  `House.MAX_WIN_RATIO` (49) is the highest net-to-wagered ratio the bookie's client accepts in a report.
+- **Window.** Target box with - / + and quick targets (10, 25, 50, 75, 90), stake box with quick stakes, a line with the chance and
+  multiplier of the bet in the boxes, a **Roll** button (glows when ready), the last roll with WIN / LOSE, and the player's last rolls.
+

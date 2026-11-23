@@ -100,6 +100,12 @@ limits). The bookie's **House** window lists each player's rounds, amount wagere
 game runs on the player's side this is trust-based, like the rest of the credit system: the bookie's client only
 rejects totals that cannot be true. Set the bet limits in the House window.
 
+**Dice (against a house only).** Next to roulette and blackjack the casino window lists **Dice**, which only has the
+**Play vs <bookie>** button. Pick a number from 2 to 95 and a stake: the bet wins when a 1-100 roll comes up **that number or
+lower**, so a low number is unlikely and pays a lot (49 pays 2x, 10 pays 9.8x, 2 pays 49x; the house keeps 2% at every
+number). The dice roll the moment you press Roll. The most a single roll can cost the bookie is 49 times the house's maximum
+bet, so keep that limit modest.
+
 ## Tests
 
 Pure-logic modules are tested outside the game with plain Lua:
