@@ -164,6 +164,12 @@ frames, and send addon messages over `CHANNEL`. Bettors never need the bookie's 
 Fallback if CHANNEL addon messages are restricted in Forever: bettor enters the bookie's name
 too and everything goes over addon `WHISPER`.
 
+**Channel numbers:** the game numbers channels in the order they are joined, so a channel joined while the player's
+own (General, Trade, ...) are still coming up takes `/1` and pushes them down. `Comm` therefore holds a join gate:
+after each loading screen (15 s at login, 5 s otherwise) no new channel is joined until the player's own channels are
+listed (`GetChannelList`) and unchanged for 3 s, or 60 s have passed. A channel already held keeps working; messages
+sent meanwhile are queued, and the guild path works. `/book net` says "not joined yet" while the gate is closed.
+
 **Addressed replies:** messages meant for one player (JOIN_OK/DENY, SYNC, BET_ACK/REJECT, BALANCE)
 go out on the same hidden channel with the envelope field `to` set to that player's name; every
 other client drops them. Addon WHISPERs are not used: in Forever the send call returned success

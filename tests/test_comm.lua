@@ -443,6 +443,63 @@ do
     check(joinsFor(Protocol.ChannelName("ACT-IVE1")) == 1, "...and the books I belong to")
     eq(joinsFor(Protocol.ChannelName("DEN-IED1")), 0, "...but not denied ones")
     eq(joinsFor(Protocol.ChannelName(other.code)), 0, "...and not books someone else runs")
+
+    -- the join gate: our channels are numbered after the player's own (General, Trade...), so none is joined
+    -- until those are listed and have stopped changing
+    do
+        local savedList = GetChannelList
+        local list = {}
+        GetChannelList = function() return unpack(list) end             -- id, name, disabled, ...
+        local function closeGate() stub.afters = {}; joinCalls = {}; stub.fire("PLAYER_ENTERING_WORLD", true, false); return stub.afters[#stub.afters] end
+        local GATE = Protocol.ChannelName("GAT-E1")
+
+        local first = closeGate()
+        check(Comm.ChannelsWaiting(), "a login closes the gate"); eq(first.sec, 15, "for at least 15 s")
+        check(not Comm.JoinBook("GAT-E1"), "no channel is joined while it is closed"); eq(joinsFor(GATE), 0, "the game was not asked")
+        stub.channels[Protocol.ChannelName("HEL-D1")] = 4
+        check(Comm.JoinBook("HEL-D1"), "a channel already held keeps working"); eq(joinsFor(Protocol.ChannelName("HEL-D1")), 0, "without a join")
+        stub.channels[Protocol.ChannelName("HEL-D1")] = nil; Comm.LeaveBook("HEL-D1")
+
+        first.fn()
+        check(Comm.ChannelsWaiting(), "the player has no channel of their own yet, so it stays closed")
+        list = { 1, "General - Stormwind", false }
+        stub.runAfters()
+        check(Comm.ChannelsWaiting(), "General is up, but the list has only just been seen")
+        stub.advance(2); stub.runAfters()
+        check(Comm.ChannelsWaiting(), "and has been steady for 2 s only")
+        stub.advance(1); stub.runAfters()
+        check(not Comm.ChannelsWaiting(), "steady for 3 s: the gate opens"); eq(joinsFor(GATE), 1, "and the channel asked for meanwhile is joined")
+
+        -- a list that is still changing keeps it closed
+        list = { 1, "General - Stormwind", false }
+        first = closeGate(); first.fn()
+        stub.advance(2); list = { 1, "General - Stormwind", false, 2, "Trade - City", false }; stub.runAfters()
+        stub.advance(2); stub.runAfters()
+        check(Comm.ChannelsWaiting(), "Trade arrived, so the 3 s start again")
+        stub.advance(1); stub.runAfters()
+        check(not Comm.ChannelsWaiting(), "and the gate opens after them")
+
+        -- our own channels are not the player's: with only ours listed it waits, then gives up after a minute
+        list = { 1, Protocol.ChannelName("OUR-S1"), false }
+        first = closeGate(); first.fn()
+        stub.advance(30); stub.runAfters()
+        check(Comm.ChannelsWaiting(), "only our channels listed: still closed after 30 s")
+        stub.advance(31); stub.runAfters()
+        check(not Comm.ChannelsWaiting(), "a player with no channels of their own is not kept waiting for ever")
+
+        -- a newer loading screen takes over from the one before
+        list = { 1, "General - Stormwind", false }
+        local old = closeGate(); old.fn()
+        local oldNext = stub.afters[#stub.afters]                      -- its next look at the list
+        local newer = closeGate()                                      -- a loading screen
+        stub.advance(5); oldNext.fn()
+        check(Comm.ChannelsWaiting(), "the countdown of the screen before does not open the gate")
+        newer.fn(); stub.advance(3); stub.runAfters()
+        check(not Comm.ChannelsWaiting(), "the newest one does")
+
+        GetChannelList = savedList
+        Comm.LeaveBook("GAT-E1")
+    end
 end
 
 ------------------------------------------------------------------------------------------

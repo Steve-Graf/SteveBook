@@ -238,7 +238,8 @@ function Comm.NetReport()
     for _, code in ipairs(codes) do
         local id, disabled = Comm.ChannelState(code)
         local state
-        if id == 0 then state = "NOT JOINED"
+        if id == 0 and not gateOpen then state = "not joined yet: waiting for your own chat channels (General, Trade...) to come up first, so ours is numbered after them"
+        elseif id == 0 then state = "NOT JOINED"
         elseif disabled then state = ("slot %d but DISABLED (the game has not let you in; it is retried every few seconds)"):format(id)
         else state = ("slot %d, working"):format(id) end
         lines[#lines + 1] = ("%s: %s"):format(Protocol.ChannelName(code), state)
@@ -344,9 +345,39 @@ local function leaveLegacy(code)
     end
 end
 
+-- Our channels must be joined AFTER the player's own (General, Trade, ...): the game numbers channels in the
+-- order they are joined, so a join made while those are still coming up takes /1 and pushes them down. No new
+-- channel is joined (one we already hold keeps working) until the gate is open: after the loading screen's
+-- delay, once the player's own channels are listed and have stopped changing, or after GATE_MAX seconds
+-- (for a player who has no channels of their own). A client that cannot say it is still loading (the test
+-- stub) has nothing to wait for.
+local GATE_SETTLE = 3               -- the channel list must be unchanged this long
+local GATE_MAX = 60                 -- open the gate after this long whatever the list says
+local gateOpen = (IsLoggedIn == nil)
+local gateToken = 0
+
+local function isOurs(name) return type(name) == "string" and name:match("^SB[A-Z0-9]+$") ~= nil end
+
+-- The player's own channels: (true, "1:General,2:Trade") or (false, "") while there are none; nil when the
+-- game cannot list channels.
+local function ownChannels()
+    if not GetChannelList then return nil end
+    local ok, t = pcall(function() return { GetChannelList() } end)
+    if not ok or type(t) ~= "table" then return nil end
+    local parts = {}
+    for i = 1, #t, 3 do
+        if type(t[i + 1]) == "string" and not isOurs(t[i + 1]) then parts[#parts + 1] = tostring(t[i]) .. ":" .. t[i + 1] end
+    end
+    table.sort(parts)
+    return #parts > 0, table.concat(parts, ",")
+end
+
+function Comm.ChannelsWaiting() return not gateOpen end
+
 local function tryJoin(code)
     leaveLegacy(code)
     if channelId(code) > 0 then attempts[code] = nil; disabledSince[code] = nil; return true end
+    if not gateOpen then return false, "waiting for the default channels" end
     local t = clock()
     if lastTry[code] and t - lastTry[code] < JOIN_RETRY_SECONDS then return false, "waiting" end
     lastTry[code] = t
@@ -785,6 +816,30 @@ local function joinAll()
     end
 end
 
+-- Close the gate for a loading screen (`delay` seconds at least), then open it once the player's own channels have
+-- settled (see above) and join everything we want.
+local function startGate(delay)
+    gateOpen = false
+    gateToken = gateToken + 1
+    local token, started = gateToken, clock()
+    local lastSig, stableSince
+    local function open()
+        gateOpen = true
+        joinAll()
+        for code in pairs(joined) do tryJoin(code) end              -- and the channels something asked for meanwhile
+    end
+    local function check()
+        if token ~= gateToken then return end                       -- a newer loading screen took over
+        local t = clock()
+        local up, sig = ownChannels()
+        if up == nil then return open() end                         -- no channel list to go by
+        if sig ~= lastSig then lastSig, stableSince = sig, t end
+        if (up and t - stableSince >= GATE_SETTLE) or t - started >= GATE_MAX then return open() end
+        C_Timer.After(1, check)
+    end
+    if C_Timer and C_Timer.After then C_Timer.After(delay, check) else open() end
+end
+
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_ENTERING_WORLD")
 f:RegisterEvent("CHAT_MSG_CHANNEL_NOTICE")
@@ -802,6 +857,5 @@ f:SetScript("OnEvent", function(_, event, a1, ...)
         netLog(("session %s, version %s, player %s, guild %s"):format(sessionTag, tostring(Comm.Version()), tostring(myName()),
             tostring(IsInGuild and IsInGuild() or false)))
     end
-    local delay = a1 and 15 or 5
-    if C_Timer and C_Timer.After then C_Timer.After(delay, joinAll) else joinAll() end
+    startGate(a1 and 15 or 5)
 end)
