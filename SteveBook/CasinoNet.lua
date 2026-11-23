@@ -559,7 +559,7 @@ local function lobby() return ns.Protocol.LOBBY_CODE end
 function CasinoNet.AnnounceHouse(force, reply)
     local d = db()
     local book = d and d.houseBook
-    if not book then return end
+    if not book or not House.IsBookie(me()) then return end            -- only a bookie runs a house
     if not (book.enabled or force or reply) then return end
     if not force and now() - houseAnnounceAt < 20 then return end
     houseAnnounceAt = now()
@@ -569,8 +569,11 @@ function CasinoNet.AnnounceHouse(force, reply)
         ver = ns.Comm.Version(), seed = book.seed }, lobby())
 end
 
+local NOT_BOOKIE = "Only Steve runs a house. Everyone else plays at it."
+
 function CasinoNet.SetHouse(on)
     local d = db()
+    if on and not House.IsBookie(me()) then return nil, NOT_BOOKIE end
     local book = House.EnsureBook(d)
     book.enabled = on and true or false
     if book.enabled then
@@ -583,6 +586,7 @@ function CasinoNet.SetHouse(on)
 end
 
 function CasinoNet.SetHouseLimits(minBet, maxBet)
+    if not House.IsBookie(me()) then return nil, NOT_BOOKIE end
     local book = House.EnsureBook(db())
     local ok, err = House.SetLimits(book, minBet, maxBet)
     if not ok then return nil, err end
@@ -616,7 +620,7 @@ function lobbyHandlers.HOUSE_REPORT(sender, p)
     local d = db()
     local book = d and d.houseBook
     local who = baseName(sender)
-    if not (book and who) or who == baseName(me()) then return end
+    if not (book and who) or who == baseName(me()) or not House.IsBookie(me()) then return end
     local status, e, why = House.Apply(book, who, p, now())
     if status == "rejected" then
         say(("%s sent house results that do not add up (%s), so they were ignored."):format(who, why))
@@ -661,7 +665,7 @@ function lobbyHandlers.LOBBY_HOUSE(sender, p)
     hear(sender, p)
     local d = db()
     local host = baseName(sender)
-    if not (d and host) or host == baseName(me()) then return end
+    if not (d and host) or host == baseName(me()) or not House.IsBookie(host) then return end     -- only a bookie's house counts
     local rec, limitsChanged = House.Heard(d, host, p, now())
     if not rec then return end
     if limitsChanged then                            -- my tables against this house follow its limits
@@ -716,6 +720,7 @@ function CasinoNet.PlayHouse(host, game)
     if not (rec and rec.minBet) then return nil, ("%s's house has not been heard yet. They need to be online once."):format(tostring(host)) end
     if rec.on == false then return nil, host .. "'s house is closed right now." end
     if host == baseName(me()) then return nil, "That is your own house." end
+    if not House.IsBookie(host) then return nil, host .. " does not run a house." end
     local t, err = House.NewTable(d, host, game, me(), now())
     if not t then return nil, err end
     d.lobbyJoined = true                              -- hear the bookie's announcements at every login
@@ -1124,6 +1129,8 @@ function CasinoNet.Init()
     Casino.Ensure(d)
     Client.Ensure(d)
     Casino.Recover(d)
+    local gone = House.Purge(d)                 -- houses opened by other players, from versions that allowed it
+    if gone > 0 then say(("Removed %d house%s that %s not Steve's."):format(gone, gone == 1 and "" or "s", gone == 1 and "was" or "were")) end
     register()
     -- ask each table I sit at for its state once the channels are up
     if C_Timer and C_Timer.After then

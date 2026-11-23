@@ -582,6 +582,7 @@ local function refreshLauncher()
     local rows = tableRows()
     L.empty:SetShown(#rows == 0)
     local house = CN.Houses()[1]                          -- the house I heard most recently
+    L.houseBtn:SetShown(House.IsBookie(UnitName("player")))       -- only the bookie has a house to run
     for _, g in ipairs(L.games) do
         if not Casino.GAMES[g.id].ready then
             g.house:Disable()
@@ -2103,7 +2104,8 @@ local function buildHouse()
     body:SetPoint("TOPLEFT", 14, -34); body:SetPoint("BOTTOMRIGHT", -14, 14)
     H.on = button(body, "House: closed", 130, function()
         local book = db().houseBook
-        CN.SetHouse(not (book and book.enabled))
+        local _, err = CN.SetHouse(not (book and book.enabled))
+        if err then say(err) end
         UI.Refresh()
     end, 24)
     at(H.on, body, 0, 0)
@@ -2138,7 +2140,6 @@ local function buildHouse()
         r.net = label(body, "GameFontHighlight", "RIGHT"); at(r.net, body, 256, y + 4); r.net:SetWidth(90)
         r.owed = label(body, "GameFontHighlight"); at(r.owed, body, 360, y + 4); r.owed:SetWidth(150); r.owed:SetWordWrap(false)
         r.settle = button(body, "Settle", 56, function() end, 20); at(r.settle, body, 512, y)
-        r.drop = button(body, "x", 22, function() end, 20); at(r.drop, body, 572 - 14, y)
         H.rows[i] = r
     end
     H.empty = label(body, "GameFontHighlightSmall"); at(H.empty, body, 0, 112); H.empty:SetWidth(570); H.empty:SetWordWrap(true)
@@ -2158,7 +2159,7 @@ local function refreshHouse()
     H.empty:SetShown(#rows == 0)
     for i, r in ipairs(H.rows) do
         local e = rows[i]
-        for _, x in ipairs({ r.name, r.rounds, r.wagered, r.net, r.owed, r.settle, r.drop }) do x:SetShown(e ~= nil) end
+        for _, x in ipairs({ r.name, r.rounds, r.wagered, r.net, r.owed, r.settle }) do x:SetShown(e ~= nil) end
         if e then
             r.name:SetText(e.name)
             r.rounds:SetText(tostring(e.rounds))
@@ -2184,7 +2185,6 @@ local function refreshHouse()
                 end
                 UI.Refresh()
             end)
-            r.drop:SetScript("OnClick", function() CN.HouseForget(e.name); UI.Refresh() end)
         end
     end
     local tot = book and House.Totals(book) or { players = 0, rounds = 0, wagered = 0, net = 0, owed = 0 }
@@ -2258,6 +2258,7 @@ function UI.OpenTable(code)
 end
 
 function UI.OpenHouse()
+    if not House.IsBookie(UnitName("player")) then return say("Only Steve runs a house. Use the Play buttons to play at it.") end
     if not houseW.frame then buildHouse() end
     UI.Hide()                                  -- the launcher steps aside
     houseW.frame:Show()

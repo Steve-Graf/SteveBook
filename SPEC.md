@@ -532,6 +532,12 @@ messages.
 A bookie can open a **house**: friends play roulette or blackjack alone against the bookie's bank at any time, even
 while the bookie is offline. (`House.lua` is the pure logic; the glue is the "house" section of `CasinoNet.lua`.)
 
+- **Only Steve runs a house.** `House.BOOKIES` (first word of the character name) lists who may. Anyone else's client
+  refuses to open or announce a house (`SetHouse`, `SetHouseLimits`, `AnnounceHouse`), hides **My house**, and takes no
+  `HOUSE_REPORT`s; every client ignores a `LOBBY_HOUSE` from, and refuses to play at, anyone not listed. At load
+  `House.Purge` deletes houses left by versions that let anyone open one (records, tables, cache entries, the rocket's
+  host). A house table's **Remove** stays disabled for a real house: its totals overwrite the player's record each round.
+
 - **Where the game runs.** On the PLAYER's client. "Play vs <bookie>" creates a one-seat table there (`t.house` = the
   bookie's name, `maxSeats = 1`) that the player's own character both hosts and sits at (as the member `Loopback`,
   see `Comm.LoopbackActive`). `Comm.IsLocal(code)` makes `Comm.Send` hand every message of such a table straight to

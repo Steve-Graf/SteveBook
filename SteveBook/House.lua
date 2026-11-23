@@ -29,6 +29,15 @@ House.STEP = 100                  -- stakes are whole silver (Odds.STAKE_STEP)
 local function base(name) return type(name) == "string" and name:match("^([^%-%s]+)") or name end
 House.BaseName = base
 
+-- Only these characters run a house (the first word of the name, as everywhere else). Everybody else only plays at
+-- it: their clients cannot open one, and a house announced by anyone else is ignored.
+House.BOOKIES = { Steve = true }
+
+function House.IsBookie(name)
+    local b = base(name)
+    return type(b) == "string" and House.BOOKIES[b] == true
+end
+
 local function isInt(n) return type(n) == "number" and n == math.floor(n) and n == n and n > -1e12 and n < 1e12 end
 
 local function newGame() return { rounds = 0, wagered = 0, net = 0 } end
@@ -169,11 +178,34 @@ function House.Heard(db, host, p, now)
     return rec, changed
 end
 
+-- Drop every house that is not a bookie's (made by an earlier version, when anyone could open one): the records,
+-- the player's tables and cache entries against them, and a rocket watched there. Returns how many houses were
+-- removed. (A house a non-bookie had switched on stays in their saved data but announces nothing: see AnnounceHouse.)
+function House.Purge(db)
+    local gone = {}
+    for host in pairs(db.houses or {}) do
+        if not House.IsBookie(host) then gone[host] = true; db.houses[host] = nil end
+    end
+    for code, t in pairs(db.casino and db.casino.tables or {}) do
+        if t.house and not House.IsBookie(t.house) then gone[t.house] = true; db.casino.tables[code] = nil end
+    end
+    for code, tc in pairs(db.casinoCache and db.casinoCache.tables or {}) do
+        if tc.house and not House.IsBookie(tc.house) then gone[tc.house] = true; db.casinoCache.tables[code] = nil end
+    end
+    if db.rocket and db.rocket.host and not House.IsBookie(db.rocket.host) then
+        gone[db.rocket.host] = true
+        db.rocket.host, db.rocket.bet = nil, nil
+    end
+    local n = 0
+    for _ in pairs(gone) do n = n + 1 end
+    return n
+end
+
 -- Houses I know of, most recently heard first: records that have announced limits at least once.
 function House.Known(db)
     local list = {}
     for _, rec in pairs(db.houses or {}) do
-        if rec.minBet then list[#list + 1] = rec end
+        if rec.minBet and House.IsBookie(rec.host) then list[#list + 1] = rec end
     end
     table.sort(list, function(a, b)
         if (a.seen or 0) ~= (b.seen or 0) then return (a.seen or 0) > (b.seen or 0) end

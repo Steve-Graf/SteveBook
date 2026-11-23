@@ -90,7 +90,7 @@ spin or hand starts by itself (later bets do not move the clock, and you can sti
 Players see "Bets lock in 14 s". To try a table alone, turn
 on `/book loopback`, host a table and join it from the list.
 
-**Play against the house.** A bookie can open a house (`/casino house`, or **My house** in the casino window):
+**Play against the house.** Only Steve runs a house (`House.BOOKIES` in `House.lua`); everyone else plays at it. He can open it (`/casino house`, or **My house** in the casino window):
 friends then see **Play vs <bookie>** next to each game and play roulette or blackjack alone against the bookie's bank,
 any time, even while the bookie is offline. Blackjack deals the moment the wager is in; in roulette the player places
 bets and presses **Spin**. The game runs on the player's own client; it counts their results and sends the totals to

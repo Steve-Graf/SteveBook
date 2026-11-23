@@ -76,6 +76,7 @@ end
 -- Pick the house whose rocket I watch. Returns true, or nil, message.
 function RocketNet.Open(host)
     host = baseName(host)
+    if not House.IsBookie(host) then return nil, tostring(host) .. " does not run a house." end
     local rec = houseRec(host)
     if not (rec and rec.minBet) then return nil, ("%s's house has not been heard yet. They need to be online once."):format(tostring(host)) end
     if not rec.seed then return nil, host .. "'s house needs the newest SteveBook before its rocket can fly." end

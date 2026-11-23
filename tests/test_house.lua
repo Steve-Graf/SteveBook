@@ -92,8 +92,30 @@ House.Forget(book, "Lucky")
     eq(select(2, House.Heard(d, "Steve", { on = true, minBet = 100, maxBet = 10000 }, 60)), false, "the same limits again are no change")
     check(not House.Heard(d, "Steve", { on = true, minBet = 100, maxBet = 1e9 }, 70), "absurd limits are ignored")
     eq(rec.maxBet, 10000, "and keep the old ones")
-    check(House.Heard(d, "Zed", { on = true, minBet = 100, maxBet = 100 }, 90) ~= nil, "a second house")
-    eq(House.Known(d)[1].host, "Zed", "the most recently heard comes first")
+    check(House.Heard(d, "Zed", { on = true, minBet = 100, maxBet = 100 }, 90) ~= nil, "a second house can be recorded")
+    eq(House.Known(d)[1].host, "Steve", "but only a bookie's house is offered"); eq(House.Known(d)[2], nil, "Zed's is not")
+    House.BOOKIES.Zed = true
+    eq(House.Known(d)[1].host, "Zed", "the most recently heard comes first"); House.BOOKIES.Zed = nil
+
+    -- who may run a house
+    check(House.IsBookie("Steve") and House.IsBookie("Steve Spinebreaker") and House.IsBookie("Steve-Realm"), "Steve, whichever way the name arrives")
+    check(not House.IsBookie("Crim") and not House.IsBookie("Goob") and not House.IsBookie("Stevey") and not House.IsBookie(nil), "nobody else")
+
+    -- houses made by an earlier version: every one that is not a bookie's goes, with its tables and cache entries
+    local pd = {
+        houses = { Steve = { host = "Steve", minBet = 100, maxBet = 1000, games = {} }, Crim = { host = "Crim", minBet = 100, maxBet = 1000, games = {} },
+                   Goob = { host = "Goob", games = {} } },
+        casino = { tables = { A = { code = "A", house = "Steve" }, B = { code = "B", house = "Crim" }, C = { code = "C" } } },
+        casinoCache = { tables = { A = { code = "A", house = "Steve" }, B = { code = "B", house = "Crim" }, D = { code = "D", house = "Goob" }, E = { code = "E" } } },
+        rocket = { host = "Crim", bet = { host = "Crim", id = 1, amount = 100 } },
+    }
+    eq(House.Purge(pd), 2, "two houses were not Steve's")
+    check(pd.houses.Steve ~= nil and pd.houses.Crim == nil and pd.houses.Goob == nil, "only Steve's record is left")
+    check(pd.casino.tables.A and not pd.casino.tables.B and pd.casino.tables.C, "tables: Crim's goes, Steve's and hosted ones stay")
+    check(pd.casinoCache.tables.A and not pd.casinoCache.tables.B and not pd.casinoCache.tables.D and pd.casinoCache.tables.E, "cache entries likewise")
+    eq(pd.rocket.host, nil, "a rocket watched at Crim's is dropped"); eq(pd.rocket.bet, nil, "with its bet")
+    eq(House.Purge(pd), 0, "nothing more to purge")
+    eq(House.Purge({}), 0, "an empty database is fine")
 
     House.RecordRound(rec, "roulette", { bets = { { amount = 1000 }, { amount = 500 } } }, 1500)
     House.RecordRound(rec, "blackjack", { hands = { { bet = 2000 }, { bet = 2000 } } }, -4000)
@@ -258,6 +280,19 @@ eq(#Casino.List(db), 2, "(two house tables)")
 ------------------------------------------------------------------------------------------
 stub.advance(1000)
 stub.addonMessages = {}
+-- anyone else is refused: no house, no announcement, no reports taken
+check(select(1, CN.SetHouse(true)) == nil, "a player who is not Steve cannot open a house")
+eq(select(2, CN.SetHouse(true)), "Only Steve runs a house. Everyone else plays at it.", "and is told why")
+check(not (db.houseBook and db.houseBook.enabled), "it stays closed")
+check(select(1, CN.SetHouseLimits(200, 5000)) == nil, "nor set its limits")
+House.EnsureBook(db).enabled = true                                   -- (as left by an earlier version)
+CN.AnnounceHouse(true); CN.AnnounceHouse(false, true)
+eq(#sent("LOBBY_HOUSE"), 0, "an old 'open' house announces nothing")
+fromWire("Ann lol", "HOUSE_REPORT", LOBBY, { rounds = 4, wagered = 4000, net = 2500 })
+eq(db.houseBook.players.Ann, nil, "and takes no reports")
+eq(#sent("HOUSE_ACK"), 0, "or answers them")
+db.houseBook.enabled = false
+stub.player = "Steve"
 check(CN.HouseForget("Nobody") == nil, "forgetting an unknown player")
 eq(CN.SetHouse(true), true, "the bookie opens the house")
 eq(db.lobbyJoined, true, "and stays in the lobby from now on")
@@ -291,6 +326,23 @@ fromWire("Zed lol", "LOBBY_ASK", LOBBY, {}); settle()
 eq(sent("LOBBY_HOUSE")[#sent("LOBBY_HOUSE")].p.on, false, "except to answer a question")
 check(CN.HouseForget("Ann"), "a player can be dropped from the books")
 eq(db.houseBook.players.Ann, nil, "gone")
+stub.player = "Tester"
+
+-- other players' houses are not heard, offered or playable
+fromWire("Crim lol", "LOBBY_HOUSE", LOBBY, { on = true, minBet = 100, maxBet = 10000, seed = 7 })
+fromWire("Goob lol", "LOBBY_HOUSE", LOBBY, { on = true, minBet = 100, maxBet = 10000 })
+eq(db.houses and db.houses.Crim, nil, "Crim's announcement is ignored"); eq(db.houses and db.houses.Goob, nil, "and Goob's")
+eq(#CN.Houses(), 1, "so only Steve's house is offered"); eq(CN.Houses()[1].host, "Steve", "as before")
+db.houses = db.houses or {}
+db.houses.Crim = { host = "Crim", on = true, minBet = 100, maxBet = 10000, seen = 1, games = {}, acked = 0, paid = 0 }
+eq(#CN.Houses(), 1, "even with one already stored")
+eq(select(2, CN.PlayHouse("Crim", "dice")), "Crim does not run a house.", "Crim's house cannot be played")
+eq(select(2, ns.RocketNet.Open("Crim")), "Crim does not run a house.", "nor its rocket opened")
+lines()
+CN.Init()                                                               -- a reload: the stored house is purged
+eq(db.houses.Crim, nil, "a stored house that is not Steve's is removed at load")
+check(lines():find("Removed 1 house that was not Steve's.", 1, true) ~= nil, "and the player is told")
+check(db.houses.Steve ~= nil, "Steve's stays")
 
 ------------------------------------------------------------------------------------------
 -- 4. The windows
@@ -347,6 +399,16 @@ UI.Refresh()
 for _, f in ipairs(allByText("Leave table")) do check(not f:IsShown(), "blackjack hides Leave too") end
 
 -- the bookie's books
+check(#allByText("My house") == 1, "the launcher has a My house button")
+UI.Show()
+for _, f in ipairs(allByText("My house")) do f:Show() end
+UI.Refresh(); lines()
+for _, f in ipairs(allByText("My house")) do check(not f:IsShown(), "which is hidden from a player who is not Steve") end
+UI.OpenHouse()
+check(lines():find("Only Steve runs a house") ~= nil, "and refuses to open the house window")
+stub.player = "Steve"
+UI.Show(); UI.Refresh()
+for _, f in ipairs(allByText("My house")) do check(f:IsShown(), "but Steve sees it") end
 UI.OpenHouse()
 check(textOf("Nobody has played yet") ~= nil, "an empty house says so")
 fromWire("Ann lol", "HOUSE_REPORT", LOBBY, { rounds = 6, wagered = 6000, net = 3000 })
