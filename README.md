@@ -84,8 +84,21 @@ table**, or **Join a table** from the list of open tables (a code still works fo
 listed). Players sit down only when the host lets them in, and they have no chips until the host adds
 some (for example after they pay in gold). Chips are the table's own credit, separate from the
 sportsbook. Roulette: players click bets onto a bet slip, set the stakes and place them all at once (with "same as last round"), and the host spins. Blackjack: players bet, the host
-deals, and everyone plays the dealer in turn (hit, stand, double, split). Both blackjack windows have a **Mini** button (saved): the host's shrinks to the dealer's cards, the status lines and Deal; the player's to the dealer's cards, their own hand, Hit/Stand/Double/Split and a one-line bet strip (Full brings everything back). Closing a window does not leave the table or stop the game; a player can leave and ask to rejoin (their chips are kept), and chat tells you when it is your turn in blackjack. To try a table alone, turn
+deals, and everyone plays the dealer in turn (hit, stand, double, split). Both blackjack windows have a **Mini** button (saved): the host's shrinks to the dealer's cards, the status lines and Deal; the player's to the dealer's cards, their own hand, Hit/Stand/Double/Split and a one-line bet strip (Full brings everything back). Closing a window does not leave the table or stop the game; a player can leave and ask to rejoin (their chips are kept), and chat tells you when it is your turn in blackjack. **Auto: off / ON** in the host window (roulette
+and blackjack) switches on automatic rounds: 20 seconds after the first bet of a round the bets lock and the
+spin or hand starts by itself (later bets do not move the clock, and you can still press Spin or Deal sooner).
+Players see "Bets lock in 14 s". To try a table alone, turn
 on `/book loopback`, host a table and join it from the list.
+
+**Play against the house.** A bookie can open a house (`/casino house`, or **My house** in the casino window):
+friends then see **Play vs <bookie>** next to each game and play roulette or blackjack alone against the bookie's bank,
+any time, even while the bookie is offline. Blackjack deals the moment the wager is in; in roulette the player places
+bets and presses **Spin**. The game runs on the player's own client; it counts their results and sends the totals to
+the bookie whenever both are online (the bookie must have been online once, so the friend's client knows the bet
+limits). The bookie's **House** window lists each player's rounds, amount wagered and result, and what is owed; **Settle**
+(click twice) records that you paid or were paid, in game. Players see "Steve owes you 5s" in their window. Because the
+game runs on the player's side this is trust-based, like the rest of the credit system: the bookie's client only
+rejects totals that cannot be true. Set the bet limits in the House window.
 
 ## Tests
 

@@ -160,6 +160,7 @@ function E.Deal(t, rng, now)
     bj.hole = true
     bj.phase = "playing"
     t.status = "playing"
+    t.autoAt = nil                                    -- a manual Deal cancels the automatic countdown
     bj.lastNow = now or 0
     touch(t)
     local up = Blackjack.Points(Blackjack.Rank(bj.dealer[1]))

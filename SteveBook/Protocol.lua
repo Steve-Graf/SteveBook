@@ -82,6 +82,21 @@ Protocol.Spec = {
     LOBBY_TABLE    = { dir = "any", fields = { tables = "table", ver = "string?" } },    -- list of { code, game, name, host, seats, status, minBet, maxBet, zero? }
     LOBBY_BOOKS    = { dir = "any", fields = { books = "table", ver = "string?" } },     -- sportsbooks: list of { code, name, owner, members?, markets? }
 
+    -- House play (SPEC §11a): a bookie's open invitation to play alone against their bank, and the players'
+    -- results coming back. All three travel in the lobby channel; the last two are addressed (`to`).
+    LOBBY_HOUSE    = { dir = "any", fields = {         -- the bookie: "my house is open" (on) or closed, and its bet limits (copper)
+        on = "boolean", minBet = "number", maxBet = "number", ver = "string?",
+    } },
+    HOUSE_REPORT   = { dir = "any", fields = {         -- player -> bookie: my TOTALS so far (the latest replaces the earlier ones)
+        rounds = "number", wagered = "number",
+        net = "number",         -- copper, positive = the player is up
+        games = "table?",       -- { roulette = { rounds, wagered, net }, blackjack = {...} }
+        ver = "string?",
+    } },
+    HOUSE_ACK      = { dir = "any", fields = {         -- bookie -> player: I hold your results up to `rounds`; `paid` is settled
+        rounds = "number", paid = "number",
+    } },
+
     TBL_JOIN_OK    = { dir = "bookie", fields = { game = "string", name = "string", ownerName = "string", rev = "number" } },
     TBL_JOIN_DENY  = { dir = "bookie", fields = { ownerName = "string", reason = "string?" } },
     TBL_STATE      = { dir = "bookie", fields = {      -- public table state, broadcast (join, chips, spin, result)
@@ -93,6 +108,8 @@ Protocol.Spec = {
         seats = "table",        -- list of { name, balance }
         history = "table",      -- last results, newest first (roulette: pocket numbers)
         bj = "table?",          -- blackjack: public hands, the dealer's face-up cards, whose turn (BlackjackTable.Public)
+        auto = "boolean?",      -- automatic rounds are on (the host starts each round itself)
+        autoAt = "number?",     -- ...and the server time the bets lock (set once the round's first bet is in)
     } },
     TBL_PLAYER     = { dir = "bookie", fields = {      -- addressed: my chips and my bets in this round
         rev = "number", balance = "number", bets = "table",   -- bets: list of { id, ...the bet }

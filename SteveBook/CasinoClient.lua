@@ -108,6 +108,7 @@ function Client.ApplyState(store, code, p)
         minBet = p.minBet, maxBet = p.maxBet, zero = p.zero,
         seats = copyList(p.seats), history = copyList(p.history),
         bj = p.bj,                       -- blackjack's public state (fresh from the wire, so not copied)
+        auto = p.auto, autoAt = p.autoAt,        -- automatic rounds (older hosts never send these)
     }
     if p.status == "closed" and t.status == "seated" then t.status = "closed" end
     return t

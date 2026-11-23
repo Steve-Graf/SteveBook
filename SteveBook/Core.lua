@@ -19,7 +19,8 @@ local function help()
     say("/book net          show whether each SteveBook channel is really working (/book net test also sends a test message down each path)")
     say("/book guild        turn the guild-chat second path on or off (on by default)")
     say("/book hide         hide the active book from (or show it in) the list of books")
-    say("/casino            open the casino (roulette tables)")
+    say("/casino            open the casino (roulette and blackjack tables)")
+    say("/casino house      your house: friends play alone against you, even while you are offline; who owes whom")
     say("/book icon         show or hide the minimap icon")
     say("/book ratio        toggle odds between American (-110) and ratio (0.91x) display")
     say("/book debug        print every message sent and received (for troubleshooting)")
@@ -83,7 +84,8 @@ local function handle(msg)
             or (b.name .. " is listed again."))
     elseif cmd == "casino" then
         local ui = ns.UI and ns.UI.Casino
-        if ui and ui.Toggle then ui.Toggle() else say("The casino is not available.") end
+        if rest:lower() == "house" and ui and ui.OpenHouse then ui.OpenHouse()
+        elseif ui and ui.Toggle then ui.Toggle() else say("The casino is not available.") end
     elseif cmd == "icon" then
         local m = ns.UI and ns.UI.Minimap
         if not (m and m.Toggle) then return say("The minimap icon is not available.") end
@@ -139,4 +141,4 @@ SLASH_STEVEBET1 = "/bet"
 SlashCmdList["STEVEBET"] = function() handle("bet") end
 
 SLASH_STEVECASINO1 = "/casino"
-SlashCmdList["STEVECASINO"] = function() handle("casino") end
+SlashCmdList["STEVECASINO"] = function(msg) handle("casino " .. (msg or "")) end

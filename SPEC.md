@@ -506,6 +506,58 @@ messages.
   and Deal (Skip, players, limits, Close table are hidden). Player mini: dealer cards, the player's own
   hand only, the decision buttons and a one-line bet strip (log, other seats and Leave are hidden). The
   player's mini only applies while seated, so "Ask to rejoin" is never hidden. Roulette has no mini view.
-- **Not in v1:** the host playing at their own table, a spin timer for roulette,
+- **Automatic rounds:** a host switch on both games (`Auto: off / ON` in the host window, saved
+  on the table as `t.auto`). With it on, `Casino.AUTO_SECONDS` (20) after the **first bet** of a round the
+  host's client locks the bets and deals or spins as if the host had pressed the button. Later bets do not
+  move the deadline; if every bet is taken back (or the bettors leave or are removed) the countdown is
+  dropped and the next bet starts a new one; switching on with bets already down starts it at once; a
+  manual Spin/Deal cancels it. The pure rules are `Casino.AutoTick` (returns `armed`, `cleared`, `start`
+  or nil) and `Casino.SetAuto`; `CasinoNet.AutoCheck` runs after every player message and from a 1 s
+  ticker, so a reload loses nothing (`Casino.Recover` clears `autoAt` and the countdown restarts when the
+  bets are seen). The countdown is public: `TBL_STATE` carries `auto` and `autoAt` (server time; older
+  clients ignore both and just see the round start), and the windows show "Bets lock in N s" and, in
+  blackjack, "Dealing in N s". After the spin or deal the existing flow already continues by itself
+  (roulette reopens after its 3 s turn; blackjack stands idle players after 30 s and reopens betting
+  5 s after the results), so with this on the host never has to press anything.
+- **Play against the house (§11a):** see below.
+- **Not in v1:** the host playing at their own table,
   commit-and-reveal proof of fairness (players trust the host's client, as they trust the bookie's),
   insurance and surrender, re-splitting.
+
+
+---
+
+## 11a. Play against the house
+
+A bookie can open a **house**: friends play roulette or blackjack alone against the bookie's bank at any time, even
+while the bookie is offline. (`House.lua` is the pure logic; the glue is the "house" section of `CasinoNet.lua`.)
+
+- **Where the game runs.** On the PLAYER's client. "Play vs <bookie>" creates a one-seat table there (`t.house` = the
+  bookie's name, `maxSeats = 1`) that the player's own character both hosts and sits at (as the member `Loopback`,
+  see `Comm.LoopbackActive`). `Comm.IsLocal(code)` makes `Comm.Send` hand every message of such a table straight to
+  the same client's handlers: nothing goes on the wire, no channel is joined (`joinAll` skips house tables), the table
+  is never announced in the lobby, and it has no heartbeat. All the existing engines, messages and windows are reused.
+  Because the host side is the player's own client this is **trust-based**: a modified client could report false results.
+  The bookie's client only rejects totals that cannot be true (`House.Plausible`: whole numbers, no loss beyond the amount
+  wagered, no win beyond 35:1). Bet limits are enforced by the player's client.
+- **Rounds.** Blackjack: `t.auto = true` with `t.autoSeconds = 0`, so `Casino.AutoTick` returns `start` as soon as a wager
+  is in (the hand is dealt at once). Roulette: the player's own **Spin** button (`CasinoNet.HouseSpin`, once a bet is on
+  the table). The roulette wheel has a single zero. After a round betting reopens as usual (blackjack after the 5 s results).
+- **Chips are credit.** Before each round (`House.Refill`) the player's chips are topped up to `House.FLOAT_BETS` (5) maximum
+  bets, whole silver, by the bookie's credit (`bought` grows with it), so the result is always chips minus credit and cannot
+  drift. There is no maximum loss: players may keep losing.
+- **What the bookie announces.** `LOBBY_HOUSE { on, minBet, maxBet }` in the lobby channel (every 30 s while the house is
+  open, once when it is switched off or its limits change, and as an answer to `LOBBY_ASK`). A player's client remembers it
+  (`SteveBookDB.houses[bookie]`, with limits and when it was last heard), so the house stays playable offline; the bookie must
+  have been online once. A table in play follows new limits. A closed house (`on = false`) takes no new games.
+- **Reporting.** `SteveBookDB.houses[bookie].games[game] = { rounds, wagered, net }` counts the player's results (`net` is read
+  from the chips). `HOUSE_REPORT { rounds, wagered, net, games }` carries the **totals** (not rounds): the latest replaces the
+  earlier ones, so a lost, repeated or reordered report does no harm. It is addressed to the bookie (`to`) in the lobby channel
+  and goes by guild and channel. It is sent about 3 s after a round if the bookie announced in the last 100 s, and when the
+  bookie's announcement is heard while results are unacknowledged (and once per session, to hear what was settled); never more than
+  every 30 s. A bookie who is offline is not pinged. The bookie answers with `HOUSE_ACK { rounds, paid }`, also on repeats.
+- **The bookie's books** (`SteveBookDB.houseBook = { enabled, minBet, maxBet, players = { [name] = { rounds, wagered, net, games,
+  paid, at } } }`). `net` is from the player's side. Owed = `net - paid`: positive, the bookie owes the player; negative, the player
+  owes the bookie. The House window (`/casino house`) lists players with rounds, wagered, the house's result and the balance, and
+  **Settle** (two clicks) sets `paid = net` and tells the player (`HOUSE_ACK`). Gold moves by trade, as everywhere.
+- **Not in v1:** partial settlements, replay-verified rounds (the seed and actions are not kept), a per-player credit limit.

@@ -1,12 +1,13 @@
 -- CasinoNet.lua: casino tables over the wire (SPEC §11). The glue between Comm and the two pure
 -- modules: Casino (the host's authority) and CasinoClient (the player's saved view). WoW-dependent.
---   Host actions:   Create, Admit, Deny, Adjust, Kick, SetLimits, Spin, CloseTable, Delete
+--   Host actions:   Create, Admit, Deny, Adjust, Kick, SetLimits, Spin, Deal, SetAuto, CloseTable, Delete
 --   Player actions: RequestJoin, PlaceBet, ClearBets, Leave, Forget, Sync
+--   House play (SPEC §11a): PlayHouse, HouseSpin, Houses (player); SetHouse, SetHouseLimits, HouseSettle, HouseForget (bookie)
 --   Subscribe(fn) tells a window that something changed.
 local ADDON, ns = ...
 ns = ns or {}
 
-local Casino, Client, Roulette, Odds, Blackjack = ns.Casino, ns.CasinoClient, ns.Roulette, ns.Odds, ns.Blackjack
+local Casino, Client, Roulette, Odds, Blackjack, House = ns.Casino, ns.CasinoClient, ns.Roulette, ns.Odds, ns.Blackjack, ns.House
 local CasinoNet = {}
 ns.CasinoNet = CasinoNet
 
@@ -77,6 +78,7 @@ local function onPlayerMessage(msgType)
         if t.game == "blackjack" and t.rev ~= rev and msgType ~= "TBL_JOIN" and msgType ~= "TBL_SYNC_REQ" then
             CasinoNet.AfterBlackjack(t)
         end
+        if t.auto or t.autoAt then CasinoNet.AutoCheck(t) end      -- the first bet starts the countdown
         announce(t, events)
         changed(code)
     end
@@ -159,10 +161,13 @@ local function finishSpin(code)
     if not r then return end
     local house = 0
     for _, e in ipairs(r.results) do house = house - e.net end
-    say(("%s: %s %s. Round %d, %d player(s) bet. House %s%s|r."):format(
-        t.name, Roulette.Label(number), Roulette.Color(number), r.round, #r.results,
-        house >= 0 and GREEN or RED, (house >= 0 and "+" or "") .. money(house)))
+    if not t.house then       -- (a house table has one player, who is told by TBL_RESULT)
+        say(("%s: %s %s. Round %d, %d player(s) bet. House %s%s|r."):format(
+            t.name, Roulette.Label(number), Roulette.Color(number), r.round, #r.results,
+            house >= 0 and GREEN or RED, (house >= 0 and "+" or "") .. money(house)))
+    end
     send(code, { { type = "TBL_RESULT", payload = Casino.ResultMessage(t) }, stateMsg(t) })
+    if t.house then CasinoNet.HouseRound(t, r) end
     changed(code)
 end
 
@@ -214,10 +219,13 @@ local function finishBlackjack(code)
     if not r then return end
     local house = 0
     for _, e in ipairs(r.results) do house = house - e.net end
-    say(("%s: the dealer has %d%s. Round %d, %d player(s). House %s%s|r."):format(
-        t.name, r.dealer.total, r.dealer.bust and " (bust)" or "", r.round, #r.results,
-        house >= 0 and GREEN or RED, (house >= 0 and "+" or "") .. money(house)))
+    if not t.house then
+        say(("%s: the dealer has %d%s. Round %d, %d player(s). House %s%s|r."):format(
+            t.name, r.dealer.total, r.dealer.bust and " (bust)" or "", r.round, #r.results,
+            house >= 0 and GREEN or RED, (house >= 0 and "+" or "") .. money(house)))
+    end
     send(code, { { type = "TBL_RESULT", payload = Casino.ResultMessage(t) }, stateMsg(t) })
+    if t.house then CasinoNet.HouseRound(t, r) end
     changed(code)
     -- the round stays on the table for a few seconds, then betting reopens
     if C_Timer and C_Timer.After then C_Timer.After(ns.BlackjackTable.RESULTS_SECONDS, function() CasinoNet.NextBlackjackRound(code) end)
@@ -229,7 +237,7 @@ function CasinoNet.NextBlackjackRound(code)
     if not (t and t.status == "results") then return end
     ns.BlackjackTable.NextRound(t, now())
     send(code, { stateMsg(t) })
-    CasinoNet.Announce()
+    if t.house then CasinoNet.HouseRefill(t) else CasinoNet.Announce() end
     changed(code)
 end
 
@@ -248,8 +256,10 @@ local function queueState(t)
         local th = hosted(code)
         if th then send(code, { stateMsg(th) }) end
     end
-    if C_Timer and C_Timer.After then C_Timer.After(STATE_DELAY, go) else go() end
+    if C_Timer and C_Timer.After and not t.house then C_Timer.After(STATE_DELAY, go) else go() end
 end
+
+function CasinoNet.QueueState(t) queueState(t) end
 
 function CasinoNet.AfterBlackjack(t)
     queueState(t)
@@ -289,10 +299,51 @@ local function blackjackTick()
         if t.hostName == me() and t.game == "blackjack" and t.status == "playing" then
             local name = ns.BlackjackTable.Tick(t, now())
             if name then
-                say(name .. " ran out of time and stands.")
+                say(t.house and "You ran out of time and were stood." or (name .. " ran out of time and stands."))
                 CasinoNet.AfterBlackjack(t)
             end
         end
+    end
+end
+
+------------------------------------------------------------------------------------------
+-- Host: automatic rounds (Casino.AutoTick has the rules)
+------------------------------------------------------------------------------------------
+
+-- Look at one table: start the countdown when the first bet is in, drop it when the bets are gone, and
+-- when it runs out lock the bets and deal or spin. Returns what Casino.AutoTick said.
+function CasinoNet.AutoCheck(t)
+    local act = Casino.AutoTick(t, now())
+    if act == "armed" or act == "cleared" then
+        queueState(t)                                  -- players show (or hide) the countdown
+        changed(t.code)
+    elseif act == "start" then
+        local ok, err
+        if t.game == "blackjack" then ok, err = CasinoNet.Deal(t) else ok, err = CasinoNet.Spin(t) end
+        if not ok then
+            t.autoAt = nil                             -- do not retry every second: the next bet starts a new countdown
+            say(("%s: the automatic round could not start (%s)."):format(t.name, tostring(err)))
+        end
+        changed(t.code)
+    end
+    return act
+end
+
+-- The host's switch. Bets already on the table start the countdown at once.
+function CasinoNet.SetAuto(t, on)
+    if t.status == "closed" then return nil, "This table is closed." end
+    Casino.SetAuto(t, on)
+    CasinoNet.AutoCheck(t)
+    queueState(t)
+    changed(t.code)
+    return t.auto == true
+end
+
+local function autoTick()
+    local d = db()
+    if not d then return end
+    for _, t in ipairs(Casino.List(d)) do
+        if t.hostName == me() and (t.auto or t.autoAt) and t.status ~= "closed" then CasinoNet.AutoCheck(t) end
     end
 end
 
@@ -320,7 +371,7 @@ function CasinoNet.Announce(closed)
     if not d then return end
     local list = {}
     for _, t in ipairs(Casino.List(d)) do
-        if t.hostName == me() then
+        if t.hostName == me() and not t.house then
             if t.status ~= "closed" then list[#list + 1] = entryFor(t)
             elseif closed and closed[t.code] then list[#list + 1] = entryFor(t) end
         end
@@ -339,7 +390,7 @@ function CasinoNet.Heartbeat()
     for _, t in ipairs(Casino.List(d)) do
         -- the heartbeat is a full table broadcast: every 15 s while players are doing things, every 40 s for
         -- a table nobody has touched for two minutes (leftover test tables were a quarter of the host's traffic)
-        if t.hostName == me() and t.status ~= "closed" and #Casino.Seated(t) > 0 then
+        if t.hostName == me() and not t.house and t.status ~= "closed" and #Casino.Seated(t) > 0 then
             local active = now() - (activeAt[t.code] or 0) < ACTIVE_WINDOW or t.status == "playing" or t.status == "dealer"
             if now() - (stateSentAt[t.code] or 0) >= (active and HEARTBEAT_ACTIVE - 3 or HEARTBEAT_IDLE - 3) then
                 send(t.code, { stateMsg(t) })
@@ -385,7 +436,7 @@ function CasinoNet.Rooms(game)
     end
     if d and d.loopback == true then
         for _, t in ipairs(Casino.List(d)) do
-            if t.hostName == me() and t.status ~= "closed" and not mine[t.code] and (not game or t.game == game) then
+            if t.hostName == me() and not t.house and t.status ~= "closed" and not mine[t.code] and (not game or t.game == game) then
                 local e = entryFor(t); e.age = 0; list[#list + 1] = e
             end
         end
@@ -440,6 +491,7 @@ function lobbyHandlers.LOBBY_ASK(sender, p)
     hear(sender, p)
     dbg(("lobby: %s is asking who is hosting%s"):format(tostring(sender), p and p.ver and (" (v" .. p.ver .. ")") or ""))
     if now() - lastAnnounce >= ASK_REPLY_GAP then CasinoNet.Announce() end
+    CasinoNet.AnnounceHouse(false, true)
 end
 
 function lobbyHandlers.LOBBY_BOOKS(sender, p)                    -- only to know the lobby is alive
@@ -463,6 +515,219 @@ function lobbyHandlers.LOBBY_TABLE(sender, p)
 end
 
 ------------------------------------------------------------------------------------------
+-- The house: play alone against a bookie's bank, even while they are offline (SPEC §11a)
+-- The game is a one-seat table on the PLAYER's client (Comm keeps its messages local); results are
+-- counted and reported to the bookie whenever both are online. House.lua has the rules.
+------------------------------------------------------------------------------------------
+
+local HOUSE_FRESH = 100                 -- the bookie counts as online this long after their last announcement
+local REPORT_GAP = 30                   -- send a report at most this often (it is the totals, so one is as good as ten)
+local reportAt, reportPending, sessionSynced, sayAt = {}, {}, {}, {}
+local houseAnnounceAt = 0
+
+local function lobby() return ns.Protocol.LOBBY_CODE end
+
+-- The bookie's side ------------------------------------------------------------------------
+
+-- Tell the lobby my house is open (or closed), with its limits. Every 30 s while it is open; once when it is
+-- switched off or changed (`force`); and as an answer to someone asking who is out there (`reply`).
+function CasinoNet.AnnounceHouse(force, reply)
+    local d = db()
+    local book = d and d.houseBook
+    if not book then return end
+    if not (book.enabled or force or reply) then return end
+    if not force and now() - houseAnnounceAt < 20 then return end
+    houseAnnounceAt = now()
+    ns.Comm.JoinBook(lobby())
+    ns.Comm.Send("LOBBY_HOUSE", { on = book.enabled == true, minBet = book.minBet, maxBet = book.maxBet,
+        ver = ns.Comm.Version() }, lobby())
+end
+
+function CasinoNet.SetHouse(on)
+    local d = db()
+    local book = House.EnsureBook(d)
+    book.enabled = on and true or false
+    if book.enabled then
+        d.lobbyJoined = true                          -- stay in the lobby at every login, to hear the players' reports
+        ns.Comm.JoinBook(lobby())
+    end
+    CasinoNet.AnnounceHouse(true)
+    changed()
+    return book.enabled
+end
+
+function CasinoNet.SetHouseLimits(minBet, maxBet)
+    local book = House.EnsureBook(db())
+    local ok, err = House.SetLimits(book, minBet, maxBet)
+    if not ok then return nil, err end
+    CasinoNet.AnnounceHouse(true)
+    changed()
+    return true
+end
+
+-- Settle up with a player in full (you paid them, or collected from them, in game). They are told if online;
+-- otherwise they find out the next time they report.
+function CasinoNet.HouseSettle(name)
+    local book = db() and db().houseBook
+    local owed = book and House.Settle(book, name)
+    if not owed then return nil, "There is no such player." end
+    local e = book.players[baseName(name)]
+    ns.Comm.Send("HOUSE_ACK", { rounds = e.rounds, paid = e.paid or 0 }, lobby(), name)
+    changed()
+    return owed
+end
+
+function CasinoNet.HouseForget(name)
+    local book = db() and db().houseBook
+    if not (book and House.Forget(book, name)) then return nil, "There is no such player." end
+    changed()
+    return true
+end
+
+local function signedMoney(c) return (c >= 0 and GREEN .. "+" or RED .. "-") .. money(math.abs(c)) .. "|r" end
+
+function lobbyHandlers.HOUSE_REPORT(sender, p)
+    local d = db()
+    local book = d and d.houseBook
+    local who = baseName(sender)
+    if not (book and who) or who == baseName(me()) then return end
+    local status, e, why = House.Apply(book, who, p, now())
+    if status == "rejected" then
+        say(("%s sent house results that do not add up (%s), so they were ignored."):format(who, why))
+        return
+    end
+    ns.Comm.Send("HOUSE_ACK", { rounds = e.rounds, paid = e.paid or 0 }, lobby(), sender)
+    if status ~= "stale" and now() - (sayAt[who] or 0) >= 60 then
+        sayAt[who] = now()
+        local owed = House.Owed(e)
+        say(("%s played the house: %d round%s, %s for them. %s"):format(who, e.rounds, e.rounds == 1 and "" or "s",
+            signedMoney(e.net),
+            owed > 0 and ("You owe them " .. money(owed) .. ".") or (owed < 0 and ("They owe you " .. money(-owed) .. ".") or "All settled.")))
+    end
+end
+
+-- The player's side ------------------------------------------------------------------------
+
+local function sendReport(host)
+    local d = db()
+    local rec = d and d.houses and d.houses[host]
+    if not rec or House.PlayerTotals(rec) == 0 then return end
+    reportAt[host], sessionSynced[host] = now(), true
+    local payload = House.Report(rec)
+    payload.ver = ns.Comm.Version()
+    ns.Comm.JoinBook(lobby())
+    ns.Comm.Send("HOUSE_REPORT", payload, lobby(), host)
+end
+
+-- After a round: report soon if the bookie is around; if not, their next announcement triggers it.
+local function reportSoon(host)
+    local rec = db().houses and db().houses[host]
+    if not (rec and rec.seen and now() - rec.seen < HOUSE_FRESH) or reportPending[host] then return end
+    reportPending[host] = true
+    local function go() reportPending[host] = nil; sendReport(host) end
+    if C_Timer and C_Timer.After then C_Timer.After(3, go) else go() end
+end
+
+function lobbyHandlers.LOBBY_HOUSE(sender, p)
+    lastHeard = now()
+    hear(sender, p)
+    local d = db()
+    local host = baseName(sender)
+    if not (d and host) or host == baseName(me()) then return end
+    local rec, limitsChanged = House.Heard(d, host, p, now())
+    if not rec then return end
+    if limitsChanged then                            -- my tables against this house follow its limits
+        for _, t in ipairs(Casino.List(d)) do
+            if t.house == host and t.status ~= "closed" and Casino.SetLimits(t, p.minBet, p.maxBet) then CasinoNet.QueueState(t) end
+        end
+    end
+    -- the bookie is here: hand over the results they have not seen (and, once a session, hear what they settled)
+    if House.PlayerTotals(rec) > 0 and (House.Unsynced(rec) or not sessionSynced[host]) and now() - (reportAt[host] or 0) >= REPORT_GAP then
+        sendReport(host)
+    end
+end
+
+function lobbyHandlers.HOUSE_ACK(sender, p)
+    local d = db()
+    local rec = d and d.houses and d.houses[baseName(sender)]
+    if rec then House.ApplyAck(rec, p) end
+end
+
+-- Houses I can play at, most recently heard first (records from House.Known).
+function CasinoNet.Houses()
+    local d = db()
+    return d and House.Known(d) or {}
+end
+
+-- Put my character at its own one-seat table: the table is the host's, the seat is "Loopback" (the name Comm
+-- gives the bettor side of a local table), and both sides tell each other what they hold straight away.
+local function seatHouse(t)
+    local d = db()
+    local name = ns.Comm.LOOPBACK_NAME
+    local m = t.members[name]
+    if not m or m.status ~= "seated" then
+        Casino.RequestJoin(t, name, now())
+        Casino.Admit(t, name, 0, now())
+    end
+    House.Refill(t, name)
+    local tc = Client.Table(d.casinoCache, t.code, true)
+    tc.house, tc.me, tc.owner = t.house, name, me()
+    Client.ApplyJoinOk(d.casinoCache, t.code, me(), { game = t.game, name = t.name, rev = t.rev })
+    send(t.code, { stateMsg(t), { type = "TBL_PLAYER", to = name, payload = Casino.PlayerMessage(t, name) } })
+    changed(t.code)
+    return tc
+end
+
+-- "Play against Steve": returns the table, or nil, message. The bookie must have been online once, so their
+-- limits are known; after that they need not be around.
+function CasinoNet.PlayHouse(host, game)
+    local d = db()
+    host = baseName(host)
+    if not Casino.GAMES[game] then return nil, "Unknown game." end
+    local rec = d.houses and d.houses[host]
+    if not (rec and rec.minBet) then return nil, ("%s's house has not been heard yet. They need to be online once."):format(tostring(host)) end
+    if rec.on == false then return nil, host .. "'s house is closed right now." end
+    if host == baseName(me()) then return nil, "That is your own house." end
+    local t, err = House.NewTable(d, host, game, me(), now())
+    if not t then return nil, err end
+    d.lobbyJoined = true                              -- hear the bookie's announcements at every login
+    ns.Comm.JoinBook(lobby())
+    seatHouse(t)
+    return t
+end
+
+-- Roulette at a house table: the player's own Spin, once there are bets on the table.
+function CasinoNet.HouseSpin(code)
+    local t = hosted(code)
+    if not (t and t.house) then return nil, "That is not a house table." end
+    if t.game ~= "roulette" then return nil, "Blackjack deals by itself." end
+    local staked = 0
+    for _, name in ipairs(Casino.Seated(t)) do staked = staked + Casino.Staked(t.members[name]) end
+    if staked == 0 then return nil, "Place a bet first." end
+    return CasinoNet.Spin(t)
+end
+
+-- Top the player's chips up (the bookie's credit) once the table is waiting for bets again.
+function CasinoNet.HouseRefill(t)
+    local name = ns.Comm.LOOPBACK_NAME
+    if House.Refill(t, name) > 0 then
+        send(t.code, { stateMsg(t), { type = "TBL_PLAYER", to = name, payload = Casino.PlayerMessage(t, name) } })
+        changed(t.code)
+    end
+end
+
+-- A round at a house table finished (`r` is the result record): count it, refill, tell the bookie.
+function CasinoNet.HouseRound(t, r)
+    local mine
+    for _, e in ipairs(r.results) do mine = e end
+    if mine then
+        House.RecordRound(House.Record(db(), t.house), t.game, mine, House.TableNet(t))
+        reportSoon(t.house)
+    end
+    if t.status == "betting" then CasinoNet.HouseRefill(t) end
+end
+
+------------------------------------------------------------------------------------------
 -- Player: incoming
 ------------------------------------------------------------------------------------------
 
@@ -483,6 +748,7 @@ function CasinoNet.SetWindowCheck(fn) windowOpen = fn or function() return false
 
 local function alertIfNeeded(tc, code, before, p)
     if windowOpen(code) or tc.status ~= "seated" then return end
+    local house = tc.house ~= nil
     local me_ = tc.me or me()
     local bj = p.bj
     if bj and p.status == "playing" and bj.turn == me_ then
@@ -491,7 +757,7 @@ local function alertIfNeeded(tc, code, before, p)
             tc.alertedTurn = key
             say(("It's your turn in blackjack at %s. /casino to open the table (you are stood after %d s)."):format(p.name, ns.BlackjackTable and ns.BlackjackTable.TURN_SECONDS or 30))
         end
-    elseif p.status == "betting" and before and before ~= "betting" and (tc.balance or 0) > 0 and Client.Staked(tc) == 0 and tc.alertedBet ~= p.round then
+    elseif not house and p.status == "betting" and before and before ~= "betting" and (tc.balance or 0) > 0 and Client.Staked(tc) == 0 and tc.alertedBet ~= p.round then
         tc.alertedBet = p.round
         say(("Betting is open in %s at %s. /casino to place your bet."):format((Casino.GAMES[p.game] and Casino.GAMES[p.game].title or "the casino"):lower(), p.name))
     end
@@ -695,7 +961,7 @@ function CasinoNet.RetryActs()
                 end
             end
             -- seated but the table never arrived, or the host has been silent a long while: ask again
-            local silent = not tc.state or (tc.lastHeard and t0 - tc.lastHeard >= QUIET_SYNC)
+            local silent = not tc.state or (not tc.house and tc.lastHeard and t0 - tc.lastHeard >= QUIET_SYNC)
             if silent then
                 -- every ask makes the host queue a full set of replies, and the first set is probably still in the
                 -- queue (first real session: waits of 9, 22, 28 s as 3 s retries piled up), so ask less and less often
@@ -791,8 +1057,9 @@ local function register()
     if C_Timer and C_Timer.NewTicker then
         C_Timer.NewTicker(TICK_SECONDS, tick)
         C_Timer.NewTicker(1, blackjackTick)
+        C_Timer.NewTicker(1, autoTick)
         C_Timer.NewTicker(1, CasinoNet.RetryActs)
-        C_Timer.NewTicker(ANNOUNCE_EVERY, function() CasinoNet.Announce() end)                          -- the lobby listing
+        C_Timer.NewTicker(ANNOUNCE_EVERY, function() CasinoNet.Announce(); CasinoNet.AnnounceHouse() end)   -- the lobby listing
         C_Timer.NewTicker(10, function() CasinoNet.Heartbeat() end)                                      -- table heartbeats (see Heartbeat for how often a table gets one)
     end
 end

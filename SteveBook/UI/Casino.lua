@@ -2,6 +2,7 @@
 --   Launcher  (/casino): the list of games, Host / Join, and your tables.
 --   Host window:   the table's code, players and their chips, Admit / chips / Kick, limits, Spin.
 --   Table window:  the roulette board for a player: chips, bets, the last result.
+--   House window:  a bookie's books for "play against the house" (SPEC §11a): who played, who owes whom, Settle.
 -- Only draws and wires: the rules live in ns.Roulette / ns.Casino / ns.CasinoClient and the
 -- messages in ns.CasinoNet.
 -- Exposes ns.UI.Casino = { Show, Hide, Toggle, OpenHost, OpenTable, Refresh,
@@ -9,7 +10,7 @@
 local ADDON, ns = ...
 ns.UI = ns.UI or {}
 
-local Casino, Client, CN, Roulette, Odds, Blackjack = ns.Casino, ns.CasinoClient, ns.CasinoNet, ns.Roulette, ns.Odds, ns.Blackjack
+local Casino, Client, CN, Roulette, Odds, Blackjack, House = ns.Casino, ns.CasinoClient, ns.CasinoNet, ns.Roulette, ns.Odds, ns.Blackjack, ns.House
 local UI = {}
 ns.UI.Casino = UI
 
@@ -31,6 +32,11 @@ local function setMini(kind, on)
     if not d then return end
     d.casinoMini = d.casinoMini or {}
     d.casinoMini[kind] = on and true or nil
+end
+-- Seconds until an automatic round locks the bets, or nil. Works on the host's table and on a player's
+-- copy of the table state (both carry status and autoAt).
+local function autoLeft(x)
+    if x and x.autoAt and x.status == "betting" then return math.max(0, x.autoAt - GetServerTime()) end
 end
 -- Move a region (clear its old anchor first).
 local function place(region, parent, x, y)
@@ -275,6 +281,12 @@ end
 -- The leave button of a player window: "Leave table" while seated; "Ask to rejoin" once they left (or were
 -- turned down), which glows; disabled while a request waits or after being removed.
 local function setLeaveButton(btn, tc, code)
+    if tc.house then                      -- a house table is yours alone: there is nobody to leave
+        btn:Hide(); btn.houseHidden = true
+        return
+    elseif rawget(btn, "houseHidden") then
+        btn.houseHidden = nil; btn:Show()
+    end
     if tc.status == "seated" then
         btn:SetText("Leave table"); btn:Enable()
         btn:SetScript("OnClick", function() CN.Leave(code) end)
@@ -294,9 +306,19 @@ local function setLeaveButton(btn, tc, code)
     end
 end
 
+-- Where I stand with the bookie whose house this table is: "Steve owes you 5s" / "You owe Steve 5s".
+local function houseNote(tc)
+    local rec = tc.house and db() and db().houses and db().houses[tc.house]
+    if not rec then return "" end
+    local bal = House.Balance(rec)
+    if bal > 0 then return GREEN .. tc.house .. " owes you " .. money(bal) .. "|r" end
+    if bal < 0 then return RED .. "You owe " .. tc.house .. " " .. money(-bal) .. "|r" end
+    return MUTED .. "all square with " .. tc.house .. "|r"
+end
+
 -- A warning when the host has gone quiet (the host's heartbeat arrives every 15 s), or nil.
 local function silenceWarning(tc)
-    if tc.status ~= "seated" or not tc.lastHeard then return nil end
+    if tc.house or tc.status ~= "seated" or not tc.lastHeard then return nil end
     local quiet = GetServerTime() - tc.lastHeard
     if quiet <= 45 then return nil end
     return GOLD .. ("No word from the host for %d s. They may be offline; your seat and chips are safe."):format(quiet) .. "|r"
@@ -403,7 +425,7 @@ local function tableRows()
     local d = db()
     if not d then return rows end
     for _, t in ipairs(Casino.List(d)) do
-        if t.hostName == UnitName("player") then
+        if t.hostName == UnitName("player") and not t.house then
             local seated = #Casino.Seated(t)
             rows[#rows + 1] = { host = true, code = t.code,
                 text = ("%sHosting|r %s  %s  %s  %d seated"):format(GOLD, t.name, GREY .. gameTitle(t.game) .. "|r",
@@ -415,7 +437,7 @@ local function tableRows()
         local status = ({ requested = GOLD .. "waiting for the host|r", seated = GREEN .. "seated|r",
             denied = RED .. "turned down|r", left = GREY .. "left|r", removed = RED .. "removed|r",
             closed = GREY .. "closed|r" })[tc.status] or tc.status
-        rows[#rows + 1] = { host = false, code = tc.code,
+        rows[#rows + 1] = { host = false, code = tc.code, house = tc.house ~= nil,
             text = ("%s  %s  %s"):format(tc.name or gameTitle(gameOfCode(tc.code)), GREY .. gameTitle(gameOfCode(tc.code)) .. "|r", status) }
     end
     return rows
@@ -448,10 +470,12 @@ local function buildLauncher()
         row.note:SetText(GREY .. (id == "roulette" and "Everyone bets on the same wheel. The host spins."
             or "Everyone plays the dealer at the same table. Blackjack pays 3:2.") .. "|r")
         row.host = button(L.home, "Host a table", 110, function() setMode("host", id) end)
-        at(row.host, L.home, 300, y - 2)
+        at(row.host, L.home, 170, y - 2)
         row.join = button(L.home, "Join a table", 110, function() setMode("join", id) end)
-        at(row.join, L.home, 418, y - 2)
-        if not g.ready then row.host:Disable(); row.join:Disable() end
+        at(row.join, L.home, 286, y - 2)
+        row.house = button(L.home, "No house yet", 126, function() end)       -- play alone against a bookie's bank (SPEC §11a)
+        at(row.house, L.home, 402, y - 2)
+        if not g.ready then row.host:Disable(); row.join:Disable(); row.house:Disable() end
         L.games[#L.games + 1] = row
         y = y + 46
     end
@@ -472,6 +496,8 @@ local function buildLauncher()
         if ns.UI.Bettor and ns.UI.Bettor.Show then ns.UI.Bettor.Show() end
     end)
     L.sport:SetPoint("BOTTOMLEFT", L.home, "BOTTOMLEFT", 0, 0)
+    L.houseBtn = button(L.home, "My house", 100, function() UI.OpenHouse() end)       -- the bookie's books
+    L.houseBtn:SetPoint("BOTTOMLEFT", L.home, "BOTTOMLEFT", 180, 0)
 
     -- host form
     L.hostForm = CreateFrame("Frame", nil, f)
@@ -551,6 +577,21 @@ local function refreshLauncher()
     if not (L.frame and L.frame:IsShown()) then return end
     local rows = tableRows()
     L.empty:SetShown(#rows == 0)
+    local house = CN.Houses()[1]                          -- the house I heard most recently
+    for _, g in ipairs(L.games) do
+        if not Casino.GAMES[g.id].ready then
+            g.house:Disable()
+        elseif house and house.on ~= false then
+            g.house:SetText("Play vs " .. house.host); g.house:Enable()
+            g.house:SetScript("OnClick", function()
+                local t, err = CN.PlayHouse(house.host, g.id)
+                if not t then return say(err) end
+                UI.OpenTable(t.code)
+            end)
+        else
+            g.house:SetText(house and "House closed" or "No house yet"); g.house:Disable()
+        end
+    end
     for i, r in ipairs(L.rows) do
         local row = rows[i]
         r.text:SetShown(row ~= nil); r.open:SetShown(row ~= nil); r.drop:SetShown(row ~= nil)
@@ -571,7 +612,8 @@ local function refreshLauncher()
                     UI.Refresh()
                 end)
             else
-                r.drop:SetText("Remove"); r.drop:Enable()
+                r.drop:SetText("Remove")
+                if row.house then r.drop:Disable() else r.drop:Enable() end       -- a house table keeps your results
                 r.drop:SetScript("OnClick", function() CN.Forget(row.code); UI.Refresh() end)
             end
         end
@@ -657,12 +699,15 @@ local function hostHint(t)
         local left = t.bj and t.bj.deadline and math.max(0, t.bj.deadline - GetServerTime()) or 0
         return "The results are on the table. The next round opens in " .. left .. " s; players will place new bets then.", nil
     end
+    local left = autoLeft(t)
     if t.game == "blackjack" then
         if t.status == "betting" then
-            if bettors > 0 then
+            if left then
+                return GOLD .. ("Dealing in %d s (%d of %d players have bet). Press Deal to go now.|r"):format(left, bettors, #seated), "go"
+            elseif bettors > 0 then
                 return GOLD .. ("Next: %d of %d players have bet. Press Deal when everyone is ready.|r"):format(bettors, #seated), "go"
             end
-            return "Players are placing their bets.", nil
+            return t.auto and ("Waiting for bets. Auto: deals " .. Casino.AUTO_SECONDS .. " s after the first bet.") or "Players are placing their bets.", nil
         elseif t.status == "playing" then
             local turn = t.bj.turn
             return "Waiting for " .. (turn and turn.name or "a player") .. " to play. They are stood after " .. ns.BlackjackTable.TURN_SECONDS .. " seconds, or press Skip.", nil
@@ -670,10 +715,12 @@ local function hostHint(t)
         return "The dealer is playing.", nil
     end
     if t.status == "betting" then
-        if bettors > 0 then
+        if left then
+            return GOLD .. ("Spinning in %d s (%d of %d players have bet). Press Spin to go now.|r"):format(left, bettors, #seated), "go"
+        elseif bettors > 0 then
             return GOLD .. ("Next: %d of %d players have bet. Press Spin when everyone is ready.|r"):format(bettors, #seated), "go"
         end
-        return "Players are placing their bets.", nil
+        return t.auto and ("Waiting for bets. Auto: spins " .. Casino.AUTO_SECONDS .. " s after the first bet.") or "Players are placing their bets.", nil
     end
     return "The wheel is spinning...", nil
 end
@@ -800,6 +847,25 @@ local function buildHost()
         if not ok then say(err) end
     end, 22)
     at(H.skip, body, 214, 533)
+    -- automatic rounds: Casino.AUTO_SECONDS after a round's first bet the bets lock and the hand or spin starts
+    H.auto = button(body, "Auto: off", 88, function()
+        local t = hostTable(); if not t then return end
+        local ok, err = CN.SetAuto(t, not t.auto)
+        if ok == nil then say(err) end
+        UI.Refresh()
+    end, 22)
+    at(H.auto, body, 350, 533)
+    H.auto:HookScript("OnEnter", function(self)
+        if not GameTooltip then return end
+        local t = hostTable()
+        local bjGame = t and t.game == "blackjack"
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText("Automatic rounds")
+        GameTooltip:AddLine(("When this is on, %d seconds after the first bet of a round the bets lock and the %s starts by itself. Later bets do not move the clock. You can still press %s at any time to go sooner."):format(
+            Casino.AUTO_SECONDS, bjGame and "hand is dealt" or "wheel spins", bjGame and "Deal" or "Spin the wheel"), 1, 1, 1, true)
+        GameTooltip:Show()
+    end)
+    H.auto:HookScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
     local ll = label(body, "GameFontHighlightSmall"); at(ll, body, 446, 538); ll:SetText(MUTED .. "Bet limits|r")
     H.minBox = editBox(body, 62, "", 12); at(H.minBox, body, 516, 532)
     local dash = label(body, "GameFontHighlightSmall"); at(dash, body, 584, 538); dash:SetText(MUTED .. "to|r")
@@ -831,7 +897,12 @@ local function buildHost()
     H.fullOnly = { cl, H.codeBox, H.listed, pp, qp, ll, H.minBox, dash, H.maxBox, H.setLimits, H.close, H.skip, ht }
     H.miniBtn = button(f, "Mini", 52, function() setMini("host", not isMini("host")); UI.Refresh() end, 20)
     H.miniBtn:SetPoint("TOPLEFT", f, "TOPLEFT", 76, -3)
-    f:SetScript("OnShow", function() UI.Refresh() end)
+    local ticker                                  -- once a second while open: the automatic-round and results countdowns
+    f:SetScript("OnShow", function()
+        if not ticker and C_Timer and C_Timer.NewTicker then ticker = C_Timer.NewTicker(1, function() UI.Refresh() end) end
+        UI.Refresh()
+    end)
+    f:SetScript("OnHide", function() if ticker then ticker:Cancel(); ticker = nil end end)
 end
 
 -- Mini: the dealer's cards, the Deal button and the status lines; the rest of the window is hidden.
@@ -843,12 +914,14 @@ local function layoutHost(mini)
         place(H.hintBox, H.body, 14, 56); H.hintBox:SetSize(380, 30); H.hint:SetWidth(360)
         place(H.gameBox, H.body, 14, 94); H.gameBox:SetSize(380, 124); H.blackjack:SetSize(380, 124)
         place(H.spin, H.body, 14, 226)
+        place(H.auto, H.body, 214, 231)
     else
         H.frame:SetSize(780, 600); H.body:SetSize(768, 566)
         H.head:SetWidth(400); H.status:SetWidth(500)
         place(H.hintBox, H.body, 14, 80); H.hintBox:SetSize(752, 30); H.hint:SetWidth(732)
         place(H.gameBox, H.body, 446, 118); H.gameBox:SetSize(320, 402); H.blackjack:SetSize(320, 402)
         place(H.spin, H.body, 14, 528)
+        place(H.auto, H.body, 350, 533)
     end
     for _, w in ipairs(H.fullOnly) do w:SetShown(not mini) end
 end
@@ -871,6 +944,8 @@ local function refreshHost()
     H.listed:SetText(t.status == "closed" and "" or (ago and (MUTED .. ("On the list of open tables (announced %d s ago)"):format(ago) .. "|r")
         or (GOLD .. "Not on the list yet...|r")))
     H.codeBox:SetText(t.code)
+    H.auto:SetText(t.auto and (GREEN .. "Auto: ON|r") or "Auto: off")
+    H.auto:SetShown(t.status ~= "closed")
     if not H.minBox:HasFocus() then H.minBox:SetText(money(t.minBet)) end
     if not H.maxBox:HasFocus() then H.maxBox:SetText(money(t.maxBet)) end
 
@@ -1322,6 +1397,12 @@ local function buildTable()
     P.after = label(sp, "GameFontHighlightSmall"); at(P.after, sp, 12, 408); P.after:SetWidth(272)
     P.place = button(sp, "Place bets", 272, function() UI.PlaceSlip() end, 32)
     at(P.place, sp, 12, 432)
+    P.spin = button(sp, "Spin", 134, function()                    -- house tables only: the player spins their own wheel
+        local ok, err = CN.HouseSpin(playCode)
+        if not ok then setMessage(RED .. err .. "|r") end
+    end, 32)
+    at(P.spin, sp, 150, 432)
+    P.spin:Hide()
     P.same = button(sp, "Same as last round", 134, function() UI.SameAsLast() end, 22); at(P.same, sp, 12, 472)
     P.clearSlip = button(sp, "Clear slip", 134, function() UI.ClearSlip() end, 22); at(P.clearSlip, sp, 150, 472)
     local on = label(sp, "GameFontNormal"); at(on, sp, 12, 508); on:SetText("On the table")
@@ -1332,10 +1413,13 @@ local function buildTable()
     end, 22)
     at(P.clear, sp, 174, 524)
 
+    local ticker                                  -- once a second while open, for the automatic-spin countdown
     f:SetScript("OnShow", function()
         if playCode then CN.Sync(playCode) end
+        if not ticker and C_Timer and C_Timer.NewTicker then ticker = C_Timer.NewTicker(1, function() UI.Refresh() end) end
         UI.Refresh()
     end)
+    f:SetScript("OnHide", function() if ticker then ticker:Cancel(); ticker = nil end end)
 end
 
 local function stakedOn(tc)
@@ -1368,11 +1452,16 @@ local function refreshTable()
     elseif tc.status == "closed" then statusText = RED .. "This table is closed.|r"
     elseif not st then statusText = GOLD .. "Waiting for the table...|r"
     elseif st.status == "spinning" then statusText = GOLD .. "No more bets: the wheel is spinning...|r"
-    else statusText = GREEN .. "Taking bets|r" .. MUTED .. ("   Round %d   %s to %s   %s"):format(st.round, money(st.minBet), money(st.maxBet),
-        ({ single = "single zero", double = "double zero", none = "no zero" })[zero]) .. "|r" end
+    else
+        local left = autoLeft(st)
+        statusText = (left and (GOLD .. ("Bets lock in %d s|r"):format(left)) or (GREEN .. "Taking bets|r"))
+            .. MUTED .. ("   Round %d   %s to %s   %s"):format(st.round, money(st.minBet), money(st.maxBet),
+            ({ single = "single zero", double = "double zero", none = "no zero" })[zero]) .. (st.auto and "   auto-spin" or "") .. "|r"
+    end
     local quiet = silenceWarning(tc)
     P.status:SetText(quiet or statusText)
-    P.balance:SetText(("Chips %s%s|r   %son the table %s|r"):format(GOLD, money(tc.balance or 0), MUTED, money(Client.Staked(tc))))
+    P.balance:SetText(("Chips %s%s|r   %son the table %s|r"):format(GOLD, money(tc.balance or 0), MUTED, money(Client.Staked(tc)))
+        .. (tc.house and ("   " .. houseNote(tc)) or ""))
 
     -- zero cells follow the wheel
     P.zero:SetShown(zero ~= "none")
@@ -1420,7 +1509,7 @@ local function refreshTable()
     P.history:SetText(historyText(st and st.history))
     local seats = {}
     for _, s in ipairs(st and st.seats or {}) do
-        seats[#seats + 1] = (s.name == myName(tc) and (GOLD .. s.name .. "|r") or s.name) .. "   " .. money(s.balance)
+        seats[#seats + 1] = (s.name == myName(tc) and (GOLD .. (tc.house and "You" or s.name) .. "|r") or s.name) .. "   " .. money(s.balance)
     end
     P.seats:SetText(#seats > 0 and table.concat(seats, "\n") or (GREY .. "nobody yet|r"))
 
@@ -1453,11 +1542,19 @@ local function refreshTable()
     if tc.status == "seated" and st then
         if (tc.balance or 0) + staked == 0 then hint = MUTED .. "You have no chips yet. Ask the host to add some, then you can bet.|r"
         elseif can and #slip > 0 then hint = GOLD .. ("Ready? Press %s.|r"):format(#slip == 1 and "Place 1 bet" or ("Place " .. #slip .. " bets"))
-        elseif can and staked > 0 then hint = MUTED .. "Your bets are in. Add more, or wait for the host to spin.|r"
+        elseif can and staked > 0 then hint = tc.house and (GOLD .. "Your bets are in. Press Spin, or add more bets.|r") or (MUTED .. "Your bets are in. Add more, or wait for the host to spin.|r")
         elseif can then hint = GOLD .. "Start by clicking a number or a bet on the board.|r" end
     end
     P.msg:SetText(message ~= "" and message or hint)
     glow(P.place, can and #slip > 0)
+    local house = tc.house ~= nil
+    P.spin:SetShown(house)
+    P.place:SetWidth(house and 134 or 272)
+    if house then
+        local ready = tc.status == "seated" and can and #tc.bets > 0
+        if ready then P.spin:Enable() else P.spin:Disable() end
+        glow(P.spin, ready)
+    end
     setLeaveButton(P.leave, tc, playCode)
 end
 
@@ -1656,7 +1753,10 @@ local function refreshBlackjack()
     elseif tc.status == "left" then statusText = GOLD .. "You left the table. Your chips are safe: press Ask to rejoin and the host can let you back in.|r"
     elseif tc.status == "closed" then statusText = RED .. "This table is closed.|r"
     elseif not st then statusText = GOLD .. "Waiting for the table...|r"
-    elseif st.status == "betting" then statusText = GREEN .. "Place your bets|r" .. MUTED .. ("   Round %d   %s to %s"):format(st.round, money(st.minBet), money(st.maxBet)) .. "|r"
+    elseif st.status == "betting" then
+        local left = autoLeft(st)
+        statusText = (left and (GOLD .. ("Bets lock in %d s|r"):format(left)) or (GREEN .. "Place your bets|r"))
+            .. MUTED .. ("   Round %d   %s to %s"):format(st.round, money(st.minBet), money(st.maxBet)) .. (st.auto and "   auto-deal" or "") .. "|r"
     elseif st.status == "dealer" then statusText = GOLD .. "The dealer plays...|r"
     elseif st.status == "results" then
         local left = pub and pub.nextAt and math.max(0, pub.nextAt - GetServerTime()) or 0
@@ -1666,7 +1766,8 @@ local function refreshBlackjack()
     else statusText = GOLD .. "Playing...|r" end
     local quiet = silenceWarning(tc)
     B.status:SetText(quiet or statusText)
-    B.balance:SetText(("Chips %s%s|r   %son the table %s|r"):format(GOLD, money(tc.balance or 0), MUTED, money(Client.Staked(tc))))
+    B.balance:SetText(("Chips %s%s|r   %son the table %s|r"):format(GOLD, money(tc.balance or 0), MUTED, money(Client.Staked(tc)))
+        .. (tc.house and ("   " .. houseNote(tc)) or ""))
 
     -- dealer
     local dcards, hidden = {}, false
@@ -1793,8 +1894,16 @@ local function refreshBlackjack()
         local confirmed = 0
         for _, b in ipairs(tc.bets or {}) do confirmed = confirmed + b.amount end
         local noChips = tc.status == "seated" and (tc.balance or 0) + Client.Staked(tc) == 0
+        local left = autoLeft(st)
+        local betIn = left and (MUTED .. ("Your bet is in. Dealing in %d s.|r"):format(left)) or (MUTED .. "Your bet is in. The host deals when everyone is ready.|r")
+        local betNow = left and (GOLD .. ("Place a bet to be dealt in. Dealing in %d s.|r"):format(left))
+            or (GOLD .. "Place a bet to be dealt in." .. (st and st.auto and (" The hand is dealt " .. Casino.AUTO_SECONDS .. " s after the first bet.") or "") .. "|r")
+        if tc.house then                                   -- a house table deals the moment the wager is in
+            betIn = MUTED .. "Your bet is in. Dealing...|r"
+            betNow = GOLD .. "Place a bet: the hand is dealt as soon as it is in.|r"
+        end
         B.waiting:SetText(noChips and (MUTED .. "You have no chips yet. Ask the host to add some, then you can bet.|r")
-            or (canBet and (mineBetting and (confirmed > 0 and (MUTED .. "Your bet is in. The host deals when everyone is ready.|r") or (GOLD .. "Sending your bet to the host...|r")) or (GOLD .. "Place a bet to be dealt in.|r"))
+            or (canBet and (mineBetting and (confirmed > 0 and betIn or (GOLD .. "Sending your bet to the host...|r")) or betNow)
             or (pub and pub.turn and (MUTED .. "Waiting for " .. pub.turn .. " to play...|r") or "")))
     end
 
@@ -1828,6 +1937,115 @@ local function refreshBlackjack()
 end
 
 ------------------------------------------------------------------------------------------
+-- House window: the bookie's books for "play against the house" (SPEC §11a)
+------------------------------------------------------------------------------------------
+
+local houseW = {}
+local HOUSE_ROWS = 10
+
+local function buildHouse()
+    local H = houseW
+    local f = newWindow("SteveBookHouseFrame", 600, 470, "SteveBook House")
+    H.frame = f
+    casinoButton(f)
+    local body = CreateFrame("Frame", nil, f)
+    body:SetPoint("TOPLEFT", 14, -34); body:SetPoint("BOTTOMRIGHT", -14, 14)
+    H.on = button(body, "House: closed", 130, function()
+        local book = db().houseBook
+        CN.SetHouse(not (book and book.enabled))
+        UI.Refresh()
+    end, 24)
+    at(H.on, body, 0, 0)
+    local l1 = label(body, "GameFontHighlight"); at(l1, body, 150, 5); l1:SetText("Bets from")
+    H.min = editBox(body, 60, "", 10); at(H.min, body, 220, 1)
+    local l2 = label(body, "GameFontHighlight"); at(l2, body, 292, 5); l2:SetText("to")
+    H.max = editBox(body, 60, "", 10); at(H.max, body, 316, 1)
+    H.set = button(body, "Set limits", 84, function()
+        local lo, hi = Odds.ParseMoney(H.min:GetText()), Odds.ParseMoney(H.max:GetText())
+        if not (lo and hi) then return say("Enter the bet sizes like 1s or 1g.") end
+        local ok, err = CN.SetHouseLimits(lo, hi)
+        if not ok then return say(err) end
+        say("House limits set.")
+        UI.Refresh()
+    end, 22)
+    at(H.set, body, 388, 2)
+    H.note = label(body, "GameFontHighlightSmall"); at(H.note, body, 0, 34)
+    H.note:SetWidth(570); H.note:SetWordWrap(true)
+    H.note:SetText(MUTED .. "Friends play roulette (single zero) and blackjack alone against you, any time, even while you are offline. Their results reach you when you are both online. Gold moves by trade, outside the addon: press Settle once you have paid or been paid.|r")
+    local heads = { { "Player", 0, 110, "LEFT" }, { "Rounds", 114, 50, "RIGHT" }, { "Wagered", 170, 80, "RIGHT" },
+                    { "House result", 256, 90, "RIGHT" }, { "Balance", 360, 150, "LEFT" } }
+    for _, h in ipairs(heads) do
+        local fs = label(body, "GameFontNormalSmall", h[4]); at(fs, body, h[2], 88); fs:SetWidth(h[3]); fs:SetText(h[1])
+    end
+    H.rows = {}
+    for i = 1, HOUSE_ROWS do
+        local y = 108 + (i - 1) * 26
+        local r = {}
+        r.name = label(body, "GameFontHighlight"); at(r.name, body, 0, y + 4); r.name:SetWidth(110); r.name:SetWordWrap(false)
+        r.rounds = label(body, "GameFontHighlight", "RIGHT"); at(r.rounds, body, 114, y + 4); r.rounds:SetWidth(50)
+        r.wagered = label(body, "GameFontHighlight", "RIGHT"); at(r.wagered, body, 170, y + 4); r.wagered:SetWidth(80)
+        r.net = label(body, "GameFontHighlight", "RIGHT"); at(r.net, body, 256, y + 4); r.net:SetWidth(90)
+        r.owed = label(body, "GameFontHighlight"); at(r.owed, body, 360, y + 4); r.owed:SetWidth(150); r.owed:SetWordWrap(false)
+        r.settle = button(body, "Settle", 56, function() end, 20); at(r.settle, body, 512, y)
+        r.drop = button(body, "x", 22, function() end, 20); at(r.drop, body, 572 - 14, y)
+        H.rows[i] = r
+    end
+    H.empty = label(body, "GameFontHighlightSmall"); at(H.empty, body, 0, 112); H.empty:SetWidth(570); H.empty:SetWordWrap(true)
+    H.empty:SetText(GREY .. "Nobody has played yet. Open the house, and tell your friends to open the casino: the Play button next to each game offers your house.|r")
+    H.total = label(body, "GameFontHighlight"); at(H.total, body, 0, 108 + HOUSE_ROWS * 26 + 8); H.total:SetWidth(570); H.total:SetWordWrap(true)
+    f:SetScript("OnShow", function() UI.Refresh() end)
+end
+
+local function refreshHouse()
+    local H = houseW
+    if not (H.frame and H.frame:IsShown()) then return end
+    local book = db().houseBook
+    H.on:SetText(book and book.enabled and (GREEN .. "House: OPEN|r") or "House: closed")
+    if not H.min:HasFocus() then H.min:SetText(money(book and book.minBet or Casino.DEFAULT_MIN_BET)) end
+    if not H.max:HasFocus() then H.max:SetText(money(book and book.maxBet or Casino.DEFAULT_MAX_BET)) end
+    local rows = book and House.Rows(book) or {}
+    H.empty:SetShown(#rows == 0)
+    for i, r in ipairs(H.rows) do
+        local e = rows[i]
+        for _, x in ipairs({ r.name, r.rounds, r.wagered, r.net, r.owed, r.settle, r.drop }) do x:SetShown(e ~= nil) end
+        if e then
+            r.name:SetText(e.name)
+            r.rounds:SetText(tostring(e.rounds))
+            r.wagered:SetText(money(e.wagered))
+            local house = -e.net                                         -- the bookie's side
+            r.net:SetText((house >= 0 and GREEN .. "+" or RED .. "-") .. money(math.abs(house)) .. "|r")
+            r.owed:SetText(e.owed > 0 and (RED .. "you owe " .. money(e.owed) .. "|r")
+                or (e.owed < 0 and (GREEN .. "owes you " .. money(-e.owed) .. "|r") or (GREY .. "settled|r")))
+            local armed = r.armedFor == e.name and GetTime() - (r.armedAt or 0) < 5
+            r.settle:SetText(armed and "Sure?" or "Settle")
+            if e.owed ~= 0 then r.settle:Enable() else r.settle:Disable() end
+            r.settle:SetScript("OnClick", function()
+                if not (r.armedFor == e.name and GetTime() - (r.armedAt or 0) < 5) then        -- a second click confirms
+                    r.armedFor, r.armedAt = e.name, GetTime()
+                    UI.Refresh()
+                    return
+                end
+                r.armedFor = nil
+                local owed = CN.HouseSettle(e.name)
+                if owed then
+                    say(owed > 0 and ("Marked as paid: you paid %s %s."):format(e.name, money(owed))
+                        or ("Marked as paid: %s paid you %s."):format(e.name, money(-owed)))
+                end
+                UI.Refresh()
+            end)
+            r.drop:SetScript("OnClick", function() CN.HouseForget(e.name); UI.Refresh() end)
+        end
+    end
+    local tot = book and House.Totals(book) or { players = 0, rounds = 0, wagered = 0, net = 0, owed = 0 }
+    local house = -tot.net
+    H.total:SetText(("%d player%s, %d round%s, %s wagered.  House result %s%s|r.  %s"):format(
+        tot.players, tot.players == 1 and "" or "s", tot.rounds, tot.rounds == 1 and "" or "s", money(tot.wagered),
+        house >= 0 and GREEN or RED, (house >= 0 and "+" or "-") .. money(math.abs(house)),
+        tot.owed > 0 and (RED .. "In all you owe " .. money(tot.owed) .. ".|r")
+            or (tot.owed < 0 and (GREEN .. "In all you are owed " .. money(-tot.owed) .. ".|r") or (GREY .. "Everything is settled.|r"))))
+end
+
+------------------------------------------------------------------------------------------
 -- Public
 ------------------------------------------------------------------------------------------
 
@@ -1853,6 +2071,7 @@ function UI.Refresh()
     refreshHost()
     refreshTable()
     refreshBlackjack()
+    refreshHouse()
 end
 
 function UI.OpenHost(code)
@@ -1878,6 +2097,13 @@ function UI.OpenTable(code)
         setMessage("")
         play.frame:Show()
     end
+    UI.Refresh()
+end
+
+function UI.OpenHouse()
+    if not houseW.frame then buildHouse() end
+    UI.Hide()                                  -- the launcher steps aside
+    houseW.frame:Show()
     UI.Refresh()
 end
 

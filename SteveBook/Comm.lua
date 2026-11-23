@@ -392,9 +392,17 @@ Comm.LOOPBACK_NAME = LOOPBACK_NAME
 local BETTOR_ORIGIN = { JOIN_REQ = true, SYNC_REQ = true, BET_PLACE = true, BETS_REQ = true, PING = true,
     TBL_JOIN = true, TBL_LEAVE = true, TBL_SYNC_REQ = true, TBL_BET = true, TBL_BET_CLEAR = true, TBL_ACT = true }
 
+-- A house table (SPEC §11a) lives on one client: the player's character hosts it and sits at it, so its
+-- messages are handed to this client's own handlers and never go on the wire.
+function Comm.IsLocal(code)
+    local db = SteveBookDB
+    local t = db and db.casino and db.casino.tables and db.casino.tables[code]
+    return t ~= nil and t.house ~= nil and t.hostName == myName()
+end
+
 function Comm.LoopbackActive(code)
     local db = SteveBookDB
-    if not (db and db.loopback == true and isOwner(code)) then return false end
+    if not (db and (db.loopback == true or Comm.IsLocal(code)) and isOwner(code)) then return false end
     local books = db.cache and db.cache.books
     local tables = db.casinoCache and db.casinoCache.tables
     return (books ~= nil and books[code] ~= nil) or (tables ~= nil and tables[code] ~= nil)
@@ -579,6 +587,7 @@ local PEER_WINDOW = 600
 local BOTH_WAYS = {
     JOIN_REQ = true, JOIN_OK = true, JOIN_DENY = true, SYNC_REQ = true,       -- (PING/PONG repeat every 30 s: not here)
     LOBBY_ASK = true, LOBBY_TABLE = true, LOBBY_BOOKS = true,
+    LOBBY_HOUSE = true, HOUSE_REPORT = true, HOUSE_ACK = true,          -- rare, and a lost one costs a whole trip
     TBL_JOIN = true, TBL_JOIN_OK = true, TBL_JOIN_DENY = true, TBL_LEAVE = true, TBL_SYNC_REQ = true,
 }
 
@@ -686,6 +695,10 @@ function Comm.Send(msgType, payload, bookCode, target, both)
     env.m = nextId()
     local sok, text = pcall(AceSer.Serialize, AceSer, env)
     if not sok then return false, tostring(text) end
+    if Comm.IsLocal(bookCode) then                         -- a house table: nothing leaves this client
+        if Comm.LoopbackActive(bookCode) then loopback(text, msgType, bookCode, env.to) end
+        return true
+    end
     local prio = PRIORITY[msgType]
     local wire = pack(text)
     local useGuild, useChannel = pathsFor(msgType, bookCode, env.to, both)
@@ -764,11 +777,11 @@ local function joinAll()
     -- casino tables: the ones I host and the ones I sit at
     local hosting = false
     for code, t in pairs(db.casino and db.casino.tables or {}) do
-        if t.hostName == myName() and t.status ~= "closed" then Comm.JoinBook(code); hosting = true end
+        if t.hostName == myName() and t.status ~= "closed" and not t.house then Comm.JoinBook(code); hosting = true end
     end
     if hosting or db.lobbyJoined then Comm.JoinBook(Protocol.LOBBY_CODE) end   -- the lobby: to announce my tables, or to hear others
     for code, tc in pairs(db.casinoCache and db.casinoCache.tables or {}) do
-        if tc.status == "requested" or tc.status == "seated" then Comm.JoinBook(code) end
+        if (tc.status == "requested" or tc.status == "seated") and not tc.house then Comm.JoinBook(code) end
     end
 end
 

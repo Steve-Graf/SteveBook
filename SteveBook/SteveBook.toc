@@ -15,6 +15,7 @@ Clock.lua
 Model.lua
 Casino.lua
 BlackjackTable.lua
+House.lua
 Bookie.lua
 Import.lua
 Cache.lua

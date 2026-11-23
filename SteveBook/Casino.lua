@@ -4,6 +4,8 @@
 -- A table (kept in SteveBookDB.casino.tables[code]; the host's own saved data):
 --   { code, game, name, hostName, createdAt, zero, minBet, maxBet,
 --     status = "betting" | "spinning" | "closed", round, rev, nextBetId,
+--     auto = true when automatic rounds are on, autoAt = server time the bets lock (see Casino.AutoTick),
+--     autoSeconds = delay after the first bet (default AUTO_SECONDS; 0 = at once), house = a one-seat house table (House.lua),
 --     members = { [name] = { status = "pending"|"seated"|"left"|"kicked"|"denied", requestedAt,
 --                            joinedAt, balance, bought, bets = { {id, ref, kind, numbers?, pick?, amount} } } },
 --     history = { newest-first pocket numbers }, lastResult = { round, number, results, at } }
@@ -34,6 +36,7 @@ Casino.SPIN_SECONDS = 3
 Casino.DEFAULT_MIN_BET = 100                 -- 1s
 Casino.DEFAULT_MAX_BET = 10000               -- 1g
 Casino.MAX_BET_CAP = 100000                  -- 10g: the most a host may set as a table maximum
+Casino.AUTO_SECONDS = 20                     -- automatic rounds: bets lock this long after the round's first bet
 
 local function touch(t) t.rev = (t.rev or 0) + 1 end
 local function wholeSilver(n) return type(n) == "number" and n == math.floor(n) and n % Odds.STAKE_STEP == 0 end
@@ -304,8 +307,50 @@ function Casino.BeginSpin(t, now)
     if t.status ~= "betting" then return nil, "not_betting" end
     t.status = "spinning"
     t.spinAt = now
+    t.autoAt = nil                                   -- a manual spin cancels the automatic countdown
     touch(t)
     return true
+end
+
+-- Automatic rounds (the host's setting, t.auto): Casino.AUTO_SECONDS after the first bet of a round the
+-- bets lock and the hand or spin starts by itself. Later bets do not move the deadline. If every bet is
+-- taken back the countdown is dropped, and it starts again with the next bet. The countdown (t.autoAt,
+-- server time) is part of the public state so players can show it; a reload forgets it (see Recover).
+function Casino.SetAuto(t, on)
+    on = on and true or false
+    if (t.auto == true) == on then return on end
+    t.auto = on or nil
+    t.autoAt = nil
+    touch(t)
+    return on
+end
+
+local function anyBets(t)
+    for _, name in ipairs(Casino.Seated(t)) do
+        if #t.members[name].bets > 0 then return true end
+    end
+    return false
+end
+
+-- Called about once a second and after every player message. Returns what changed:
+--   "armed"   the first bet is in: the countdown just started (broadcast the state)
+--   "cleared" the countdown was dropped (everyone took their bets back, or the setting went off)
+--   "start"   the countdown is over: the caller starts the round (Spin or Deal), which clears it
+--   nil       nothing to do
+function Casino.AutoTick(t, now)
+    if not (t.auto and t.status == "betting" and anyBets(t)) then
+        if t.autoAt then t.autoAt = nil; touch(t); return "cleared" end
+        return nil
+    end
+    if not t.autoAt then
+        local secs = t.autoSeconds or Casino.AUTO_SECONDS      -- a house table (SPEC §11a) goes at once: 0
+        if secs <= 0 then return "start" end
+        t.autoAt = now + secs
+        touch(t)
+        return "armed"
+    end
+    if now >= t.autoAt then return "start" end
+    return nil
 end
 
 function Casino.PickNumber(t, rng) return Roulette.Spin(t.zero, rng) end
@@ -344,6 +389,7 @@ function Casino.Close(t)
     for _, m in pairs(t.members) do refund(m) end
     local e = engine(t)
     if e and e.OnClosed then e.OnClosed(t) end
+    t.autoAt = nil
     t.status = "closed"
     touch(t)
     return true
@@ -353,6 +399,7 @@ end
 function Casino.Recover(db)
     for _, t in pairs(db.casino and db.casino.tables or {}) do
         local e = engine(t)
+        t.autoAt = nil                                   -- the automatic countdown starts afresh once bets are seen again
         if e and e.Recover then
             e.Recover(t)
         elseif t.status == "spinning" then
@@ -412,6 +459,7 @@ function Casino.StateMessage(t)
     local msg = {
         rev = t.rev, game = t.game, name = t.name, status = t.status, round = t.round,
         minBet = t.minBet, maxBet = t.maxBet, zero = t.zero, seats = seats, history = history,
+        auto = t.auto and true or nil, autoAt = t.autoAt,        -- automatic rounds: on, and when the bets lock
     }
     local e = engine(t)
     if e and e.Public then msg.bj = e.Public(t) end       -- the game's own public table state
