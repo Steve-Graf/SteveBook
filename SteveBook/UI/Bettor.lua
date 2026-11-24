@@ -25,15 +25,16 @@ local CELL_W = math.floor((BOARD_W - GAME_COL_W - 4 * CELL_GAP) / 3)
 local GROUP_W = WIN_W - 2 * PAD
 local GROUP_ROW_H = 22
 -- All Bets columns: who, when placed (server time, see Clock.lua), the pick (the bookie's text),
--- stake, to win, status. The Placed header gets its clock name at render time.
+-- stake, to win, status, then the Tail button. The Placed header gets its clock name at render time.
 local GROUP_COLS = {
-    { title = "Who",    x = 6,   w = 104, justify = "LEFT" },
-    { title = "Placed", x = 114, w = 108, justify = "LEFT", placed = true },
-    { title = "Pick",   x = 226, w = 330, justify = "LEFT" },
-    { title = "Stake",  x = 562, w = 84,  justify = "RIGHT" },
-    { title = "To win", x = 650, w = 116, justify = "RIGHT" },
-    { title = "Status", x = 774, w = 84,  justify = "CENTER" },
+    { title = "Who",    x = 6,   w = 100, justify = "LEFT" },
+    { title = "Placed", x = 110, w = 104, justify = "LEFT", placed = true },
+    { title = "Pick",   x = 218, w = 296, justify = "LEFT" },
+    { title = "Stake",  x = 520, w = 78,  justify = "RIGHT" },
+    { title = "To win", x = 602, w = 104, justify = "RIGHT" },
+    { title = "Status", x = 712, w = 64,  justify = "CENTER" },
 }
+local TAIL_X, TAIL_W = 788, 62
 local BLOCK_H, CELL_H = 76, 30
 local LEG_H = 32
 local GREEN, RED, GOLD, GREY = "|cff40ff40", "|cffff5050", "|cffffd100", "|cff999999"
@@ -622,6 +623,8 @@ local groupRows = {}
 local GROUP_STATUS = { accepted = GOLD .. "Open|r", pending = GOLD .. "Open|r", open = GOLD .. "Open|r",
     won = GREEN .. "Won|r", lost = RED .. "Lost|r", push = GREY .. "Push|r", void = GREY .. "Void|r" }
 
+local function isOpenEntry(e) return e.status == "accepted" or e.status == "pending" or e.status == "open" end
+
 -- Text from other players goes into FontStrings: a "|" would start a colour/escape code.
 local function plain(text) return (text:gsub("|", "||")) end
 
@@ -640,6 +643,8 @@ local function getGroupRow(i)
         fs:SetWordWrap(false)          -- long picks are cut off instead of spilling into the next column
         r.cols[i2] = fs
     end
+    r.tail = button(r, "Tail", TAIL_W, function() if r.entry then Bettor.Tail(r.entry) end end, 18)
+    r.tail:SetPoint("LEFT", TAIL_X, 0)
     groupRows[i] = r
     return r
 end
@@ -681,9 +686,11 @@ local function renderGroup(b, t)
         r.cols[2]:SetText(Clock and e.at and e.at > 0 and Clock.Format(e.at) or "")
         r.cols[3]:SetText(plain(e.text))
         r.cols[4]:SetText(money(e.stake))
-        local open = e.status == "accepted" or e.status == "pending" or e.status == "open"
+        local open = isOpenEntry(e)
         r.cols[5]:SetText(open and e.win and (GREEN .. money(e.win) .. "|r") or "")
         r.cols[6]:SetText(GROUP_STATUS[e.status] or e.status)
+        r.entry = e
+        r.tail:SetEnabled(open and e.legs ~= nil)           -- only an open bet whose picks the bookie sent
         r:Show()
         y = y + GROUP_ROW_H
     end
@@ -1231,6 +1238,34 @@ function Bettor.Select(marketId, selectionId)
     if act == "refused" then say(msg) end
     Bettor.Refresh()
     return act, msg
+end
+
+-- Tail a bet from All Bets: its picks go on my slip at today's odds (a parlay stays a parlay) and the window
+-- goes back to Lines to bet them. My stake is my own. Returns Slip.Tail's result, or nil.
+function Bettor.Tail(entry)
+    local b = currentBook()
+    if not (b and entry) then return nil end
+    local who = plain(tostring(entry.who))
+    if not entry.legs then
+        say("That bet can't be tailed: its picks are not known" .. (isOpenEntry(entry) and " (the bookie may need the newest SteveBook)." or " (it is settled)."))
+        return nil
+    end
+    local res = Slip.Tail(slip, entry.legs, function(id) return b.markets[id] end, now())
+    if res.added == 0 then
+        say(("Can't tail %s: the game%s started or %s no longer listed."):format(who, #entry.legs == 1 and " has" or "s have", #entry.legs == 1 and "is" or "are"))
+        Bettor.Refresh()
+        return res
+    end
+    tab, showJoin, filter = "lines", false, nil
+    local note = ""
+    if #res.skipped > 0 then
+        note = (" %d of %d picks were left out (game started, gone, or clashing)."):format(#res.skipped, #entry.legs)
+    end
+    if res.mode == "parlay" and res.added < 2 then note = note .. " A parlay needs 2 or more legs: add another, or switch to Single." end
+    say(("Tailing %s: %s on your slip at today's odds. Enter your stake to bet it.%s"):format(
+        who, res.mode == "parlay" and ("%d-leg parlay"):format(res.added) or "the pick", note))
+    Bettor.Refresh()
+    return res
 end
 
 function Bettor.SetStake(text)

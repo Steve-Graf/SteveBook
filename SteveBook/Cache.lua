@@ -365,6 +365,17 @@ local function isOpenStatus(st) return st == "accepted" or st == "pending" or st
 
 -- BETS: replace the group list. Entries are { id, who, text, stake, status, at, win? }.
 -- Malformed entries are skipped, long strings cut, and the list capped. Returns how many kept.
+-- The picks of a group bet, if they look right: 1..MAX_PARLAY_LEGS of { m = market id, s = selection id }.
+local function cleanLegs(legs)
+    if type(legs) ~= "table" or #legs == 0 or #legs > ns.Odds.MAX_PARLAY_LEGS then return nil end
+    local out = {}
+    for i, l in ipairs(legs) do
+        if type(l) ~= "table" or type(l.m) ~= "number" or type(l.s) ~= "number" then return nil end
+        out[i] = { m = l.m, s = l.s }
+    end
+    return out
+end
+
 function Cache.ApplyGroupBets(store, code, entries, now)
     local b = Cache.Book(store, code, false)
     if not b then return 0 end
@@ -377,6 +388,7 @@ function Cache.ApplyGroupBets(store, code, entries, now)
                 id = e.id, who = e.who:sub(1, GROUP_WHO_MAX), text = e.text:sub(1, GROUP_TEXT_MAX),
                 stake = e.stake, status = e.status, at = type(e.at) == "number" and e.at or 0,
                 win = type(e.win) == "number" and e.win or nil,
+                legs = cleanLegs(e.legs),
             }
         end
     end

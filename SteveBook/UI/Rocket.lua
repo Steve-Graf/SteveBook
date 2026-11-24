@@ -1,6 +1,6 @@
 -- UI/Rocket.lua: the rocket window (SPEC §11c). Only draws and wires: the rocket is Rocket.lua, the bets and
 -- messages are RocketNet.lua. Opened from the casino window (the house button next to Rocket).
--- Exposes ns.UI.Rocket = { Show, Refresh }.
+-- Exposes ns.UI.Rocket = { Show, Toggle (the /rocket command), Refresh }.
 local ADDON, ns = ...
 ns.UI = ns.UI or {}
 
@@ -16,6 +16,13 @@ local W = {}
 local SKY_W, SKY_H = 420, 280
 local PAD, TOP = 12, 56                       -- room under the rocket's base and above its nose
 local EXPLOSION_SHOW = 4                      -- seconds the explosion stays on show
+local PAST_SHOWN = 5                         -- past rounds listed under the sky
+
+-- "12s ago", "1m 05s ago"
+local function ago(sec)
+    sec = math.max(0, math.floor(sec))
+    return sec < 60 and (sec .. "s ago") or ("%dm %02ds ago"):format(math.floor(sec / 60), sec % 60)
+end
 
 local function fmt(m100) return Rocket.Format(m100) end
 local function signed(c) return (c >= 0 and GREEN .. "+" or RED .. "-") .. money(math.abs(c)) .. "|r" end
@@ -115,7 +122,7 @@ local function build()
     local bl = label(boom, "GameFontNormal", "CENTER"); bl:SetPoint("CENTER"); bl:SetText("BOOM")
     boom:Hide()
 
-    W.hist = label(body, "GameFontHighlightSmall"); at(W.hist, body, 14, 350); W.hist:SetWidth(SKY_W); W.hist:SetWordWrap(true)
+    W.hist = label(body, "GameFontHighlightSmall"); at(W.hist, body, 14, 350); W.hist:SetWidth(660); W.hist:SetWordWrap(true)
 
     -- who is on the rocket
     local tp = panel(body, 446, 62, 240, 136, COL.panel, COL.line)
@@ -205,8 +212,11 @@ function UI.Refresh()
 
     -- history of explosions, and who is on the rocket
     local hist = {}
-    for i, c in ipairs(st.recent or {}) do hist[i] = (c >= 200 and GREEN or RED) .. fmt(c) .. "|r" end
-    W.hist:SetText(MUTED .. "Explosions: |r" .. (#hist > 0 and table.concat(hist, "  ") or (GREY .. "none yet|r")))
+    for i, r in ipairs(st.past or {}) do
+        if i > PAST_SHOWN then break end
+        hist[i] = (r.crash100 >= 200 and GREEN or RED) .. fmt(r.crash100) .. "|r" .. MUTED .. " " .. ago(v.now - r.explodeAt) .. "|r"
+    end
+    W.hist:SetText(MUTED .. "Past rounds, where each exploded: |r" .. (#hist > 0 and table.concat(hist, "   ") or (GREY .. "none yet|r")))
     W.thisText:SetText(#v.thisRows > 0 and table.concat(playerLines(v.thisRows), "\n") or (GREY .. "nobody has bet yet|r"))
     if st.last and v.lastRows then
         W.lastTitle:SetText("Last round  " .. RED .. "exploded at " .. fmt(st.last.crash100) .. "|r")
@@ -240,6 +250,15 @@ function UI.Show()
     if not W.frame then build() end
     W.frame:Show()
     UI.Refresh()
+end
+
+-- /rocket: close the window if it is open, otherwise open the rocket at the house I know.
+function UI.Toggle()
+    if W.frame and W.frame:IsShown() then W.frame:Hide(); return end
+    local ok, err = RocketNet.OpenDefault()
+    if not ok then print(GOLD .. "SteveBook Rocket:|r " .. err); return end
+    if ns.UI.Casino and ns.UI.Casino.Hide then ns.UI.Casino.Hide() end          -- the launcher steps aside
+    UI.Show()
 end
 
 RocketNet.Subscribe(function() UI.Refresh() end)

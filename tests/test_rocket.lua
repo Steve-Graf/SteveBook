@@ -109,6 +109,9 @@ do
     eq(st.phase, "waiting", "betting"); eq(st.id, r5.id, "for round 5"); check(math.abs(st.toLaunch - (R.PAUSE - 3)) < 1e-9, "seven seconds to go")
     eq(st.last.id, list[4].id, "the round before is known"); eq(st.last.crash100, list[4].crash100, "with its crash point"); eq(st.recent[1], list[4].crash100, "newest first")
     eq(#st.recent, math.min(R.RECENT, 4 + #R.Schedule(SEED, ERA - 1)), "and the history reaches into the era before")
+    eq(#st.past, #st.recent, "the past rounds carry their times too"); eq(st.past[1].crash100, st.recent[1], "same order")
+    eq(st.past[1].explodeAt, list[4].explodeAt, "when the round before exploded"); eq(st.past[1].id, list[4].id, "and which it was")
+    check(st.past[2].explodeAt < st.past[1].explodeAt, "older ones are older")
     eq(st.m100, nil, "nothing is climbing yet")
     st = R.State(SEED, r5.launchAt + 2)
     eq(st.phase, "flying", "flying"); eq(st.m100, math.min(R.Mult100(2), r5.crash100), "at the multiplier of the moment"); check(math.abs(st.t - 2) < 1e-9, "two seconds in")
@@ -250,6 +253,10 @@ local function lines() local l = {}; for i = printedFrom + 1, #stub.printed do l
 local function setTime(t) local d = t - stub.time; stub.time = t; stub.mono = stub.mono + d end
 
 ns.Comm.JoinBook(P.LOBBY_CODE); settle()
+eq(select(2, RN.OpenDefault()), "No house has been heard yet. Steve needs to be online once, with the lobby open.", "/rocket before any house is heard says so")
+stub.player = "Steve"
+check(select(2, RN.OpenDefault()):find("played by your friends", 1, true) ~= nil, "and tells Steve it is his own house")
+stub.player = "Tester"
 check(select(1, RN.Open("Steve")) == nil, "a house nobody has heard has no rocket")
 fromWire("Steve lol", "LOBBY_HOUSE", P.LOBBY_CODE, { on = true, minBet = 100, maxBet = 10000 })
 eq(select(2, RN.Open("Steve")), "Steve's house needs the newest SteveBook before its rocket can fly.", "an old house sends no seed")
@@ -361,7 +368,7 @@ ns.UI.Rocket.Show(); ns.UI.Rocket.Refresh()
 check(textOf("Steve's rocket") ~= nil, "the window names the house")
 check(textOf("Bet 1s") ~= nil, "the Bet button shows the stake"); local bet = allByText("Bet 1s")[1]
 eq(bet:IsEnabled(), true, "betting is open"); check(ns.UI.Casino.IsGlowing(bet), "and the button glows")
-check(textOf("Explosions:") ~= nil, "a strip of the last explosions")
+check(textOf("Past rounds") ~= nil, "a strip of the past rounds")
 click(bet)
 check(db.rocket.bet ~= nil, "pressing Bet places the bet"); eq(allByText("Bet 1s")[1]:IsEnabled(), false, "and only once")
 fromWire("Ann lol", "ROCKET_BET", P.LOBBY_CODE, { house = "Steve", id = nextRound.id, amount = 500 })
@@ -383,6 +390,18 @@ check(textOf("Ann  ") ~= nil and textOf("bailed " .. R.Format(R.Mult100(2.5))) ~
 setTime(nextRound.explodeAt + 6); ns.UI.Rocket.Refresh()
 check(textOf("EXPLODED") == nil, "the explosion clears after a few seconds")
 
+-- the strip of past rounds: five of them, with where each exploded and how long ago
+do
+    local tx = textOf("Past rounds")
+    check(tx ~= nil, "the window lists the past rounds")
+    local n = 0
+    for _ in tx:gmatch(" ago") do n = n + 1 end
+    eq(n, 5, "five of them")
+    local lastCrash = R.State(SEED, RN.Now()).past[1]
+    check(tx:find(R.Format(lastCrash.crash100) .. "|r", 1, true) ~= nil, "the newest is first, with its multiplier")
+    check(tx:find(("%ds ago"):format(math.floor(RN.Now() - lastCrash.explodeAt)), 1, true) ~= nil, "and how long ago it exploded")
+end
+
 -- the launcher's rocket button
 UI.Show(); settle()
 local plays = allByText("Play vs Steve")
@@ -390,6 +409,17 @@ eq(#plays, 4, "every game, the rocket included, offers the house")
 db.rocket.host = nil
 click(plays[4])
 eq(db.rocket.host, "Steve", "the rocket button opens Steve's rocket")
+
+-- /rocket
+check(SlashCmdList.STEVEROCKET ~= nil and _G.SLASH_STEVEROCKET1 == "/rocket", "/rocket is registered")
+local win = _G.SteveBookRocketFrame
+win:Hide(); db.rocket.host = nil
+SlashCmdList.STEVEROCKET()
+eq(db.rocket.host, "Steve", "/rocket picks Steve's house"); check(win:IsShown(), "and opens the rocket")
+SlashCmdList.STEVEROCKET()
+check(not win:IsShown(), "a second /rocket closes it")
+db.houses.Steve.on = false; SlashCmdList.STEVEROCKET()
+check(not win:IsShown(), "a closed house does not open it"); db.houses.Steve.on = true
 
 eq(#stub.errors, 0, "no errors: " .. table.concat(stub.errors, "; "))
 if fails == 0 then out_("test_rocket: all passed") else out_("test_rocket: " .. fails .. " FAILED") os.exit(1) end

@@ -77,7 +77,13 @@ do
     local keys = {}
     for k in pairs(e[b1.id]) do keys[#keys + 1] = k end
     table.sort(keys)
-    eq(table.concat(keys, ","), "at,id,stake,status,text,who,win", "an entry has id, who, text, stake, status, at, win")
+    eq(table.concat(keys, ","), "at,id,legs,stake,status,text,who,win", "an open entry has id, who, text, stake, status, at, win, legs")
+    -- the picks, for tailing: market id and selection id, taken from the bet (not from the market as it is now)
+    eq(#e[b1.id].legs, 1, "a single has one pick"); eq(e[b1.id].legs[1].m, spread.id, "its market"); eq(e[b1.id].legs[1].s, 1, "its selection")
+    eq(e[b4.id].legs[1].s, 2, "the other side of the same market")
+    local lk = {}
+    for k in pairs(e[b1.id].legs[1]) do lk[#lk + 1] = k end
+    table.sort(lk); eq(table.concat(lk, ","), "m,s", "a pick is just m and s")
 
     -- the text uses the line and odds the bet was taken at, not what the market says now
     assert(Bookie.EditMarket(book, spread.id, { line = 7, odds = { [1] = -125 } }, NOW))
@@ -116,6 +122,8 @@ do
     eq(g[1].win, Odds.ParlayProfit(20 * S, { -110, -110, 130 }), "an open parlay's win is the parlay profit")
     eq(g[1].stake, 20 * S, "stake")
     eq(g[1].status, "accepted", "open")
+    eq(#g[1].legs, 3, "a parlay lists every leg"); eq(g[1].legs[1].m, spread.id, "in order (1)"); eq(g[1].legs[2].m, total.id, "(2)")
+    eq(g[1].legs[3].m, mia.id, "(3)"); eq(g[1].legs[3].s, 1, "with the selection each leg took")
 
     Odds.SetView("ratio")
     local pr = Bookie.GroupBets(book, NOW)[1].text
@@ -138,6 +146,7 @@ do
     g = Bookie.GroupBets(book, NOW)
     eq(g[1].status, "won", "a settled parlay shows its status")
     eq(g[1].win, nil, "no win field once settled")
+    eq(g[1].legs, nil, "and no picks: a finished bet cannot be tailed")
     -- a one-leg-lost parlay is lost at once
     local book2 = newBook()
     local a, b = market(book2, "moneyline", "AAA @ BBB"), market(book2, "moneyline", "CCC @ DDD")

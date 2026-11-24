@@ -20,6 +20,7 @@ local function help()
     say("/book guild        turn the guild-chat second path on or off (on by default)")
     say("/book hide         hide the active book from (or show it in) the list of books")
     say("/casino            open the casino (roulette and blackjack tables)")
+    say("/rocket            open the rocket (or close it): one rocket for everyone at Steve's house")
     say("/casino house      your house: friends play alone against you, even while you are offline; who owes whom")
     say("/book icon         show or hide the minimap icon")
     say("/book ratio        toggle odds between American (-110) and ratio (0.91x) display")
@@ -82,6 +83,9 @@ local function handle(msg)
         b.unlisted = not b.unlisted
         say(b.unlisted and (b.name .. " is hidden from the list of books. Friends can still join with the code " .. b.code .. ".")
             or (b.name .. " is listed again."))
+    elseif cmd == "rocket" then
+        local ui = ns.UI and ns.UI.Rocket
+        if ui and ui.Toggle then ui.Toggle() else say("The rocket is not available.") end
     elseif cmd == "casino" then
         local ui = ns.UI and ns.UI.Casino
         if rest:lower() == "house" and ui and ui.OpenHouse then ui.OpenHouse()
@@ -140,6 +144,9 @@ SLASH_STEVEBOOKIE1 = "/bookie"
 SlashCmdList["STEVEBOOKIE"] = function() handle("bookie") end
 SLASH_STEVEBET1 = "/bet"
 SlashCmdList["STEVEBET"] = function() handle("bet") end
+
+SLASH_STEVEROCKET1 = "/rocket"
+SlashCmdList["STEVEROCKET"] = function() handle("rocket") end
 
 SLASH_STEVECASINO1 = "/casino"
 SlashCmdList["STEVECASINO"] = function(msg) handle("casino " .. (msg or "")) end

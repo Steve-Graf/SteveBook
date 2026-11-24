@@ -120,7 +120,8 @@ end
 -- What the rocket is doing at server time `now`:
 --   { id, phase = "waiting" | "flying", startAt, launchAt, explodeAt,
 --     toLaunch (waiting), t (seconds since the launch), m100 (flying: the multiplier on show),
---     last = { id, crash100, explodeAt } (the round before), recent = { crash100, ... } newest first, idle = true }
+--     last = { id, crash100, explodeAt } (the round before), recent = { crash100, ... } newest first,
+--     past = { { id, crash100, explodeAt }, ... } the same rounds with their times, idle = true }
 -- The crash point of the round in progress is NOT part of the state (it is only known once it is over).
 function Rocket.State(seed, now)
     local era = math.floor(now / Rocket.ERA)
@@ -143,8 +144,11 @@ function Rocket.State(seed, now)
         st.m100 = math.min(Rocket.Mult100(st.t), cur.crash100)
     end
     local prev = before(seed, era, index, Rocket.RECENT)
-    st.recent = {}
-    for i, r in ipairs(prev) do st.recent[i] = r.crash100 end
+    st.recent, st.past = {}, {}
+    for i, r in ipairs(prev) do
+        st.recent[i] = r.crash100
+        st.past[i] = { id = r.id, crash100 = r.crash100, explodeAt = r.explodeAt }
+    end
     if prev[1] then st.last = { id = prev[1].id, crash100 = prev[1].crash100, explodeAt = prev[1].explodeAt } end
     return st
 end

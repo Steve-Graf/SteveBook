@@ -107,7 +107,7 @@ number). The dice roll the moment you press Roll. The most a single roll can cos
 bet, so keep that limit modest.
 
 **The rocket (against a house only).** One rocket for everyone at the house: it launches, climbs and explodes, pauses 10
-seconds, and launches again, all the time, whether or not the bookie is online. Open it with the house button next to
+seconds, and launches again, all the time, whether or not the bookie is online. Open it with `/rocket` (again to close), or the house button next to
 **Rocket** in the casino window. Bet in the pause before a launch (optionally with an **auto bail** multiplier) and press
 **Bail** while it climbs: you win your stake times the multiplier. If it explodes first you lose the stake. The window shows who
 is on the rocket and where they bailed, and after the explosion who crashed. Every client works out the same rocket from a number

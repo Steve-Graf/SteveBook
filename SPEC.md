@@ -107,9 +107,15 @@ privacy (the group asked for it): other members' picks and stakes are visible to
   often than every 5 s.
 - `BETS.bets` holds open bets plus bets settled in the last 48 hours (`Bookie.GROUP_SETTLED_KEEP`),
   voided bets left out, newest first, at most 60 (`Bookie.GROUP_BETS_MAX`). Entry:
-  `{ id, who, text, stake (copper), status, at (placed), win? (open bets: profit if it wins) }`.
+  `{ id, who, text, stake (copper), status, at (placed), win? (open bets: profit if it wins),
+  legs? (open bets: the picks as a list of { m = market id, s = selection id }, one for a single) }`.
   `text` is rendered by the bookie so the client needs no market data (at most 160 bytes; a parlay drops trailing legs and ends ", ..."): a single reads
   "LAL +5.5 -110, LAL @ BOS", a parlay "3-leg parlay +738: LAL +5.5, Over 231.5, MIA ML".
+- **Tail.** Each open row has a **Tail** button (off for settled bets and for a bookie that sends no `legs`). It puts
+  the bet's picks on the bettor's own slip (`Slip.Tail`: one pick = single, several = parlay, replacing that mode's
+  slip only) at today's odds and lines, skips picks whose game has started or is gone or that break the parlay rules,
+  and switches to the Lines tab. The stake is the tailer's own; nothing is placed until they bet. Old bookies simply
+  send no `legs`, so Tail stays off.
 - The bookie window already lists every bet in its Bets tab.
 
 ## 4. Data model (bookie's SavedVariables are the source of truth)
@@ -627,7 +633,7 @@ explodes loses the stake. `Rocket.lua` is the pure maths, `RocketNet.lua` the gl
   player bets and when they bail). They only decorate the board: every client checks a bail claim against the crash point it can
   compute (a claim at or past it is not believed), accepts only rounds that are recent, the first message of a player per round,
   stakes within the limits, and at most 12 players a round. The window shows **This round** (who bet, who has bailed and where) and
-  **Last round** (the crash point, who bailed where and who crashed, with what they won or lost), plus the last explosions.
+  **Last round** (the crash point, who bailed where and who crashed, with what they won or lost), plus a strip of the past 5 rounds under the sky (where each exploded and how long ago; `State().past` holds 12).
 - **Trust.** Every client can compute the crash point of a round in advance, so a modified client could always bail just in time.
   This is the price of a rocket that needs no host; the other players' bails are public, which makes a perfect record visible. The
   bookie's client only rejects totals that cannot be true (`House.Plausible`).

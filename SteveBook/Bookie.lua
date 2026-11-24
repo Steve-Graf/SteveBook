@@ -684,10 +684,20 @@ local function winIfOpen(bet)
     return Odds.ParlayProfit(bet.stake, live)
 end
 
+-- The picks of an open bet, for tailing: { { m = marketId, s = selectionId }, ... } (one for a single).
+function Bookie.TailLegs(bet)
+    if bet.legs then
+        local out = {}
+        for i, leg in ipairs(bet.legs) do out[i] = { m = leg.marketId, s = leg.selectionId } end
+        return out
+    end
+    return { { m = bet.marketId, s = bet.selectionId } }
+end
+
 -- The BETS payload's `bets`: open bets plus bets settled (won, lost, push) within GROUP_SETTLED_KEEP
 -- (boundary inclusive); void and rejected bets left out; newest placed first; at most GROUP_BETS_MAX.
 -- Entry: { id, who, text, stake (copper), status ("accepted" = open, won, lost, push), at (placed),
--- win (open bets only: profit if it wins) }.
+-- win (open bets only: profit if it wins), legs (open bets only: the picks, see TailLegs) }.
 function Bookie.GroupBets(book, now)
     local list = {}
     for _, b in pairs(book.bets) do
@@ -707,7 +717,8 @@ function Bookie.GroupBets(book, now)
     for i = 1, math.min(#list, Bookie.GROUP_BETS_MAX) do
         local b = list[i]
         out[i] = { id = b.id, who = b.bettor, text = Bookie.BetText(book, b), stake = b.stake, status = b.status,
-                   at = b.placedAt, win = b.status == "accepted" and winIfOpen(b) or nil }
+                   at = b.placedAt, win = b.status == "accepted" and winIfOpen(b) or nil,
+                   legs = b.status == "accepted" and Bookie.TailLegs(b) or nil }
     end
     return out
 end

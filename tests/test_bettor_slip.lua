@@ -249,4 +249,50 @@ do
     check(w.mode == "single" and w.single.odds == -105, "Restore a single")
 end
 
+-- Tail: someone else's picks on my slip, at today's prices.
+do
+    local w = Slip.New()
+    local r = Slip.Tail(w, { { m = g1ml.id, s = 1 } }, getMarket, NOW)
+    check(r.mode == "single" and r.added == 1 and #r.skipped == 0, "tail of one pick is a single")
+    check(w.mode == "single" and w.single.marketId == g1ml.id and w.single.selectionId == 1, "the pick is on the slip")
+    check(w.single.odds == 150 and w.single.market == g1ml, "at the market's current odds, with the market")
+    r = Slip.Tail(w, { { m = g2ml.id, s = 2 } }, getMarket, NOW)
+    check(r.added == 1 and w.single.marketId == g2ml.id, "a single replaces the single before it")
+
+    Slip.SetMode(w, "parlay"); Slip.Select(w, g1tot, 2)
+    Slip.SetMode(w, "single")
+    r = Slip.Tail(w, { { m = g1sp.id, s = 1 }, { m = g1tot.id, s = 1 }, { m = g2ml.id, s = 1 } }, getMarket, NOW)
+    check(r.mode == "parlay" and r.added == 3 and #w.parlay == 3 and w.mode == "parlay", "several picks make a parlay, and the slip switches to it")
+    check(w.parlay[1].marketId == g1sp.id and w.parlay[3].selectionId == 1, "in order")
+    check(w.single and w.single.marketId == g2ml.id, "the single pick is left alone")
+    check(Slip.Odds(w) == Odds.ParlayOdds({ -110, -110, -120 }), "priced as a parlay at today's odds")
+    check(not w.confirm.parlay, "nothing to confirm")
+
+    -- a game that has started, one that has gone, and one that clashes with an earlier pick
+    local p = Slip.New()
+    local started = market("EEE @ FFF", "moneyline", nil, -110, -110, nil, NOW - 1)
+    markets[started.id] = started
+    r = Slip.Tail(p, { { m = g1ml.id, s = 2 }, { m = started.id, s = 1 }, { m = 9999, s = 1 }, { m = g2tot.id, s = 1 } }, getMarket, NOW)
+    check(r.added == 2 and #p.parlay == 2 and #r.skipped == 2, "the started and the missing game are skipped")
+    check(r.skipped[1].index == 2 and r.skipped[1].reason == "started" and r.skipped[2].index == 3 and r.skipped[2].reason == "gone", "with the reason for each")
+    r = Slip.Tail(p, { { m = g1ml.id, s = 1 }, { m = g1sp.id, s = 1 } }, getMarket, NOW)
+    check(r.added == 1 and r.skipped[1].reason == "conflict" and r.skipped[1].index == 2, "a pick that breaks the parlay rules is skipped")
+    r = Slip.Tail(p, { { m = g1ml.id, s = 1 }, { m = g1ml.id, s = 2 } }, getMarket, NOW)
+    check(r.added == 1 and r.skipped[1].reason == "conflict", "the same game twice is skipped too")
+
+    -- nothing left: the slip is as it was
+    local q = Slip.New(); Slip.Select(q, g1ml, 1)
+    r = Slip.Tail(q, { { m = started.id, s = 1 } }, getMarket, NOW)
+    check(r.added == 0 and q.single.marketId == g1ml.id and q.mode == "single", "when every pick is gone the slip is untouched")
+    r = Slip.Tail(q, { { m = started.id, s = 1 }, { m = 9999, s = 1 } }, getMarket, NOW)
+    check(r.added == 0 and #q.parlay == 0 and q.mode == "single", "...also for a parlay")
+    r = Slip.Tail(q, { { m = g1ml.id, s = 7 } }, getMarket, NOW)
+    check(r.added == 0 and r.skipped[1].reason == "gone", "a selection the market does not have is gone")
+
+    -- tailing clears an odds confirmation the slip was waiting on
+    local c = Slip.New(); Slip.Select(c, g1ml, 1); c.confirm.single = true
+    Slip.Tail(c, { { m = g1sp.id, s = 1 } }, getMarket, NOW)
+    check(not c.confirm.single, "a fresh pick has nothing to confirm")
+end
+
 if fails == 0 then print("test_bettor_slip: all passed") else print(fails .. " FAILED"); os.exit(1) end

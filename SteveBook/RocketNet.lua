@@ -89,6 +89,17 @@ function RocketNet.Open(host)
     return true
 end
 
+-- /rocket: the house heard most recently (Steve's). Returns true, or nil, message.
+function RocketNet.OpenDefault()
+    local d = db()
+    local rec = d and House.Known(d)[1]
+    if not rec then
+        if House.IsBookie(me()) then return nil, "The rocket is played by your friends at your house. They open it with /rocket." end
+        return nil, "No house has been heard yet. Steve needs to be online once, with the lobby open."
+    end
+    return RocketNet.Open(rec.host)
+end
+
 ------------------------------------------------------------------------------------------
 -- My bet
 ------------------------------------------------------------------------------------------

@@ -398,8 +398,9 @@ end
 do
     local function nReq() local n = 0; for _, e in ipairs(sent) do if e.t == "BETS_REQ" then n = n + 1 end end; return n end
     local entries = {
-        { id = 1, who = "Me", text = "PHI -3.5 -110 · PHI @ DAL", stake = 2000, status = "accepted", at = T - 10, win = 1818 },
-        { id = 2, who = "Ann", text = ("a very long parlay description "):rep(6), stake = 1000, status = "accepted", at = T - 5, win = 4000 },
+        { id = 1, who = "Me", text = "PHI -3.5 -110 · PHI @ DAL", stake = 2000, status = "accepted", at = T - 10, win = 1818, legs = { { m = 1, s = 1 } } },
+        { id = 2, who = "Ann", text = ("a very long parlay description "):rep(6), stake = 1000, status = "accepted", at = T - 5, win = 4000,
+          legs = { { m = 2, s = 2 }, { m = 3, s = 1 } } },
         { id = 3, who = "Bob", text = "NYG ML +150", stake = 500, status = "lost", at = T - 90000 },
     }
     -- Forged and misplaced BETS are ignored.
@@ -447,6 +448,36 @@ do
     local mine
     for _, f in ipairs(frames) do local x = rawget(f, "_text"); if type(x) == "string" and x:find("Me", 1, true) and x:find("|cffffd100", 1, true) and x:sub(-2) == "|r" then mine = f end end
     check(mine ~= nil, "the viewer's own rows are highlighted")
+
+    -- Tail: the picks of a bet go on my slip and the window goes to Lines.
+    do
+        local slip = B.SlipState()
+        local tails = {}
+        for _, f in ipairs(frames) do if rawget(f, "_text") == "Tail" then tails[#tails + 1] = f end end
+        check(#tails >= 3, "every row has a Tail button")
+        -- rows: Ann (open, newest), Me (open), Bob (settled)
+        check(tails[1]:IsEnabled() and tails[2]:IsEnabled(), "Tail is on for open bets with picks")
+        check(not tails[3]:IsEnabled(), "and off for a settled bet")
+        tails[1]:Click()
+        check(slip.mode == "parlay" and #slip.parlay == 2, "tailing a parlay puts all its legs on the parlay slip")
+        check(slip.parlay[1].marketId == 2 and slip.parlay[1].selectionId == 2 and slip.parlay[2].marketId == 3, "the right picks, in order")
+        check(slip.parlay[1].odds == b.markets[2].selections[2].odds, "at today's odds (" .. tostring(slip.parlay[1].odds) .. ")")
+        check(not findPrefix("Lines"):IsEnabled(), "the window is on the Lines tab")
+        check(lastPrint():find("Tailing Ann: 2-leg parlay on your slip", 1, true) ~= nil, "and says what happened: " .. lastPrint())
+        findPrefix("All Bets"):Click()
+        tails[2]:Click()
+        check(slip.mode == "single" and slip.single and slip.single.marketId == 1 and slip.single.selectionId == 1, "tailing a single fills the single slip")
+        check(#slip.parlay == 2, "the parlay slip is left as it was")
+        check(lastPrint():find("Tailing Me: the pick", 1, true) ~= nil, "single wording")
+        -- a game that is gone, and a bet from a bookie that sends no picks
+        local before = slip.single
+        check(B.Tail({ who = "Zed", status = "accepted", legs = { { m = 99, s = 1 } } }).added == 0, "a vanished game cannot be tailed")
+        check(lastPrint():find("Can't tail Zed", 1, true) ~= nil and slip.single == before, "and the slip is untouched")
+        check(B.Tail({ who = "Old", status = "accepted" }) == nil and lastPrint():find("newest SteveBook", 1, true) ~= nil, "no picks: the bookie needs an update")
+        check(B.Tail({ who = "Done", status = "won" }) == nil and lastPrint():find("settled", 1, true) ~= nil, "a settled bet cannot be tailed")
+        ns.Slip.ClearAll(slip); slip.parlay = {}
+        findPrefix("All Bets"):Click()
+    end
     T = T + 12
     Cache.MarkPong(SteveBookDB.cache, CODE, T, "Bookie")
     B.Refresh()

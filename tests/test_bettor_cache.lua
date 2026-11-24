@@ -231,6 +231,25 @@ do
     check(#g.settled[3].text == 240, "long text is cut")
     check(g.open[1].win == 14760 and g.settled[1].win == nil, "win only on open bets")
     check(Cache.GroupAge(gs, "G-2", NOW + 42) == 42, "age in seconds")
+    -- the picks, for tailing: kept when they look right, dropped (not the bet) when they do not
+    Cache.ApplyGroupBets(gs, "G-2", {
+        { id = 1, who = "A", text = "x", stake = 1, status = "accepted", legs = { { m = 7, s = 2 } } },
+        { id = 2, who = "B", text = "x", stake = 1, status = "accepted", legs = { { m = 7, s = 1 }, { m = 8, s = 2, junk = true } } },
+        { id = 3, who = "C", text = "x", stake = 1, status = "accepted", legs = { { m = "7", s = 1 } } },
+        { id = 4, who = "D", text = "x", stake = 1, status = "accepted", legs = {} },
+        { id = 5, who = "E", text = "x", stake = 1, status = "accepted", legs = "all of them" },
+        { id = 6, who = "F", text = "x", stake = 1, status = "accepted" },
+        { id = 7, who = "G", text = "x", stake = 1, status = "accepted", legs = { { m = 1, s = 1 }, { m = 2, s = 1 }, { m = 3, s = 1 }, { m = 4, s = 1 },
+            { m = 5, s = 1 }, { m = 6, s = 1 }, { m = 7, s = 1 }, { m = 8, s = 1 }, { m = 9, s = 1 } } },
+        { id = 8, who = "H", text = "x", stake = 1, status = "accepted", legs = { { m = 1, s = 1 }, "no" } },
+    }, NOW)
+    local by = {}
+    for _, e in ipairs(Cache.GroupBets(gs, "G-2").open) do by[e.id] = e end
+    check(by[1].legs and #by[1].legs == 1 and by[1].legs[1].m == 7 and by[1].legs[1].s == 2, "a single's pick is kept")
+    check(#by[2].legs == 2 and by[2].legs[2].m == 8 and by[2].legs[2].junk == nil, "a parlay's picks are kept, and only m and s of each")
+    check(by[3].legs == nil and by[4].legs == nil and by[5].legs == nil and by[6].legs == nil, "bad, empty or missing picks are dropped")
+    check(by[7].legs == nil, "more picks than a parlay may have are dropped")
+    check(by[8].legs == nil and by[8].who == "H", "one bad pick drops the picks, not the bet")
     -- The list is replaced, and capped.
     local many = {}
     for i = 1, 300 do many[i] = { id = i, who = "P" .. i, text = "t", stake = 100, status = "won", at = i } end

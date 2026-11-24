@@ -172,6 +172,34 @@ function Slip.Restore(s, mode, list, getMarket)
     return skipped
 end
 
+-- Tail: put someone else's picks on my slip at today's odds and lines. `picks` = { { m = market id,
+-- s = selection id }, ... } (one pick: a single; more: a parlay). Replaces my slip for that mode only. Picks whose
+-- game has started or is gone are skipped. Returns { mode, added = n, skipped = { { index, reason = "gone" |
+-- "started" | "conflict" } } }; with added == 0 the slip is left as it was.
+function Slip.Tail(s, picks, getMarket, now)
+    local mode = #picks > 1 and "parlay" or "single"
+    local legs, skipped = {}, {}
+    for i, p in ipairs(picks) do
+        local m = getMarket(p.m)
+        local leg = m and not Cache().IsClosed(m, now) and newLeg(m, p.s) or nil
+        local reason
+        if not leg then
+            reason = (m and Cache().IsClosed(m, now)) and "started" or "gone"
+        elseif mode == "parlay" then
+            local trial = {}
+            for k, l in ipairs(legs) do trial[k] = l end
+            trial[#trial + 1] = leg
+            if not Slip.CheckConflict(trial, #trial) then reason = "conflict" end
+        end
+        if reason then skipped[#skipped + 1] = { index = i, reason = reason } else legs[#legs + 1] = leg end
+    end
+    if #legs == 0 then return { mode = mode, added = 0, skipped = skipped } end
+    if mode == "parlay" then s.parlay = legs else s.single = legs[1] end
+    s.confirm[mode] = nil
+    s.mode = mode
+    return { mode = mode, added = #legs, skipped = skipped }
+end
+
 -- Bring every leg (both modes) in line with the cache. Legs whose game has started, finished or
 -- vanished are dropped; legs whose odds moved take the new odds and ask for a confirmation.
 -- Returns dropped = { {leg, reason = "started"|"gone"} }, changed = { leg }.
